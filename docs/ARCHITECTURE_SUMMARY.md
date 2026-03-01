@@ -13,7 +13,7 @@ The foundation of the architecture is built on strictly defined Pydantic domains
 The core six-step engine that translates ambiguous natural language into secure, deterministic execution.
 
 - **`DeterministicSchemaFilter`**: Uses substring matching to aggressively prune the `RegistrySchema` down to only the tables relevant to the `UserIntent`. Limits LLM hallucination scope and reduces token costs.
-- **`PromptBuilder`**: Uses file-based `Jinja2` templates to construct a secure `PromptEnvelope`. It mathematically guarantees that physical database targets never leak into the LLM context window.
+- **`PromptBuilder`**: Uses file-based `Jinja2` templates to construct a secure `PromptEnvelope`. It structurally guarantees that physical database targets never leak into the LLM context window.
 - **`MockLLMGateway`**: An asynchronous network simulator representing the connection to OpenAI/Anthropic.
 - **`SQLParser`**: Uses `sqlglot` to parse the LLM's raw output string into a structured Abstract Syntax Tree (AST). Rejects malformed or multi-statement outputs immediately.
 - **`SafetyEngine`**: The critical security boundary. Performs recursive traversal of the SQL AST, enforcing an explicit `ALLOW_LIST` (e.g., `Select`, `Where`) and blocking dangerous nodes (`Drop`, `Subquery`, `Command`).
@@ -23,7 +23,7 @@ The core six-step engine that translates ambiguous natural language into secure,
 ## 3. Execution Layer (`app.execution`)
 Translates the authorized `ExecutableQuery` into physical database results.
 
-- **`ExecutionEngine`**: Manages asynchronous connection pooling (via `sqlalchemy` and `asyncpg` or `sqlite`). Enforces `SET LOCAL statement_timeout` immediately before execution to prevent analytical payloads from DOSing the database.
+- **`ExecutionEngine`**: Manages asynchronous connection pooling (via `sqlalchemy` and `asyncpg`, with `sqlite` used only for testing). Enforces `SET LOCAL statement_timeout` immediately before execution to prevent analytical payloads from DOSing the database.
 - **`ExecutionContext`**: Pydantic struct enforcing strict multi-tenant boundaries (`tenant_id`, `user_id`) during query execution.
 - **`QueryResult`**: The strictly shaped `(columns, rows, metadata)` tuple returned to the API layer after successful database yields.
 
@@ -43,9 +43,17 @@ The FastAPI boundaries exposing the internal domain securely to external HTTP cl
 - **`POST /api/v1/query/execute`**: Main endpoint executing the full pipeline. Returns JSON rows and dispatches the asynchronous audit logger gracefully via `BackgroundTasks`.
 
 ## 6. Testing Strategy (`tests/`)
-100% test coverage across all boundaries.
+Comprehensive test coverage across all boundaries.
 
 - **Domain Validators**: Tests ensuring Pydantic models reject mutations entirely, dropping payloads with missing metadata or `tenant_id` blocks.
 - **AST Fuzzing**: Parametrized Pytest matrices hurling malicious SQL string variants (`DROP TABLE`, UNION subqueries, etc.) against the `SafetyEngine` to certify blockage.
 - **Contract Enforcement**: Mypy structural type checks asserting that concrete protocol implementations do not violate expected argument orders or missing kwargs.
 - **Integration Coverage**: Fully mocked `TestClient` API tests validating FastAPI Request Dependency cascades, background tasks, routing, and masked HTTP 500 error boundaries intercept uncaught anomalies.
+
+## 7. Trust Boundaries
+The proxy architecture is designed around several explicitly defined trust boundaries to ensure robust security and safety:
+
+- **LLM is untrusted**: The output from the Language Model is treated as fundamentally hostile and unreliable. 
+- **Compiler output is untrusted until SafetyEngine passes**: The parsed AST is not considered safe or executable until it has successfully navigated the `SafetyEngine` authorization rules and explicit deny-lists.
+- **ExecutionLayer is the final authority**: Regardless of compilation, the physical execution engine is the final gatekeeper, enforcing timeouts, tenant context limits, and preventing lateral execution.
+- **Database enforces read-only guarantees**: The underlying physical database connection should still separately enforce native least-privilege, read-only permissions as a defense-in-depth measure.
