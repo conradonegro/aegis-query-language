@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aegis Compiler Console</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="dark-theme">
+    <header class="app-header">
+        <div class="header-left">
+            <h1>Aegis Console // <span class="dim">proxy-v1</span></h1>
+            <div class="status-indicator">
+                <span class="dot active"></span>
+                <span>System Online</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <label class="toggle-switch">
+                <span class="toggle-label">Explainability Trace</span>
+                <input type="checkbox" id="explain_toggle" checked>
+                <span class="slider round"></span>
+            </label>
+        </div>
+    </header>
+
+    <main class="console-layout">
+        <section class="panel input-panel">
+            <div class="panel-header">
+                <h2>Intent Input</h2>
+                <div class="badges">
+                    <span class="badge badge-secure">🛡 Sandboxed</span>
+                    <span class="badge badge-info">Read-Only</span>
+                </div>
+            </div>
+            <div class="input-container">
+                <textarea id="intent_input" placeholder="e.g., Get Alice from the users table..." autofocus></textarea>
+            </div>
+            <div class="actions">
+                <button id="run_btn" class="btn btn-primary">Run Compilation & Execute</button>
+            </div>
+
+            <div id="error_container" class="error-panel hidden">
+                <div class="panel-header error-header">
+                    <h3 id="error_title">Execution Halted</h3>
+                </div>
+                <div class="error-body">
+                    <p id="error_message"></p>
+                </div>
+            </div>
+
+            <div id="results_container" class="results-panel hidden">
+                <div class="panel-header">
+                    <h3>Physical Execution Results</h3>
+                    <span class="latency" id="execution_latency"></span>
+                </div>
+                <div class="table-container">
+                    <table id="results_table">
+                        <thead id="results_head"></thead>
+                        <tbody id="results_body"></tbody>
+                    </table>
+                </div>
+                <div class="row-count">Rows returned: <span id="row_count">0</span></div>
+            </div>
+        </section>
+
+        <section class="panel trace-panel" id="trace_panel">
+            <div class="panel-header">
+                <h2>Compilation Pipeline</h2>
+                <span class="latency" id="compiler_latency"></span>
+            </div>
+
+            <div class="trace-steps">
+                <!-- RAG Step -->
+                <div class="trace-step">
+                    <div class="step-header">
+                        <span class="step-num">1</span>
+                        <h4>Semantic Interception (RAG)</h4>
+                        <span class="outcome-badge" id="rag_outcome">WAITING</span>
+                    </div>
+                    <div class="step-details" id="rag_details">
+                        <div class="detail-row"><span>Matches:</span><span id="rag_matches" class="code-val">-</span>
+                        </div>
+                        <div class="detail-row"><span>Reason:</span><span id="rag_reason" class="text-val">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Schema Step -->
+                <div class="trace-step">
+                    <div class="step-header">
+                        <span class="step-num">2</span>
+                        <h4>Schema Boundaries</h4>
+                    </div>
+                    <div class="step-details">
+                        <div class="detail-row"><span>Included:</span><span id="schema_included"
+                                class="code-val">-</span></div>
+                        <div class="detail-row"><span>Excluded:</span><span id="schema_excluded"
+                                class="code-val dim">-</span></div>
+                    </div>
+                </div>
+
+                <!-- LLM Step -->
+                <div class="trace-step">
+                    <div class="step-header">
+                        <span class="step-num">3</span>
+                        <h4>LLM Generation (<span id="llm_provider">provider</span>)</h4>
+                    </div>
+                    <div class="step-details stack">
+                        <label>System Prompt (Sandbox Constraints)</label>
+                        <div class="code-block prompt-block" id="prompt_system">...</div>
+                        <label>Raw LLM Generation</label>
+                        <div class="code-block prompt-block" id="llm_raw_response">...</div>
+                        <label>Extracted Abstract SQL</label>
+                        <div class="code-block" id="llm_abstract">...</div>
+                    </div>
+                </div>
+
+                <!-- Translation Step -->
+                <div class="trace-step">
+                    <div class="step-header">
+                        <span class="step-num">4</span>
+                        <h4>Safety Parser & Parameterization</h4>
+                    </div>
+                    <div class="step-details stack">
+                        <label>Physical Execution SQL</label>
+                        <div class="code-block" id="param_sql">...</div>
+                        <label>Bound Parameters</label>
+                        <div class="code-block" id="bind_params">{}</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div class="developer-drawer">
+        <div class="drawer-header" id="drawer_toggle">
+            <h3>Developer JSON Trace</h3>
+            <span class="arrow">▲</span>
+        </div>
+        <div class="drawer-content hidden" id="drawer_content">
+            <div class="json-pane">
+                <h4>Outbound Post Body</h4>
+                <pre><code id="json_request">{}</code></pre>
+            </div>
+            <div class="json-pane">
+                <h4>Inbound Response Payload</h4>
+                <pre><code id="json_response">{}</code></pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

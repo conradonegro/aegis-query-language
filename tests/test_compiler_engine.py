@@ -32,6 +32,7 @@ def mock_registry() -> RegistrySchema:
         identifiers=[
             AbstractIdentifierDef(
                 alias="users",
+                identifier_type="table",
                 description="The users table",
                 safety=SafetyClassification(allowed_in_select=True),
                 physical_target="auth.users"
@@ -97,11 +98,12 @@ async def test_compiler_engine_rag_no_match(rag_compiler_engine: CompilerEngine,
     intent = UserIntent(natural_language_query="Show me Bob")
     hints = PromptHints(column_hints=[])
     
-    with pytest.raises(RAGUncertaintyError) as exc:
-        await rag_compiler_engine.compile(intent, mock_registry, hints)
+    executable = await rag_compiler_engine.compile(intent, mock_registry, hints)
         
-    assert "strict policy outcome: NO_MATCH" in str(exc.value)
-    assert "Tenant vector store is empty" in str(exc.value) or "No candidates met the threshold (0.85)" in str(exc.value)
+    assert executable is not None
+    assert hints.rag_provenance is not None
+    assert hints.rag_provenance["rag_outcome"] == "NO_MATCH"
+    assert "No candidates met the threshold" in hints.rag_provenance["rag_reason"]
 
 @pytest.mark.asyncio
 async def test_compiler_engine_rag_ambiguous_match(rag_compiler_engine: CompilerEngine, mock_registry: RegistrySchema) -> None:
@@ -111,8 +113,9 @@ async def test_compiler_engine_rag_ambiguous_match(rag_compiler_engine: Compiler
     intent = UserIntent(natural_language_query="Show me Alice or Alice Cooper")
     hints = PromptHints(column_hints=[])
     
-    with pytest.raises(RAGUncertaintyError) as exc:
-        await rag_compiler_engine.compile(intent, mock_registry, hints)
+    executable = await rag_compiler_engine.compile(intent, mock_registry, hints)
         
-    assert "strict policy outcome: AMBIGUOUS_MATCH" in str(exc.value)
-    assert "Ambiguous: 2 competing matches breached the threshold." in str(exc.value)
+    assert executable is not None
+    assert hints.rag_provenance is not None
+    assert hints.rag_provenance["rag_outcome"] == "AMBIGUOUS_MATCH"
+    assert "Ambiguous: 2 competing matches breached the threshold." in hints.rag_provenance["rag_reason"]

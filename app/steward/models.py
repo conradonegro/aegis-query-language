@@ -13,6 +13,7 @@ class AbstractIdentifierDef(BaseModel):
     Includes mapped target for translation but NEVER leaked to LLM.
     """
     alias: str
+    identifier_type: str = "column" # e.g. 'table', 'column', 'view'
     description: str
     safety: SafetyClassification
     physical_target: str

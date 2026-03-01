@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 class LLMGenerationError(Exception):
     """Raised when the LLM fails to generate a valid response that meets strict constraints."""
-    pass
+    def __init__(self, message: str, raw_response: str = ""):
+        super().__init__(message)
+        self.raw_response = raw_response
 
 
 class OllamaLLMGateway(LLMGatewayProtocol):
@@ -91,16 +93,16 @@ class OllamaLLMGateway(LLMGatewayProtocol):
             try:
                 parsed = json.loads(message_content)
                 if "sql" not in parsed:
-                    raise LLMGenerationError("Ollama JSON response missing required 'sql' field.")
+                    raise LLMGenerationError("Ollama JSON response missing required 'sql' field.", raw_response=message_content)
                 # Extract just the SQL string
                 final_text = parsed["sql"]
                 
                 # Assert no multi-statements (SafetyEngine handles deep AST, but surface check here)
                 if ";" in final_text and len([s for s in final_text.split(";") if s.strip()]) > 1:
-                     raise LLMGenerationError("Ollama returned multiple SQL statements. Only single queries are permitted.")
+                     raise LLMGenerationError("Ollama returned multiple SQL statements. Only single queries are permitted.", raw_response=message_content)
                      
             except json.JSONDecodeError:
-                raise LLMGenerationError(f"Ollama failed to return valid JSON. Raw output: {message_content[:100]}...")
+                raise LLMGenerationError(f"Ollama failed to return valid JSON. Raw output: {message_content[:100]}...", raw_response=message_content)
         else:
             final_text = message_content
             

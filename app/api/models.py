@@ -60,3 +60,4 @@ class ErrorResponse(BaseModel):
     code: int = Field(..., description="HTTP Status code (400, 403, 500)")
     message: str = Field(..., description="Human-readable domain boundary exception description.")
     request_id: str | None = Field(default=None, description="Request trace ID if applicable.")
+    explainability: dict[str, Any] | None = Field(default=None, description="Partial pipeline traces if execution halted.")

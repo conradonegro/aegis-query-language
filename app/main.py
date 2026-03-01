@@ -3,7 +3,8 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.models import ErrorResponse
 from app.api.router import api_router
@@ -11,11 +12,11 @@ from app.audit.logger import JSONAuditLogger
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
-from app.compiler.ollama import OllamaLLMGateway
 from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
 from app.compiler.safety import SafetyEngine, SafetyViolationError
 from app.compiler.translator import DeterministicTranslator, TranslationError
+from app.compiler.ollama import OllamaLLMGateway, LLMGenerationError
 from app.execution.executor import ExecutionEngine
 from app.steward import AbstractIdentifierDef, RegistrySchema, SafetyClassification
 
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI):
         identifiers=[
             AbstractIdentifierDef(
                 alias="users",
+                identifier_type="table",
                 description="User details",
                 safety=SafetyClassification(allowed_in_select=True, allowed_in_where=True),
                 physical_target="users"
@@ -109,7 +111,8 @@ async def safety_violation_handler(request: Request, exc: SafetyViolationError):
     error_resp = ErrorResponse(
         code=403,
         message=f"Safety Violation: {str(exc)}",
-        request_id=None
+        request_id=None,
+        explainability=getattr(exc, "explainability", None)
     )
     return JSONResponse(status_code=403, content=error_resp.model_dump())
 
@@ -118,7 +121,8 @@ async def translation_error_handler(request: Request, exc: TranslationError):
     error_resp = ErrorResponse(
         code=400,
         message=f"Translation Error: {str(exc)}",
-        request_id=None
+        request_id=None,
+        explainability=getattr(exc, "explainability", None)
     )
     return JSONResponse(status_code=400, content=error_resp.model_dump())
 
@@ -127,20 +131,40 @@ async def rag_error_handler(request: Request, exc: RAGUncertaintyError):
     error_resp = ErrorResponse(
         code=400,
         message=str(exc),
-        request_id=None
+        request_id=None,
+        explainability=getattr(exc, "explainability", None)
     )
     return JSONResponse(status_code=400, content=error_resp.model_dump())
+
+@app.exception_handler(LLMGenerationError)
+async def llm_error_handler(request: Request, exc: LLMGenerationError):
+    error_resp = ErrorResponse(
+        code=502,
+        message=f"LLM Gateway Failure: {str(exc)}",
+        request_id=None,
+        explainability=getattr(exc, "explainability", None)
+    )
+    return JSONResponse(status_code=502, content=error_resp.model_dump())
 
 @app.exception_handler(Exception)
 async def standard_error_handler(request: Request, exc: Exception):
     error_resp = ErrorResponse(
         code=500,
         message="Internal Server Error",
-        request_id=None
+        request_id=None,
+        explainability=getattr(exc, "explainability", None)
     )
     return JSONResponse(status_code=500, content=error_resp.model_dump())
 
 app.include_router(api_router, prefix="/api/v1")
+
+# Mount Static Files for the UI Console
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+async def serve_ui():
+    """Serve the single-page application console."""
+    return FileResponse("static/index.html")
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
