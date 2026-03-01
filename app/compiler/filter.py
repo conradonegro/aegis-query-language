@@ -24,7 +24,7 @@ class DeterministicSchemaFilter:
         }
         return {word for word in clean.split() if word and word not in stop_words}
 
-    def filter(self, intent: UserIntent, schema: RegistrySchema) -> FilteredSchema:
+    def filter_schema(self, intent: UserIntent, schema: RegistrySchema) -> FilteredSchema:
         intent_tokens = self._tokenize(intent.natural_language_query)
 
         allowed_aliases = []

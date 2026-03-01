@@ -29,7 +29,7 @@ def test_deterministic_schema_filter_simple_overlap() -> None:
     )
 
     intent = UserIntent(natural_language_query="Show me the profile for user 123")
-    filtered = filter_engine.filter(intent, schema)
+    filtered = filter_engine.filter_schema(intent, schema)
 
     # "profile" / "user" -> matches users table
     # but not "orders"

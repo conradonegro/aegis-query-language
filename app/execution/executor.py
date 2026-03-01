@@ -32,7 +32,7 @@ class ExecutionEngine:
         )
 
     async def execute(
-        self, query: ExecutableQuery, context: ExecutionContext
+        self, query: ExecutableQuery, *, context: ExecutionContext
     ) -> QueryResult:
         """
         Executes raw parameterized SQL safely wrapped in a local statement_timeout.

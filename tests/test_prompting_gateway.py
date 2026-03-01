@@ -25,7 +25,7 @@ def test_prompt_builder() -> None:
 
     # Needs to be able to find the relative `templates` folder during pytest
     builder = PromptBuilder()
-    envelope = builder.build(schema=schema, intent=intent, hints=hints)
+    envelope = builder.build_prompt(schema=schema, intent=intent, hints=hints)
 
     # Verify the envelope is built correctly
     assert isinstance(envelope, PromptEnvelope)

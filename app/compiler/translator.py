@@ -6,6 +6,10 @@ from app.compiler.models import ExecutableQuery, ValidatedAST
 from app.steward import RegistrySchema
 
 
+class TranslationError(Exception):
+    pass
+
+
 class DeterministicTranslator:
     """
     Translates an abstract validated AST into a parameterized physics execution query
@@ -14,7 +18,7 @@ class DeterministicTranslator:
 
     def translate(
         self, ast: ValidatedAST, schema: RegistrySchema,
-        abstract_query_hash: str, safety_version: str = "v1.0.0",
+        abstract_query_hash: str = "default_hash", safety_version: str = "v1.0.0",
         row_limit: int = 1000
     ) -> ExecutableQuery:
         """Translates abstract AST into parameterized physical SQL."""

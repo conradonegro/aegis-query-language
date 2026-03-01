@@ -13,7 +13,7 @@ class MockLLMGateway:
     def __init__(self, mock_response_sql: str = "SELECT * FROM abstract_table"):
         self.mock_response_sql = mock_response_sql
 
-    async def generate(self, envelope: PromptEnvelope) -> LLMResult:
+    async def generate(self, prompt: PromptEnvelope) -> LLMResult:
         """
         Takes the immutable PromptEnvelope and simulates returning an AbstractQuery.
         """
@@ -29,7 +29,7 @@ class MockLLMGateway:
 
         # Count simulated tokens
         # Very rough approximation: 1 token per 4 chars
-        prompt_lengths = len(envelope.system_instruction) + len(envelope.user_prompt)
+        prompt_lengths = len(prompt.system_instruction) + len(prompt.user_prompt)
         prompt_tokens = max(1, prompt_lengths // 4)
         completion_tokens = max(1, len(raw_sql) // 4)
 

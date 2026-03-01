@@ -7,7 +7,8 @@ from app.audit import QueryAuditEvent
 from app.audit.logger import JSONAuditLogger
 
 
-def test_json_audit_logger_succeeds(caplog: pytest.LogCaptureFixture) -> None:
+@pytest.mark.asyncio
+async def test_json_audit_logger_succeeds(caplog: pytest.LogCaptureFixture) -> None:
     logger = JSONAuditLogger()
     event = QueryAuditEvent(
         query_id="q1",
@@ -27,7 +28,7 @@ def test_json_audit_logger_succeeds(caplog: pytest.LogCaptureFixture) -> None:
     )
 
     with caplog.at_level(logging.INFO, logger="aegis.audit"):
-        logger.log(event)
+        await logger.record(event)
 
     assert len(caplog.records) == 1
     record = caplog.records[0]
@@ -37,7 +38,8 @@ def test_json_audit_logger_succeeds(caplog: pytest.LogCaptureFixture) -> None:
     assert payload["query_id"] == "q1"
     assert payload["latency_ms"] == 105.5
 
-def test_json_audit_logger_does_not_raise() -> None:
+@pytest.mark.asyncio
+async def test_json_audit_logger_does_not_raise() -> None:
     logger = JSONAuditLogger()
     # Sending something completely invalid to the json dumps
     # This might be tricky because we use pydantic for the struct.
@@ -50,4 +52,4 @@ def test_json_audit_logger_does_not_raise() -> None:
             raise ValueError("Artificial explosion for test")
 
     # The logger should catch the serialization issue and NOT raise
-    logger.log(BadEvent()) # type: ignore
+    await logger.record(BadEvent()) # type: ignore

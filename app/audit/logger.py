@@ -13,7 +13,7 @@ class JSONAuditLogger:
     Designed to never raise serialization errors and remain decoupled.
     """
 
-    def log(self, event: QueryAuditEvent) -> None:
+    async def record(self, event: QueryAuditEvent) -> None:
         """Fully serializes and logs the audit event without failing."""
         try:
             # We serialize models natively using pydantic's model_dump

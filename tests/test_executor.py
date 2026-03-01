@@ -28,7 +28,7 @@ async def test_execution_parameter_binding() -> None:
     )
     context = ExecutionContext(tenant_id="t1")
 
-    result = await engine.execute(query, context)
+    result = await engine.execute(query, context=context)
 
     # Assert return types and mapping shapes
     assert result.columns == ["id", "val"]

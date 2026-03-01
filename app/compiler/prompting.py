@@ -20,9 +20,8 @@ class PromptBuilder:
              autoescape=False # We are generating raw text blocks, not HTML
         )
 
-    def build(
-        self, schema: FilteredSchema, intent: UserIntent,
-        hints: PromptHints | None = None
+    def build_prompt(
+        self, intent: UserIntent, schema: FilteredSchema, hints: PromptHints
     ) -> PromptEnvelope:
         """
         Renders the static template into an immutable PromptEnvelope.

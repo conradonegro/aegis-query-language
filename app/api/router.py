@@ -1,7 +1,116 @@
-from fastapi import APIRouter
+import asyncio
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
+
+from app.api.models import QueryExecuteResponse, QueryGenerateResponse, QueryRequest
+from app.audit import QueryAuditEvent
+from app.compiler.engine import CompilerEngine
+from app.compiler.models import PromptHints, UserIntent
+from app.execution import ExecutionContext
+from app.execution.interfaces import ExecutionLayer
+from app.steward import RegistrySchema
 
 api_router = APIRouter()
 
-@api_router.get("/status")
-async def status() -> dict[str, str]:
-    return {"module": "api", "status": "operational"}
+
+def get_compiler(request: Request) -> CompilerEngine:
+    return request.app.state.compiler
+
+def get_executor(request: Request) -> ExecutionLayer:
+    return request.app.state.executor
+
+# Use the protocol or concrete type matching the auditor interface
+def get_auditor(request: Request):
+    return request.app.state.auditor
+
+def get_registry(request: Request) -> RegistrySchema:
+    return request.app.state.registry
+
+
+@api_router.post("/query/generate", response_model=QueryGenerateResponse)
+async def generate_query(
+    payload: QueryRequest,
+    compiler: CompilerEngine = Depends(get_compiler),
+    registry: RegistrySchema = Depends(get_registry)
+) -> QueryGenerateResponse:
+    """
+    Compiles natural language into an ExecutableQuery, strictly omitting physical DB execution.
+    """
+    intent = UserIntent(natural_language_query=payload.intent)
+    hints = PromptHints(column_hints=payload.schema_hints)
+    
+    executable = await compiler.compile(
+        schema=registry,
+        intent=intent,
+        hints=hints
+    )
+    
+    return QueryGenerateResponse(
+        query_id=executable.query_id or "",
+        sql=executable.sql,
+        parameters=executable.parameters,
+        latency_ms=executable.compilation_latency_ms or 0.0
+    )
+
+
+@api_router.post("/query/execute", response_model=QueryExecuteResponse)
+async def execute_query(
+    payload: QueryRequest,
+    background_tasks: BackgroundTasks,
+    compiler: CompilerEngine = Depends(get_compiler),
+    executor: ExecutionLayer = Depends(get_executor),
+    auditor=Depends(get_auditor),
+    registry: RegistrySchema = Depends(get_registry)
+) -> QueryExecuteResponse:
+    """
+    Compiles and executes the query against the physical database.
+    Dispatches asynchronous audit sink logging.
+    """
+    intent = UserIntent(natural_language_query=payload.intent)
+    hints = PromptHints(column_hints=payload.schema_hints)
+    
+    # Compile
+    executable = await compiler.compile(
+        schema=registry,
+        intent=intent,
+        hints=hints
+    )
+    
+    # Execute
+    context = ExecutionContext(
+            tenant_id="default_tenant",
+            user_id="api_user",
+            metadata={}
+        )
+    result = await executor.execute(executable, context=context)
+    
+    # Background audit log mapping
+    event = QueryAuditEvent(
+        query_id=executable.query_id or str(uuid.uuid4()),
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        natural_language_query=payload.intent,
+        abstract_query=executable.sql, # Tracking compiled sql 
+        physical_query=executable.sql,
+        registry_version=executable.registry_version,
+        safety_engine_version=executable.safety_engine_version,
+        abstract_query_hash=executable.abstract_query_hash,
+        latency_ms=executable.compilation_latency_ms or 0.0,
+        prompt_tokens=0,
+        completion_tokens=0,
+        status="SUCCESS",
+        error_message=None,
+        row_limit_applied=executable.row_limit_applied
+    )
+    
+    # Add audit dispatch to non-blocking tasks list
+    background_tasks.add_task(auditor.record, event)
+    
+    return QueryExecuteResponse(
+        query_id=executable.query_id or "",
+        results=result.rows,
+        row_count=len(result.rows),
+        execution_latency_ms=0.0
+    )

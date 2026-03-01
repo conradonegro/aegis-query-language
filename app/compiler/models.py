@@ -54,3 +54,5 @@ class ExecutableQuery(BaseModel):
     safety_engine_version: str
     abstract_query_hash: str
     row_limit_applied: bool = False
+    query_id: str | None = None
+    compilation_latency_ms: float | None = None
