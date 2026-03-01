@@ -1,0 +1,390 @@
+﻿Secure Semantic SQL Middleware
+Architecture & Design Documentation
+1. Purpose & Scope
+This document describes the architecture of a production-grade middleware platform that enables secure natural language querying of relational databases using LLMs, while guaranteeing that LLMs never see real database identifiers or data.
+The system is designed with:
+* Strong security boundaries
+* Deterministic SQL translation
+* Defense-in-depth
+* Enterprise-readiness
+This document is the authoritative reference for system design prior to project planning and implementation.
+________________
+
+
+2. High-Level Goals
+* Allow users to query data using natural language
+* Prevent LLM exposure to real database schema and identifiers
+* Guarantee only approved, safe SQL is executed
+* Enforce database-level security as the final authority
+* Support development with local models and production with hosted providers
+* Be auditable, testable, and deterministic
+________________
+
+
+3. Non-Goals
+* The LLM is not trusted for security
+* The LLM is not allowed to see real schemas
+* The system does not support arbitrary SQL execution
+* The system does not auto-correct ambiguous intent
+________________
+
+
+4. Core Architectural Pattern
+Semantic Proxy with Deterministic Translation
+The system implements a Semantic Proxy pattern:
+* The LLM operates exclusively on:
+   * Abstract table aliases
+   * Abstract column aliases
+   * Masked semantic schema
+   * User’s natural language prompt
+* A deterministic backend translator maps abstract SQL to real SQL
+* The database enforces final access control
+The LLM is treated as an untrusted suggestion engine.
+________________
+
+
+5. System Components
+5.1 API Layer
+* Asynchronous HTTP API
+* Handles authentication, authorization, and rate limiting
+* Orchestrates the full query lifecycle
+________________
+
+
+5.2 Metadata Registry (Authoritative Mapping)
+Stores the canonical mapping between:
+* Abstract table aliases → real tables
+* Abstract column aliases → real columns
+Properties:
+* Versioned
+* Immutable once approved
+* Per-tenant
+* Signed / auditable
+* Only approved entries are queryable
+This registry is the single source of truth for translation.
+________________
+
+
+5.3 Value Vector Store (RAG – Value Lookup)
+Purpose:
+* Determine where a user-provided value likely belongs in the schema
+Behavior:
+* Embeds categorical/distinct values
+* Matches values to candidate abstract columns
+* Returns similarity score
+Rules:
+* Auto-pick only if similarity ≥ strict threshold
+* No fallback, no clarification
+* Below threshold → hard failure with explanation back to the user
+False negatives are acceptable. False positives are not.
+________________
+
+
+5.4 Schema Filter
+Reduces the abstract schema to the minimum required subset:
+* Only tables/columns relevant to the query
+* Only approved registry entries
+* Enforced before prompt construction
+This limits token usage and attack surface.
+________________
+
+
+5.5 Prompt Builder
+Constructs the LLM prompt using:
+* System instructions (non-overridable)
+* Abstract schema
+* Explicit column hints derived from RAG
+* User’s original natural language prompt
+Rules:
+* No real identifiers
+* No registry internals
+* No production SQL
+* Few-shot examples are abstract-only
+________________
+
+
+5.6 LLM Gateway
+* Abstracted behind a provider-agnostic interface
+* Development: local model (e.g. Ollama)
+* Production: hosted provider
+The abstraction guarantees:
+* Identical prompt structure across environments
+* No sensitive data leakage
+* Provider swap without architectural change
+________________
+
+
+5.7 Abstract SQL Output
+The LLM returns:
+* SQL written only using abstract identifiers
+* No execution capability
+* Treated as untrusted input
+Example (abstract):
+SELECT SUM(column9)
+FROM table1
+WHERE column4 = 'Nvidia'
+ AND column12 LIKE '2024%';
+________________
+
+
+5.8 SQL Translator (Un-Abstractor)
+This is the most critical component.
+Responsibilities:
+* Parse abstract SQL into an AST
+* Validate AST against allow-list
+* Deterministically map identifiers using the registry
+* Produce parameterized real SQL
+Rules:
+* No string interpolation
+* No dynamic SQL
+* Only approved AST node types
+* Only approved scalar functions
+* No access to system catalogs
+Output:
+* Parameterized SQL
+* Parameter list
+* Mapping version used
+________________
+
+
+5.9 SQL Safety Engine
+Enforces structural safety:
+* Allowed statement types: SELECT only
+* Allowed joins: inner / left (configurable)
+* Disallowed:
+   * DDL / DML
+   * UDFs
+   * Subqueries touching system catalogs
+   * Extensions, FDWs, COPY, EXECUTE
+Blacklist is insufficient; allow-list is mandatory.
+________________
+
+
+5.10 Execution Layer
+* Uses a dedicated read-only database role
+* Enforced limits:
+   * Statement timeout
+   * Row limits
+   * Schema allow-list
+* Executes parameterized SQL only
+The database is the final security boundary.
+________________
+
+
+5.11 Result Handling
+* Raw query results returned
+* No masking required (users are authorized)
+* Abstract SQL returned for transparency
+* Optional: include mapping version and query metadata
+________________
+
+
+6. End-to-End Query Flow
+1. User submits natural language query
+2. Value embeddings matched against value index
+3. Column auto-selected only if similarity ≥ threshold
+4. Approved abstract schema subset selected
+5. Prompt assembled with aliases only
+6. LLM generates abstract SQL
+7. Abstract SQL parsed into AST
+8. AST validated against allow-list
+9. Identifiers mapped via registry
+10. Parameterized SQL generated
+11. SQL executed using read-only DB role
+12. Results returned to user
+________________
+
+
+7. Schema Evolution & DDL Change Management
+This system does not automatically expose database schema changes to the abstraction layer. All schema evolution is explicit, reviewed, and controlled.
+7.1 Design Principle
+DDL changes in the physical database never automatically affect the semantic abstraction.
+Reasons:
+* Prevent accidental data exposure
+* Prevent breaking existing abstract queries
+* Preserve deterministic LLM behavior
+* Maintain auditability and version control
+The abstraction layer evolves by intent, not by discovery.
+7.2 Sources of Schema Change
+DDL changes may originate from:
+* New tables
+* New columns
+* Column type changes
+* Table/column deprecation
+* Renames
+* Partitioning or physical refactors
+These changes are considered out-of-band relative to the abstraction layer.
+7.3 Schema Change Detection
+DDL changes are detected via one or more of:
+* Migration pipeline hooks (preferred)
+* Database schema diff tooling
+* Periodic schema introspection (read-only)
+Detection does not imply exposure.
+Detected changes are classified as:
+* Additive (new table/column)
+* Breaking (rename, type change)
+* Destructive (drop)
+7.4 Abstraction Onboarding Workflow (Required)
+Any DDL change must go through the following controlled workflow before becoming visible to the LLM.
+Step 1 — Change Proposal
+A schema change proposal is created containing:
+* Physical table/column details
+* Intended business meaning
+* Sensitivity classification
+* Tenant scope
+* Backward compatibility notes
+No abstraction is created at this stage.
+Step 2 — Registry Mapping Definition
+If approved for exposure:
+* A new abstract alias is defined
+* Alias is never derived from physical names
+* Column semantics are documented
+Example:
+* Physical: real_sales_data_v3.net_margin_pct
+* Abstract: column17 (Margin Percentage)
+Existing abstract aliases are never reused.
+Step 3 — Registry Versioning
+* Registry changes are committed as a new version
+* Prior versions remain immutable
+* Each version is cryptographically signed
+* Mapping includes:
+   * Valid-from timestamp
+   * Optional valid-until timestamp
+This enables:
+* Query reproducibility
+* Rollbacks
+* Audit replay
+Step 4 — Vector Store Update (If Applicable)
+If the column contains categorical or lookup values:
+* Values are embedded
+* Indexed in the per-tenant value vector store
+* Marked with:
+   * Abstract column ID
+   * Registry version
+No values are indexed without registry approval.
+Step 5 — Safety Classification
+Each new abstract column is explicitly classified:
+* Allowed in WHERE
+* Allowed in SELECT
+* Allowed in GROUP BY
+* Aggregation allowed (yes/no)
+* Join participation allowed (yes/no)
+These flags are enforced by the SQL Safety Engine.
+Step 6 — Deployment & Activation
+* Registry version is deployed
+* New version becomes active for new queries only
+* In-flight or cached queries continue using their original version
+Activation is explicit and reversible.
+7.5 Handling Breaking or Destructive DDL
+Column Rename
+* Physical rename does not affect abstraction
+* Registry mapping updated internally
+* Abstract alias remains stable
+Column Drop
+* Abstract alias is marked DEPRECATED
+* LLM is prevented from generating new queries using it
+* Existing queries fail with a clear error
+Type Change
+* Requires explicit re-approval
+* May require a new abstract alias
+* Old alias may be deprecated
+7.6 LLM Visibility Rules
+The LLM:
+* Only sees currently approved abstract schema
+* Never sees deprecated aliases
+* Never sees physical schema changes directly
+Schema evolution is therefore LLM-transparent but system-controlled.
+7.7 Audit & Compliance
+Every abstraction change is logged with:
+* Who approved it
+* When it was activated
+* Registry version
+* Linked DDL change reference
+This provides:
+* Full lineage from DDL → abstraction → query
+* Compliance-grade auditability
+7.8 Failure Modes (Intentional)
+The system prefers failure over ambiguity:
+* New DB columns are invisible by default
+* Missing abstraction causes query failure
+* No implicit schema discovery
+This is a security feature.
+________________
+
+
+8. Security Model
+Trust Boundaries
+* LLM: untrusted
+* Translator: trusted
+* Registry: trusted
+* Database: final authority
+Defense-in-Depth
+* Semantic abstraction
+* Deterministic translation
+* AST validation
+* Parameterized queries
+* DB roles and permissions
+* Timeouts and limits
+* Auditing
+________________
+
+
+9. Multi-Tenancy
+* Isolation strategy is explicit and enforced
+* Registry, vector store, and execution context are per-tenant
+* Database-level isolation is preferred for high-security tenants
+________________
+
+
+10. Observability & Audit
+Every executed query must generate an audit record:
+* User ID
+* Tenant ID
+* Timestamp
+* Abstract SQL
+* Mapping version
+* Final SQL hash
+* Execution metadata
+Logs are append-only and tamper-resistant.
+________________
+
+
+11. Testing Strategy
+Mandatory test layers:
+* Unit tests for registry mappings
+* Unit tests for AST translation
+* Fuzz tests for malformed SQL
+* Integration tests with mocked LLM output
+* Golden tests: NL → Abstract SQL → Real SQL
+* Security tests against catalog access and privilege escalation
+________________
+
+
+12. Operational Requirements
+* Rate limiting per user/tenant
+* Circuit breakers for LLM providers
+* Provider failover
+* CI/CD with gated registry changes
+* Kill switch to disable LLM execution
+* Infrastructure as code
+________________
+
+
+13. Acceptance Criteria (Architecture Complete When)
+* LLM never receives real identifiers
+* Translator is deterministic and fully tested
+* Only allow-listed SQL can execute
+* DB enforces read-only access
+* Ambiguous semantic matches fail safely
+* All queries are auditable
+* Dev and prod LLMs are interchangeable
+________________
+
+
+14. Summary
+This architecture treats the LLM as assistive, not authoritative.
+Security, correctness, and determinism are enforced outside the model, with the database as the ultimate gatekeeper.
+The system is suitable for:
+* Production
+* High-security environments
+* Enterprise and regulated use cases

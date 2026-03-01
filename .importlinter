@@ -1,0 +1,80 @@
+[importlinter]
+root_package = app
+
+
+# ------------------------------------------------------------------
+# Compiler boundaries
+# ------------------------------------------------------------------
+
+[importlinter:contract:compiler_no_execution]
+name = Compiler must not import Execution
+type = forbidden
+source_modules =
+    app.compiler
+forbidden_modules =
+    app.execution
+
+
+[importlinter:contract:compiler_steward_root_only]
+name = Compiler may only import Steward root
+type = forbidden
+source_modules =
+    app.compiler
+forbidden_modules =
+    app.steward.models
+    app.steward.interfaces
+    app.steward.workflow
+    app.steward.internal
+ignore_imports =
+    app.steward -> app.steward.models
+    app.steward -> app.steward.interfaces
+
+
+# ------------------------------------------------------------------
+# Execution boundaries
+# ------------------------------------------------------------------
+
+[importlinter:contract:execution_no_steward]
+name = Execution must not import Steward
+type = forbidden
+source_modules =
+    app.execution
+forbidden_modules =
+    app.steward
+ignore_imports =
+    app.compiler.interfaces -> app.steward
+    app.compiler.models -> app.steward
+
+
+[importlinter:contract:execution_compiler_root_only]
+name = Execution may only import Compiler root
+type = forbidden
+source_modules =
+    app.execution
+forbidden_modules =
+    app.compiler.models
+    app.compiler.interfaces
+    app.compiler.translator
+    app.compiler.parser
+    app.compiler.prompting
+    app.compiler.gateway
+    app.compiler.filter
+    app.compiler.safety
+ignore_imports =
+    app.compiler -> app.compiler.models
+    app.compiler -> app.compiler.interfaces
+    app.compiler.interfaces -> app.compiler.models
+
+
+# ------------------------------------------------------------------
+# Audit boundaries
+# ------------------------------------------------------------------
+
+[importlinter:contract:audit_no_compiler_or_execution]
+name = Audit must not import Compiler or Execution
+type = forbidden
+source_modules =
+    app.audit
+forbidden_modules =
+    app.compiler
+    app.execution

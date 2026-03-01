@@ -1,0 +1,72 @@
+from app.compiler import AbstractQuery
+from app.compiler.parser import SQLParser
+from app.compiler.safety import SafetyEngine
+from app.compiler.translator import DeterministicTranslator
+from app.steward import (
+    AbstractIdentifierDef,
+    RegistrySchema,
+    SafetyClassification,
+)
+
+
+def test_deterministic_translation() -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+
+    # 1. Provide the physical mappings in the schema
+    schema = RegistrySchema(
+        version="v1.0.0",
+        identifiers=[
+            AbstractIdentifierDef(
+                alias="table1",
+                description="The Orders Table",
+                safety=SafetyClassification(allowed_in_select=True),
+                physical_target="public.orders_v2"
+            ),
+            AbstractIdentifierDef(
+                alias="col1",
+                description="Total Sales",
+                safety=SafetyClassification(allowed_in_select=True),
+                physical_target="net_total"
+            ),
+            AbstractIdentifierDef(
+                alias="col2",
+                description="Status",
+                safety=SafetyClassification(allowed_in_where=True),
+                physical_target="order_status"
+            )
+        ]
+    )
+
+    # 2. Parse and Validate the Abstract Query (LLM Output)
+    ast = parser.parse(
+        AbstractQuery(sql="SELECT col1 FROM table1 WHERE col2 = 'Shipped'")
+    )
+    validated = safety.validate(ast)
+
+    # 3. Translate
+    executable = translator.translate(
+        validated, schema,
+        abstract_query_hash="mock_hash_123"
+    )
+
+    # ExecutableSQL should map aliases to physical targets
+    assert "public.orders_v2" in executable.sql
+    assert "net_total" in executable.sql
+    assert "order_status" in executable.sql
+
+    # Abstract names should be completely gone
+    assert "table1" not in executable.sql
+    assert "col1" not in executable.sql
+    assert "col2" not in executable.sql
+
+    # Value should be parameterized
+    assert "'Shipped'" not in executable.sql
+    assert len(executable.parameters) == 1
+
+    # Ensure copy-on-write preserved original AST
+    # The original AST should still format back to the abstract names
+    original_sql = validated.tree.sql(dialect="postgres")
+    assert "table1" in original_sql
+    assert "public.orders_v2" not in original_sql
