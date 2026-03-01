@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from app.api.models import ErrorResponse
 from app.api.router import api_router
 from app.audit.logger import JSONAuditLogger
-from app.compiler.engine import CompilerEngine
+from app.compiler.engine import CompilerEngine, RAGUncertaintyError
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
 from app.compiler.parser import SQLParser
@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
                 alias="users",
                 description="User details",
                 safety=SafetyClassification(allowed_in_select=True),
-                physical_target="auth.users"
+                physical_target="users"
             )
         ]
     )
@@ -39,6 +39,14 @@ async def lifespan(app: FastAPI):
 
     # Initialize Execution Engine (Mock for simple testing, asyncpg in prod)
     app.state.executor = ExecutionEngine(connection_string="sqlite+aiosqlite:///:memory:")
+
+    # Pre-seed the SQLite in-memory database with test data
+    from sqlalchemy import text
+    async with app.state.executor.engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE users (id INTEGER, name TEXT, active BOOLEAN)"))
+        await conn.execute(text("INSERT INTO users VALUES (1, 'Alice', 1)"))
+        await conn.execute(text("INSERT INTO users VALUES (2, 'Bob', 1)"))
+        await conn.execute(text("INSERT INTO users VALUES (3, 'Charlie', 0)"))
 
     # Initialize Audit Engine
     app.state.auditor = JSONAuditLogger() # Writes natively to console output
@@ -52,6 +60,15 @@ async def lifespan(app: FastAPI):
         safety_engine=SafetyEngine(),
         translator=DeterministicTranslator()
     )
+
+    # Initialize RAG Store
+    from app.rag.models import CategoricalValue
+    from app.rag.store import InMemoryVectorStore
+    vector_store = InMemoryVectorStore()
+    vector_store.index_value(CategoricalValue(value="Alice", abstract_column="users", tenant_id="default_tenant"))
+    vector_store.index_value(CategoricalValue(value="Bob", abstract_column="users", tenant_id="default_tenant"))
+    app.state.vector_store = vector_store
+    app.state.compiler.set_vector_store(vector_store)
 
     logger.info("Aegis Semantic Proxy Initialized.")
     yield
@@ -80,6 +97,15 @@ async def translation_error_handler(request: Request, exc: TranslationError):
     error_resp = ErrorResponse(
         code=400,
         message=f"Translation Error: {str(exc)}",
+        request_id=None
+    )
+    return JSONResponse(status_code=400, content=error_resp.model_dump())
+
+@app.exception_handler(RAGUncertaintyError)
+async def rag_error_handler(request: Request, exc: RAGUncertaintyError):
+    error_resp = ErrorResponse(
+        code=400,
+        message=str(exc),
         request_id=None
     )
     return JSONResponse(status_code=400, content=error_resp.model_dump())

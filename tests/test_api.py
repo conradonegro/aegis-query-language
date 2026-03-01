@@ -35,7 +35,7 @@ def test_api_generate_boundary():
     app.dependency_overrides[get_executor] = override_executor
     
     payload = {
-        "intent": "Get all users in the system",
+        "intent": "Get Alice in the system",
         "schema_hints": []
     }
     
@@ -105,7 +105,7 @@ def test_api_execute_pipeline():
     app.dependency_overrides[get_executor] = override_executor
     
     payload = {
-        "intent": "Get all users in the system",
+        "intent": "Get Alice in the system",
         "schema_hints": []
     }
     

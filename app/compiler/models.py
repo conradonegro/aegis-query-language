@@ -19,6 +19,7 @@ class FilteredSchema(BaseModel):
 
 class PromptHints(BaseModel):
     column_hints: list[str]
+    rag_provenance: dict[str, Any] | None = None
 
 class PromptEnvelope(BaseModel):
     system_instruction: str

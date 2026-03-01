@@ -15,7 +15,13 @@ from app.compiler.models import (
     PromptHints,
     UserIntent,
 )
+from app.rag.interfaces import VectorStoreProtocol
+from app.rag.models import RAGOutcome
 from app.steward.models import RegistrySchema
+
+class RAGUncertaintyError(Exception):
+    """Raised when RAG returns an ambiguous match or no match and strict fallback is disabled."""
+    pass
 
 
 class CompilerEngine:
@@ -37,6 +43,10 @@ class CompilerEngine:
         self.parser = parser
         self.safety_engine = safety_engine
         self.translator = translator
+        self.vector_store: VectorStoreProtocol | None = None
+
+    def set_vector_store(self, store: VectorStoreProtocol) -> None:
+        self.vector_store = store
 
     async def compile(
         self, intent: UserIntent, schema: RegistrySchema, hints: PromptHints
@@ -49,6 +59,23 @@ class CompilerEngine:
         
         # 1. Scope Schema
         filtered_schema = self.schema_filter.filter_schema(intent, schema)
+        
+        # 1.5 Evaluate RAG 
+        if self.vector_store:
+            rag_result = self.vector_store.search(intent.natural_language_query, tenant_id="default_tenant", limit=5)
+            
+            if rag_result.outcome in (RAGOutcome.NO_MATCH, RAGOutcome.AMBIGUOUS_MATCH):
+                raise RAGUncertaintyError(f"RAG lookup failed with strict policy outcome: {rag_result.outcome.value}. Reason: {rag_result.reason}")
+                
+            if rag_result.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH and rag_result.match:
+                match_val = rag_result.match.categorical_value
+                hints.column_hints.append(f"Always consider value '{match_val.value}' maps to abstract column '{match_val.abstract_column}'")
+                hints.rag_provenance = {
+                    "rag_outcome": rag_result.outcome.value,
+                    "rag_matched_value": match_val.value,
+                    "rag_abstract_column": match_val.abstract_column,
+                    "rag_similarity_score": rag_result.match.similarity_score
+                }
         
         # 2. Build Prompt Envelope
         prompt_envelope = self.prompt_builder.build_prompt(intent, filtered_schema, hints)
