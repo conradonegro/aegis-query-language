@@ -74,7 +74,7 @@ async def test_compiler_engine_success(compiler_engine: CompilerEngine, mock_reg
 @pytest.fixture
 def rag_compiler_engine(compiler_engine: CompilerEngine) -> CompilerEngine:
     store = InMemoryVectorStore()
-    store.index_value(CategoricalValue(value="Alice", abstract_column="users", tenant_id="default_tenant"))
+    store.index_value(CategoricalValue(value="Alice", abstract_column="name", tenant_id="default_tenant"))
     compiler_engine.set_vector_store(store)
     return compiler_engine
 
@@ -106,7 +106,7 @@ async def test_compiler_engine_rag_no_match(rag_compiler_engine: CompilerEngine,
 @pytest.mark.asyncio
 async def test_compiler_engine_rag_ambiguous_match(rag_compiler_engine: CompilerEngine, mock_registry: RegistrySchema) -> None:
     # Add an ambiguous item
-    rag_compiler_engine.vector_store.index_value(CategoricalValue(value="Alice Cooper", abstract_column="users", tenant_id="default_tenant"))
+    rag_compiler_engine.vector_store.index_value(CategoricalValue(value="Alice Cooper", abstract_column="name", tenant_id="default_tenant"))
     
     intent = UserIntent(natural_language_query="Show me Alice or Alice Cooper")
     hints = PromptHints(column_hints=[])

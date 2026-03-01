@@ -49,7 +49,7 @@ class CompilerEngine:
         self.vector_store = store
 
     async def compile(
-        self, intent: UserIntent, schema: RegistrySchema, hints: PromptHints
+        self, intent: UserIntent, schema: RegistrySchema, hints: PromptHints, explain: bool = False
     ) -> ExecutableQuery:
         """
         Executes the full pipeline.
@@ -96,5 +96,41 @@ class CompilerEngine:
         # Decorate with metadata 
         executable.query_id = str(uuid.uuid4())
         executable.compilation_latency_ms = (time.perf_counter() - start) * 1000.0
+        
+        # Build Explainability Traces if requested
+        if explain:
+            # Reconstruct RAG context explicitly 
+            rag_trace = {"outcome": "NOT_EVALUATED", "matches": [], "scores": [], "reason": "No vector store or execution required"}
+            if self.vector_store:
+                if hints.rag_provenance:
+                    rag_trace = {
+                        "outcome": hints.rag_provenance["rag_outcome"],
+                        "matches": [hints.rag_provenance["rag_matched_value"]],
+                        "scores": [hints.rag_provenance.get("rag_similarity_score", 1.0)],
+                        "reason": "Single High Confidence Match Injected"
+                    }
+
+            executable.explainability = {
+                "rag": rag_trace,
+                "schema_filter": {
+                    "included_aliases": [i.alias for i in filtered_schema.active_identifiers],
+                    "excluded_aliases": list(filtered_schema.omitted_identifiers.keys()),
+                    "reasons": list(filtered_schema.omitted_identifiers.values())
+                },
+                "prompt": {
+                    "system_prompt_redacted": True,
+                    "user_prompt": prompt_envelope.user_prompt
+                },
+                "llm": {
+                    "provider": llm_result.model_id,
+                    "model": llm_result.model_id,
+                    "latency_ms": llm_result.latency_ms
+                },
+                "translation": {
+                    "llm_abstract_query": abstract_query.sql,
+                    "parameterized_sql": executable.sql,
+                    "parameters": executable.parameters
+                }
+            }
         
         return executable

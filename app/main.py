@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -10,6 +11,7 @@ from app.audit.logger import JSONAuditLogger
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
+from app.compiler.ollama import OllamaLLMGateway
 from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
 from app.compiler.safety import SafetyEngine, SafetyViolationError
@@ -30,8 +32,20 @@ async def lifespan(app: FastAPI):
             AbstractIdentifierDef(
                 alias="users",
                 description="User details",
-                safety=SafetyClassification(allowed_in_select=True),
+                safety=SafetyClassification(allowed_in_select=True, allowed_in_where=True),
                 physical_target="users"
+            ),
+            AbstractIdentifierDef(
+                alias="name",
+                description="The first name of the user",
+                safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
+                physical_target="name"
+            ),
+            AbstractIdentifierDef(
+                alias="id",
+                description="The integer primary key of the user",
+                safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
+                physical_target="id"
             )
         ]
     )
@@ -51,11 +65,18 @@ async def lifespan(app: FastAPI):
     # Initialize Audit Engine
     app.state.auditor = JSONAuditLogger() # Writes natively to console output
 
+    # Initialize LLM Gateway based on environment
+    provider = os.getenv("LLM_PROVIDER", "mock").lower()
+    if provider == "ollama":
+        llm_gateway = OllamaLLMGateway()
+    else:
+        llm_gateway = MockLLMGateway(mock_response_sql="SELECT count(*) FROM users")
+
     # Initialize Compiler Pipeline Facade
     app.state.compiler = CompilerEngine(
         schema_filter=DeterministicSchemaFilter(),
         prompt_builder=PromptBuilder(),
-        llm_gateway=MockLLMGateway(mock_response_sql="SELECT count(*) FROM users"),
+        llm_gateway=llm_gateway,
         parser=SQLParser(),
         safety_engine=SafetyEngine(),
         translator=DeterministicTranslator()
@@ -65,8 +86,8 @@ async def lifespan(app: FastAPI):
     from app.rag.models import CategoricalValue
     from app.rag.store import InMemoryVectorStore
     vector_store = InMemoryVectorStore()
-    vector_store.index_value(CategoricalValue(value="Alice", abstract_column="users", tenant_id="default_tenant"))
-    vector_store.index_value(CategoricalValue(value="Bob", abstract_column="users", tenant_id="default_tenant"))
+    vector_store.index_value(CategoricalValue(value="Alice", abstract_column="name", tenant_id="default_tenant"))
+    vector_store.index_value(CategoricalValue(value="Bob", abstract_column="name", tenant_id="default_tenant"))
     app.state.vector_store = vector_store
     app.state.compiler.set_vector_store(vector_store)
 

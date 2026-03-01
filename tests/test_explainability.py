@@ -1,0 +1,88 @@
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.api.router import get_executor
+from app.execution.models import QueryResult
+
+
+class SpyExecutionEngine:
+    def __init__(self):
+        self.call_count = 0
+
+    async def execute(self, query, *, context):
+        self.call_count += 1
+        return QueryResult(
+            columns=["count"],
+            rows=[{"count": 1}],
+            metadata={"row_limit_applied": False, "registry_version": "1.0.0"}
+        )
+
+def test_explainability_absence_by_default():
+    """Assert explain=false (or missing) explicitly returns no explainability data."""
+    spy_engine = SpyExecutionEngine()
+    app.dependency_overrides[get_executor] = lambda: spy_engine
+    
+    payload = {"intent": "Get Alice in the system"}
+    
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.post("/api/v1/query/generate", json=payload)
+            
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Explicit test boundary mapping
+        assert "explainability" in data
+        assert data["explainability"] is None
+        
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_explainability_population_when_requested():
+    """Submit explain=true, verify payload populates securely with redactions."""
+    spy_engine = SpyExecutionEngine()
+    app.dependency_overrides[get_executor] = lambda: spy_engine
+    
+    payload = {
+        "intent": "Get Alice from the users table",
+        "explain": True
+    }
+    
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.post("/api/v1/query/execute", json=payload)
+            
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Test boundary mappings
+        assert "explainability" in data
+        explain = data["explainability"]
+        assert explain is not None
+        
+        # Vector Store Traces
+        assert "rag" in explain
+        assert explain["rag"]["outcome"] == "SINGLE_HIGH_CONFIDENCE_MATCH"
+        assert "Alice" in explain["rag"]["matches"]
+        
+        # Schema Traces
+        assert "schema_filter" in explain
+        assert "users" in explain["schema_filter"]["included_aliases"]
+        
+        # Prompt Traces (Security checks)
+        assert "prompt" in explain
+        assert explain["prompt"]["system_prompt_redacted"] is True
+        assert "user_prompt" in explain["prompt"]
+        
+        # LLM Traces
+        assert "llm" in explain
+        assert "mock-aegis-v1" in explain["llm"]["provider"]
+        
+        # Translation Traces
+        assert "translation" in explain
+        assert "SELECT" in explain["translation"]["llm_abstract_query"]
+        
+    finally:
+        app.dependency_overrides.clear()

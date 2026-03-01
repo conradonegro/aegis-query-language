@@ -57,3 +57,4 @@ class ExecutableQuery(BaseModel):
     row_limit_applied: bool = False
     query_id: str | None = None
     compilation_latency_ms: float | None = None
+    explainability: dict[str, Any] | None = None

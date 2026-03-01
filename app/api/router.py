@@ -44,14 +44,16 @@ async def generate_query(
     executable = await compiler.compile(
         schema=registry,
         intent=intent,
-        hints=hints
+        hints=hints,
+        explain=payload.explain
     )
     
     return QueryGenerateResponse(
         query_id=executable.query_id or "",
         sql=executable.sql,
         parameters=executable.parameters,
-        latency_ms=executable.compilation_latency_ms or 0.0
+        latency_ms=executable.compilation_latency_ms or 0.0,
+        explainability=executable.explainability
     )
 
 
@@ -75,7 +77,8 @@ async def execute_query(
     executable = await compiler.compile(
         schema=registry,
         intent=intent,
-        hints=hints
+        hints=hints,
+        explain=payload.explain
     )
     
     # Execute
@@ -112,5 +115,6 @@ async def execute_query(
         query_id=executable.query_id or "",
         results=result.rows,
         row_count=len(result.rows),
-        execution_latency_ms=0.0
+        execution_latency_ms=0.0,
+        explainability=executable.explainability
     )

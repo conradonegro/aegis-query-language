@@ -36,6 +36,7 @@ class DeterministicTranslator:
         param_counter = 1
 
         # 3. Walk and mutate the COPIED tree
+        literals_to_replace = []
         for node in tree.walk():
             # Extract specific node instance
             node_inst = node[0] if isinstance(node, tuple) else node
@@ -48,33 +49,37 @@ class DeterministicTranslator:
                 if abstract_name in alias_to_physical:
                     node_inst.set("this", alias_to_physical[abstract_name])
 
-            # B. Parameterize Literals
+            # B. Collect Literals
             elif isinstance(node_inst, exp.Literal):
-                # We replace string/numeric literals with query parameters
-                param_name = f"p{param_counter}"
+                literals_to_replace.append(node_inst)
+                
+        # C. Parameterize Literals Safely
+        for node_inst in literals_to_replace:
+            # We replace string/numeric literals with query parameters
+            param_name = f"p{param_counter}"
 
-                # Keep original value for the param dictionary
-                if node_inst.is_string:
-                    parameters[param_name] = node_inst.this
-                elif node_inst.is_number:
-                    # simplistic number parsing
-                    parameters[param_name] = (
-                        float(node_inst.this)
-                        if "." in node_inst.this
-                        else int(node_inst.this)
-                    )
-                else:
-                    parameters[param_name] = node_inst.this
+            # Keep original value for the param dictionary
+            if node_inst.is_string:
+                parameters[param_name] = node_inst.this
+            elif node_inst.is_number:
+                # simplistic number parsing
+                parameters[param_name] = (
+                    float(node_inst.this)
+                    if "." in node_inst.this
+                    else int(node_inst.this)
+                )
+            else:
+                parameters[param_name] = node_inst.this
 
-                # Replace the literal node in the AST with a positional
-                # or named parameter depending on dialect
-                # For postgres, standard asyncpg / sqlalchemy parameters
-                # are either $1 or :p1
-                # sqlglot Parameter node
-                param_node = exp.Parameter(this=exp.var(param_name))
-                node_inst.replace(param_node)
+            # Replace the literal node in the AST with a positional
+            # or named parameter depending on dialect
+            # For postgres, standard asyncpg / sqlalchemy parameters
+            # are either $1 or :p1
+            # sqlglot Parameter node
+            param_node = exp.Parameter(this=exp.var(param_name))
+            node_inst.replace(param_node)
 
-                param_counter += 1
+            param_counter += 1
 
         # Conditionally apply limits if no aggregation and no group by
         is_aggregated = any(tree.find_all(exp.AggFunc))
@@ -90,8 +95,10 @@ class DeterministicTranslator:
         final_sql = tree.sql(dialect="postgres")
 
         # sqlglot formatting quirk: parameters like :p1 might render
-        # depending on dialect.
-        # We ensure it replaces with a simple placeholder format.
+        # depending on dialect ($p1 in postgres). 
+        # SQLAlchemy requires :p1 for text() binding universally.
+        import re
+        final_sql = re.sub(r'\$(p\d+)\b', r':\1', final_sql)
 
         return ExecutableQuery(
             sql=final_sql,
