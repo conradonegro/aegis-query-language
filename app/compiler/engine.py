@@ -14,6 +14,7 @@ from app.compiler.models import (
     ExecutableQuery,
     PromptHints,
     UserIntent,
+    RAGIncludedColumns,
 )
 from app.rag.interfaces import VectorStoreProtocol
 from app.rag.models import RAGOutcome
@@ -66,15 +67,9 @@ class CompilerEngine:
         }
 
         try:
-            # 1. Scope Schema
-            filtered_schema = self.schema_filter.filter_schema(intent, schema)
-            explain_context["schema_filter"] = {
-                "included_aliases": [i.alias for i in filtered_schema.active_identifiers],
-                "excluded_aliases": list(filtered_schema.omitted_identifiers.keys()),
-                "reasons": list(filtered_schema.omitted_identifiers.values())
-            }
+            included_cols = RAGIncludedColumns(columns=[])
             
-            # 1.5 Evaluate RAG 
+            # 1. Evaluate RAG First
             if self.vector_store:
                 rag_result = self.vector_store.search(intent.natural_language_query, tenant_id="default_tenant", limit=5)
                 
@@ -87,6 +82,7 @@ class CompilerEngine:
                         "rag_abstract_column": match_val.abstract_column,
                         "rag_similarity_score": rag_result.match.similarity_score
                     }
+                    included_cols.columns.append(match_val.abstract_column)
                 else:
                     hints.rag_provenance = {
                         "rag_outcome": rag_result.outcome.value,
@@ -100,6 +96,14 @@ class CompilerEngine:
                         "scores": [hints.rag_provenance["rag_similarity_score"]] if "rag_similarity_score" in hints.rag_provenance else [],
                         "reason": hints.rag_provenance.get("rag_reason", "Single High Confidence Match Injected")
                     }
+
+            # 2. Scope Schema
+            filtered_schema = self.schema_filter.filter_schema(intent, schema, included_columns=included_cols)
+            explain_context["schema_filter"] = {
+                "included_aliases": [f"{t.alias}.{c.alias}" for t in filtered_schema.tables for c in t.columns],
+                "excluded_aliases": list(filtered_schema.omitted_columns.keys()),
+                "reasons": list(filtered_schema.omitted_columns.values())
+            }
             
             # 2. Build Prompt Envelope
             prompt_envelope = self.prompt_builder.build_prompt(intent, filtered_schema, hints)
@@ -129,6 +133,7 @@ class CompilerEngine:
             executable = self.translator.translate(validated_ast, schema)
             explain_context["translation"]["parameterized_sql"] = executable.sql
             explain_context["translation"]["parameters"] = executable.parameters
+            explain_context["translation_repairs"] = [r.model_dump() for r in executable.translation_repairs]
             
             # Decorate with metadata 
             executable.query_id = str(uuid.uuid4())

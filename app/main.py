@@ -18,7 +18,7 @@ from app.compiler.safety import SafetyEngine, SafetyViolationError
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.compiler.ollama import OllamaLLMGateway, LLMGenerationError
 from app.execution.executor import ExecutionEngine
-from app.steward import AbstractIdentifierDef, RegistrySchema, SafetyClassification
+from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef, RegistrySchema, SafetyClassification
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,25 +29,64 @@ async def lifespan(app: FastAPI):
     # Setup test schema for now
     schema = RegistrySchema(
         version="1.0.0",
-        identifiers=[
-            AbstractIdentifierDef(
+        tables=[
+            AbstractTableDef(
                 alias="users",
-                identifier_type="table",
                 description="User details",
-                safety=SafetyClassification(allowed_in_select=True, allowed_in_where=True),
-                physical_target="users"
+                physical_target="users",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id",
+                        description="The integer primary key of the user",
+                        safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
+                        physical_target="id"
+                    ),
+                    AbstractColumnDef(
+                        alias="name",
+                        description="The first name of the user",
+                        safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
+                        physical_target="name"
+                    ),
+                    AbstractColumnDef(
+                        alias="created_at",
+                        description="Timestamp of creation",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="created_at"
+                    )
+                ]
             ),
-            AbstractIdentifierDef(
-                alias="name",
-                description="The first name of the user",
-                safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
-                physical_target="name"
-            ),
-            AbstractIdentifierDef(
-                alias="id",
-                description="The integer primary key of the user",
-                safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
-                physical_target="id"
+            AbstractTableDef(
+                alias="orders",
+                description="Customer orders",
+                physical_target="orders",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id",
+                        description="Primary key for orders",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="id"
+                    ),
+                    AbstractColumnDef(
+                        alias="user_id",
+                        description="Foreign key to users.id",
+                        safety=SafetyClassification(allowed_in_where=True, join_participation_allowed=True),
+                        physical_target="user_id"
+                    ),
+                    AbstractColumnDef(
+                        alias="total_amount",
+                        description="Total price of the order",
+                        safety=SafetyClassification(allowed_in_select=True, aggregation_allowed=True),
+                        physical_target="total_amount"
+                    )
+                ]
+            )
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="users",
+                source_column="id",
+                target_table="orders",
+                target_column="user_id"
             )
         ]
     )
@@ -56,13 +95,17 @@ async def lifespan(app: FastAPI):
     # Initialize Execution Engine (Mock for simple testing, asyncpg in prod)
     app.state.executor = ExecutionEngine(connection_string="sqlite+aiosqlite:///:memory:")
 
-    # Pre-seed the SQLite in-memory database with test data
     from sqlalchemy import text
     async with app.state.executor.engine.begin() as conn:
-        await conn.execute(text("CREATE TABLE users (id INTEGER, name TEXT, active BOOLEAN)"))
-        await conn.execute(text("INSERT INTO users VALUES (1, 'Alice', 1)"))
-        await conn.execute(text("INSERT INTO users VALUES (2, 'Bob', 1)"))
-        await conn.execute(text("INSERT INTO users VALUES (3, 'Charlie', 0)"))
+        await conn.execute(text("CREATE TABLE users (id INTEGER, name TEXT, active BOOLEAN, created_at TEXT)"))
+        await conn.execute(text("INSERT INTO users VALUES (1, 'Alice', 1, '2025-01-01')"))
+        await conn.execute(text("INSERT INTO users VALUES (2, 'Bob', 1, '2025-01-02')"))
+        await conn.execute(text("INSERT INTO users VALUES (3, 'Charlie', 0, '2025-01-03')"))
+        
+        await conn.execute(text("CREATE TABLE orders (id INTEGER, user_id INTEGER, total_amount REAL)"))
+        await conn.execute(text("INSERT INTO orders VALUES (101, 1, 99.99)"))
+        await conn.execute(text("INSERT INTO orders VALUES (102, 1, 150.00)"))
+        await conn.execute(text("INSERT INTO orders VALUES (103, 2, 45.50)"))
 
     # Initialize Audit Engine
     app.state.auditor = JSONAuditLogger() # Writes natively to console output
@@ -88,8 +131,8 @@ async def lifespan(app: FastAPI):
     from app.rag.models import CategoricalValue
     from app.rag.store import InMemoryVectorStore
     vector_store = InMemoryVectorStore()
-    vector_store.index_value(CategoricalValue(value="Alice", abstract_column="name", tenant_id="default_tenant"))
-    vector_store.index_value(CategoricalValue(value="Bob", abstract_column="name", tenant_id="default_tenant"))
+    vector_store.index_value(CategoricalValue(value="Alice", abstract_column="users.name", tenant_id="default_tenant"))
+    vector_store.index_value(CategoricalValue(value="Bob", abstract_column="users.name", tenant_id="default_tenant"))
     app.state.vector_store = vector_store
     app.state.compiler.set_vector_store(vector_store)
 

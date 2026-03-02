@@ -4,21 +4,24 @@ import pytest
 from app.compiler import FilteredSchema, PromptEnvelope, PromptHints, UserIntent
 from app.compiler.gateway import MockLLMGateway
 from app.compiler.prompting import PromptBuilder
-from app.steward import AbstractIdentifierDef, SafetyClassification
+from app.steward import AbstractTableDef, AbstractColumnDef, SafetyClassification
 
 
 def test_prompt_builder() -> None:
     schema = FilteredSchema(
         version="v1.0.0",
-        active_identifiers=[
-            AbstractIdentifierDef(
+        tables=[
+            AbstractTableDef(
                 alias="users",
                 description="User accounts",
-                safety=SafetyClassification(allowed_in_select=True),
-                physical_target="auth.users"
+                physical_target="auth.users",
+                columns=[
+                    AbstractColumnDef(alias="id", description="ID", safety=SafetyClassification(allowed_in_select=True), physical_target="auth.users.id")
+                ]
             )
         ],
-        omitted_identifiers={}
+        relationships=[],
+        omitted_columns={}
     )
     intent = UserIntent(natural_language_query="Count all users")
     hints = PromptHints(column_hints=["Always consider active = true"])

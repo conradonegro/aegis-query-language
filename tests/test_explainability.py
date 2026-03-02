@@ -69,12 +69,13 @@ def test_explainability_population_when_requested():
         
         # Schema Traces
         assert "schema_filter" in explain
-        assert "users" in explain["schema_filter"]["included_aliases"]
+        assert "users.name" in explain["schema_filter"]["included_aliases"]
         
-        # Prompt Traces (Security checks)
+        # Prompt Traces (Security/UI Payload)
         assert "prompt" in explain
-        assert explain["prompt"]["system_prompt_redacted"] is True
-        assert "user_prompt" in explain["prompt"]
+        assert explain["prompt"]["system_prompt_redacted"] is False
+        assert "raw_system" in explain["prompt"]
+        assert "raw_user" in explain["prompt"]
         
         # LLM Traces
         assert "llm" in explain

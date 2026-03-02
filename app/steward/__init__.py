@@ -1,7 +1,9 @@
 # Public API for app.steward
 from .models import (
     RegistrySchema,
-    AbstractIdentifierDef,
+    AbstractTableDef,
+    AbstractColumnDef,
+    AbstractRelationshipDef,
     SafetyClassification
 )
 from .interfaces import (
@@ -11,7 +13,9 @@ from .interfaces import (
 
 __all__ = [
     "RegistrySchema",
-    "AbstractIdentifierDef",
+    "AbstractTableDef",
+    "AbstractColumnDef",
+    "AbstractRelationshipDef",
     "SafetyClassification",
     "SchemaRegistry",
     "DDLWatcher"

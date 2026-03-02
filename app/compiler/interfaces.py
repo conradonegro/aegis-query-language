@@ -11,6 +11,7 @@ from app.compiler.models import (
     UserIntent,
     ValidatedAST,
     ValueMatchResult,
+    RAGIncludedColumns,
 )
 from app.steward import RegistrySchema
 
@@ -21,8 +22,15 @@ class ValueVectorStoreProtocol(Protocol):
 
 class SchemaFilterProtocol(Protocol):
     def filter_schema(
-        self, intent: UserIntent, schema: RegistrySchema
+        self, intent: UserIntent, schema: RegistrySchema, included_columns: RAGIncludedColumns | None = None
     ) -> FilteredSchema:
+        """
+        Filters the schema based on intent mapping.
+        
+        INVARIANT: `included_columns` MUST ONLY be populated by trusted internal 
+        RAG match resolutions. User hints or external API payloads must NEVER be 
+        allowed to arbitrarily bypass token overlap filtering rules. 
+        """
         ...
 
 class PromptBuilderProtocol(Protocol):

@@ -8,22 +8,31 @@ class SafetyClassification(BaseModel):
     aggregation_allowed: bool = False
     join_participation_allowed: bool = False
 
-class AbstractIdentifierDef(BaseModel):
-    """Safe, abstract representation of a schema element.
-    Includes mapped target for translation but NEVER leaked to LLM.
-    """
+class AbstractColumnDef(BaseModel):
     alias: str
-    identifier_type: str = "column" # e.g. 'table', 'column', 'view'
     description: str
     safety: SafetyClassification
     physical_target: str
+
+class AbstractTableDef(BaseModel):
+    alias: str
+    description: str
+    columns: list[AbstractColumnDef]
+    physical_target: str
+
+class AbstractRelationshipDef(BaseModel):
+    source_table: str
+    source_column: str
+    target_table: str
+    target_column: str
 
 class RegistrySchema(BaseModel):
     """Immutable snapshot of an active schema.
     The ONLY cross-context schema artifact.
     """
     version: str
-    identifiers: list[AbstractIdentifierDef]
+    tables: list[AbstractTableDef]
+    relationships: list[AbstractRelationshipDef]
 
 class RegistryEntry(BaseModel):
     """Internal Steward mapping from abstract to physical. MUST remain internal."""

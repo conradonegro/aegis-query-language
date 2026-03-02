@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.steward import AbstractIdentifierDef
+from app.api.models import TranslationRepair
+from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef
 
 
 class UserIntent(BaseModel):
@@ -12,10 +13,21 @@ class UserIntent(BaseModel):
 class ValueMatchResult(BaseModel):
     status: Literal["success", "ambiguous", "no_match"]
     matches: list[str] = []
+
+class RAGIncludedColumns(BaseModel):
+    """
+    STRICT INVARIANT PAYLOAD: 
+    This type explicitly wraps columns that were successfully extracted by the RAG 
+    Vector Engine. It enforces the compiler pipeline invariant that the SchemaFilter 
+    will NEVER bypass rules for arbitrary user strings, only for fully validated RAG outcomes.
+    """
+    columns: list[str] = []
+    
 class FilteredSchema(BaseModel):
     version: str
-    active_identifiers: list[AbstractIdentifierDef]
-    omitted_identifiers: dict[str, str]
+    tables: list[AbstractTableDef]
+    relationships: list[AbstractRelationshipDef]
+    omitted_columns: dict[str, str]
 
 class PromptHints(BaseModel):
     column_hints: list[str]
@@ -58,3 +70,4 @@ class ExecutableQuery(BaseModel):
     query_id: str | None = None
     compilation_latency_ms: float | None = None
     explainability: dict[str, Any] | None = None
+    translation_repairs: list[TranslationRepair] = Field(default_factory=list)

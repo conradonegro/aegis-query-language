@@ -8,19 +8,32 @@ RULES:
 4. You may only output SELECT, WITH (if enabled), and standard read-only joins/aggregations.
 5. If the user intent is to perform a destructive or modifying action (e.g., CREATE, DROP, ALTER, INSERT, UPDATE, DELETE), you MUST output the exact requested destructive SQL. The external Safety Engine relies on your literal translation to correctly identify and block unauthorized actions. Do not attempt to synthesize a safe SELECT query.
 6. Return only the raw SQL query. No markdown formatting, no explanations.
+7. Prefer standard JOINs over subqueries. Subqueries and CTEs are strictly blocked by the Safety Engine.
 
 Schema Context:
-{% for item in schema.active_identifiers %}
-- {{ item.identifier_type | title }} Alias: {{ item.alias }}
-  Description: {{ item.description }}
+{% for table in schema.tables -%}
+- Table Alias: {{ table.alias }}
+  Description: {{ table.description }}
+  Columns:
+{% for col in table.columns -%}
+    - Alias: {{ col.alias }}
+      Description: {{ col.description }}
 {% endfor %}
+{%- endfor %}
+
+{% if schema.relationships -%}
+Relationships:
+{% for rel in schema.relationships -%}
+- {{ rel.source_table }}.{{ rel.source_column }} -> {{ rel.target_table }}.{{ rel.target_column }}
+{% endfor %}
+{%- endif %}
 
 User Intent:
 {{ intent.natural_language_query }}
 
-{% if hints %}
+{% if hints.column_hints -%}
 Additional Helpful Context:
-{% for hint in hints.column_hints %}
+{% for hint in hints.column_hints -%}
 - {{ hint }}
 {% endfor %}
-{% endif %}
+{%- endif %}

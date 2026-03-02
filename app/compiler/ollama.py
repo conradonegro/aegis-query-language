@@ -62,7 +62,7 @@ class OllamaLLMGateway(LLMGatewayProtocol):
                 {"role": "system", "content": f"Schema Context:\n{prompt.schema_context}"},
                 {"role": "user", "content": prompt.user_prompt}
             ],
-            "stream": False
+            "stream": False # We must buffer the entire JSON response to validate it, no partial streams
         }
         
         if prompt.hints:
@@ -72,7 +72,9 @@ class OllamaLLMGateway(LLMGatewayProtocol):
             payload["format"] = self.json_schema
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # We use a 120s timeout by default because Ollama might need to
+            # cold-load the LLM weights into VRAM on the first query.
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
                     f"{self.base_url}/api/chat",
                     json=payload

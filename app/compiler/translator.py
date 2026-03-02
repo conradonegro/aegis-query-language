@@ -2,6 +2,7 @@ from typing import Any
 
 from sqlglot import exp
 
+from app.api.models import TranslationRepair
 from app.compiler.models import ExecutableQuery, ValidatedAST
 from app.steward import RegistrySchema
 
@@ -27,29 +28,146 @@ class DeterministicTranslator:
         tree = ast.tree.copy()
 
         # 2. Build fast lookup map O(1)
-        alias_to_physical: dict[str, str] = {
-            i.alias.lower(): i.physical_target
-            for i in schema.identifiers
-        }
+        alias_to_physical_table: dict[str, str] = {}
+        alias_to_physical_col: dict[str, str] = {}
+        
+        # We need a strict map tracking which tables own which columns to resolve orchestrations
+        column_ownership: dict[str, set[str]] = {}
+        
+        for table in schema.tables:
+            table_alias = table.alias.lower()
+            alias_to_physical_table[table_alias] = table.physical_target
+            for col in table.columns:
+                col_alias = col.alias.lower()
+                alias_to_physical_col[f"{table_alias}.{col_alias}"] = col.physical_target
+                alias_to_physical_col[col_alias] = col.physical_target
+
+                if col_alias not in column_ownership:
+                    column_ownership[col_alias] = set()
+                column_ownership[col_alias].add(table_alias)
 
         parameters: dict[str, Any] = {}
         param_counter = 1
+        repairs: list[TranslationRepair] = []
 
         # 3. Walk and mutate the COPIED tree
         literals_to_replace = []
+        
+        # 3a. Extract dynamic Table Aliases (e.g. `orders AS o` -> `o: orders`)
+        dynamic_table_aliases = {}
+        # Also track the full physical table scope injected into this exact query
+        tables_in_scope = set()
+        
+        # Track every runtime prefix explicitly utilized by each physical table.
+        # This prevents generating "users.name" if "users" was only ever aliased as "u", which violates dialect rules.
+        table_runtime_prefixes: dict[str, set[str]] = {}
+        
+        for table_node in tree.find_all(exp.Table):
+            t_name = table_node.name.lower()
+            tables_in_scope.add(t_name)
+            
+            if t_name not in table_runtime_prefixes:
+                table_runtime_prefixes[t_name] = set()
+                
+            if table_node.alias:
+                dynamic_table_aliases[table_node.alias.lower()] = t_name
+                table_runtime_prefixes[t_name].add(table_node.alias.lower())
+
+        # 3b. Mutate abstract components to physical execution targets
         for node in tree.walk():
             # Extract specific node instance
             node_inst = node[0] if isinstance(node, tuple) else node
 
-            # A. Map Identifiers (Tables, Columns)
-            if isinstance(node_inst, exp.Identifier):
-                abstract_name = node_inst.this.lower()
-                # If this identifier matches an abstract alias,
-                # replace it with physical one
-                if abstract_name in alias_to_physical:
-                    node_inst.set("this", alias_to_physical[abstract_name])
+            # A. Target Tables directly
+            if isinstance(node_inst, exp.Table):
+                t_name = node_inst.name.lower()
+                if t_name in alias_to_physical_table:
+                    node_inst.set("this", exp.Identifier(this=alias_to_physical_table[t_name]))
+                else:
+                    raise TranslationError(f"Table '{t_name}' does not exist in schema context.")
 
-            # B. Collect Literals
+            # B. Target Columns securely by resolving dynamic prefixes against the mapping
+            elif isinstance(node_inst, exp.Column):
+                c_name = node_inst.name.lower()
+                t_prefix = node_inst.table.lower() if node_inst.table else ""
+                
+                if t_prefix:
+                    # Is this prefix formally declared in the query scope?
+                    if t_prefix in dynamic_table_aliases or t_prefix in tables_in_scope:
+                        resolved_table = dynamic_table_aliases.get(t_prefix, t_prefix)
+                        
+                        if resolved_table not in alias_to_physical_table:
+                            raise TranslationError(f"Table '{resolved_table}' does not exist in schema context.")
+                            
+                        full_alias = f"{resolved_table}.{c_name}"
+                        
+                        if full_alias in alias_to_physical_col:
+                            node_inst.set("this", exp.Identifier(this=alias_to_physical_col[full_alias]))
+                            
+                            # Dialects strictly fail if querying `original_table.column` when an alias `t` is defined in FROM.
+                            assigned_aliases = table_runtime_prefixes.get(resolved_table, set())
+                            if t_prefix in assigned_aliases:
+                                runtime_prefix = t_prefix
+                            elif not assigned_aliases:
+                                runtime_prefix = alias_to_physical_table[resolved_table]
+                            elif len(assigned_aliases) == 1:
+                                runtime_prefix = next(iter(assigned_aliases))
+                            else:
+                                raise TranslationError(f"Ambiguous target prefix '{t_prefix}' for column '{c_name}' from self-joined table '{resolved_table}' with aliases {list(assigned_aliases)}.")
+                                
+                            node_inst.set("table", exp.Identifier(this=runtime_prefix))
+                        else:
+                            raise TranslationError(f"Column '{full_alias}' does not exist in schema context.")
+                            
+                    else:
+                        # Prefix is NOT declared in scope. We must apply strict normalization invariants.
+                        owning_tables = column_ownership.get(c_name, set())
+                        scoped_owning_tables = owning_tables.intersection(tables_in_scope)
+                        
+                        if not scoped_owning_tables:
+                            raise TranslationError(f"Orphaned prefix '{t_prefix}' refers to column '{c_name}', which does not belong to any table formally declared in scope {list(tables_in_scope)}.")
+                            
+                        if len(scoped_owning_tables) > 1:
+                            raise TranslationError(f"Ambiguous orphaned prefix '{t_prefix}' for column '{c_name}'. Exists in multiple scoped tables: {list(scoped_owning_tables)}.")
+                            
+                        # Exactly ONE table in scope owns this column! Provable deterministic repair.
+                        unique_owning_table = scoped_owning_tables.pop()
+                        real_physical_table = alias_to_physical_table[unique_owning_table]
+                        
+                        # Infer legal runtime prefix for repaired table
+                        assigned_aliases = table_runtime_prefixes.get(unique_owning_table, set())
+                        if not assigned_aliases:
+                            runtime_prefix = real_physical_table
+                        elif len(assigned_aliases) == 1:
+                            runtime_prefix = next(iter(assigned_aliases))
+                        else:
+                            raise TranslationError(f"Cannot auto-heal orphaned prefix '{t_prefix}' for column '{c_name}' due to ambiguous multiple aliases for table '{unique_owning_table}' ({list(assigned_aliases)}).")
+                        
+                        repairs.append(TranslationRepair(
+                            type="orphaned_alias",
+                            original=f"{t_prefix}.{c_name}",
+                            resolved_to=f"{real_physical_table}.{alias_to_physical_col[f'{unique_owning_table}.{c_name}']}",
+                            reason=f"Unique column ownership logically inferred over mapped structure."
+                        ))
+                        
+                        node_inst.set("this", exp.Identifier(this=alias_to_physical_col[f"{unique_owning_table}.{c_name}"]))
+                        node_inst.set("table", exp.Identifier(this=runtime_prefix))
+                        
+                else:
+                    # No explicitly requested prefix. Check standard ambiguity.
+                    owning_tables = column_ownership.get(c_name, set())
+                    scoped_owning_tables = owning_tables.intersection(tables_in_scope)
+                    
+                    if len(scoped_owning_tables) > 1:
+                         raise TranslationError(f"Ambiguous naked column '{c_name}'. Belongs to multiple scoped tables: {list(scoped_owning_tables)}. Explicit aliasing required.")
+                    elif len(scoped_owning_tables) == 1:
+                         unique_owning_table = scoped_owning_tables.pop()
+                         node_inst.set("this", exp.Identifier(this=alias_to_physical_col[f"{unique_owning_table}.{c_name}"]))
+                    else:
+                        if c_name in alias_to_physical_col:
+                            node_inst.set("this", exp.Identifier(this=alias_to_physical_col[c_name]))
+
+            # C. Collect Literals
             elif isinstance(node_inst, exp.Literal):
                 literals_to_replace.append(node_inst)
                 
@@ -106,5 +224,6 @@ class DeterministicTranslator:
             registry_version=schema.version,
             safety_engine_version=safety_version,
             abstract_query_hash=abstract_query_hash,
-            row_limit_applied=row_limit_applied
+            row_limit_applied=row_limit_applied,
+            translation_repairs=repairs
         )

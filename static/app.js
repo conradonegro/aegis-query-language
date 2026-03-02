@@ -60,10 +60,11 @@ function resetUI() {
     DOMElements.errorContainer.classList.add('hidden');
     DOMElements.resultsContainer.classList.add('hidden');
 
-    DOMElements.ragOutcome.textContent = 'WAITING';
-    DOMElements.ragOutcome.className = 'outcome-badge';
+    DOMElements.ragOutcome.textContent = '-';
+    DOMElements.ragOutcome.className = 'outcome-badge outcome-neutral';
     DOMElements.ragMatches.textContent = '-';
     DOMElements.ragReason.textContent = '-';
+    DOMElements.ragReason.className = 'text-val';
 
     DOMElements.schemaIncluded.textContent = '-';
     DOMElements.schemaExcluded.textContent = '-';
@@ -238,3 +239,32 @@ function renderExplainability(exp) {
         DOMElements.bindParams.textContent = JSON.stringify(exp.translation.parameters, null, 2);
     }
 }
+
+// Global copy handler for the raw JSON payload Drawer
+window.copyToClipboard = function (elementId) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+
+    // Copy the text content safely
+    navigator.clipboard.writeText(el.textContent)
+        .then(() => {
+            // Find the button within the preceding header row
+            const headerRow = el.parentElement.previousElementSibling;
+            const btn = headerRow ? headerRow.querySelector('.btn-copy') : null;
+
+            if (btn) {
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.style.backgroundColor = 'var(--bg-success)';
+                btn.style.color = 'var(--text-main)';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.style.backgroundColor = '';
+                    btn.style.color = '';
+                }, 2000);
+            }
+        })
+        .catch(err => {
+            console.error('Failed to copy text: ', err);
+        });
+};

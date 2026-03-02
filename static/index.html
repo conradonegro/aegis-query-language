@@ -142,11 +142,17 @@
         </div>
         <div class="drawer-content hidden" id="drawer_content">
             <div class="json-pane">
-                <h4>Outbound Post Body</h4>
+                <div class="pane-header-row">
+                    <h4>Outbound Post Body</h4>
+                    <button class="btn btn-copy" onclick="copyToClipboard('json_request')">Copy JSON</button>
+                </div>
                 <pre><code id="json_request">{}</code></pre>
             </div>
             <div class="json-pane">
-                <h4>Inbound Response Payload</h4>
+                <div class="pane-header-row">
+                    <h4>Inbound Response Payload</h4>
+                    <button class="btn btn-copy" onclick="copyToClipboard('json_response')">Copy JSON</button>
+                </div>
                 <pre><code id="json_response">{}</code></pre>
             </div>
         </div>

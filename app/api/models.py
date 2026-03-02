@@ -13,6 +13,15 @@ class QueryRequest(BaseModel):
     explain: bool = Field(default=False, description="Debug flag to securely expose internal pipeline compilation context.")
 
 
+class TranslationRepair(BaseModel):
+    """
+    Formal explainability trace of an AST Alias Normalization resolving orphaned contexts.
+    """
+    type: str = Field(..., description="The classification of the repair (e.g., 'orphaned_alias')")
+    original: str = Field(..., description="The hallucinated or orphaned AST node")
+    resolved_to: str = Field(..., description="The deterministically mapped physical structure")
+    reason: str = Field(..., description="The logical invariant satisfying the mutation")
+
 class ExplainabilityContext(BaseModel):
     """
     Secure export of the internal proxy compilation states.
@@ -25,6 +34,7 @@ class ExplainabilityContext(BaseModel):
     prompt: dict[str, Any] = Field(..., description="Redacted system prompt and explicit user envelope.")
     llm: dict[str, Any] = Field(..., description="Provider, model, tokens, and latency.")
     translation: dict[str, Any] = Field(..., description="Abstract query mapping traces, parameterized ASTs, and binding derivations.")
+    translation_repairs: list[TranslationRepair] = Field(default_factory=list, description="Explicit traces of AST token normalizations against strictly isolated structures.")
 
 
 class QueryGenerateResponse(BaseModel):

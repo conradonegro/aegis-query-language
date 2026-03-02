@@ -19,7 +19,8 @@ from app.compiler.translator import DeterministicTranslator
 from app.rag.models import CategoricalValue
 from app.rag.store import InMemoryVectorStore
 from app.steward.models import (
-    AbstractIdentifierDef,
+    AbstractTableDef,
+    AbstractColumnDef,
     RegistrySchema,
     SafetyClassification,
 )
@@ -29,15 +30,17 @@ from app.steward.models import (
 def mock_registry() -> RegistrySchema:
     return RegistrySchema(
         version="1.0.0",
-        identifiers=[
-            AbstractIdentifierDef(
+        tables=[
+            AbstractTableDef(
                 alias="users",
-                identifier_type="table",
                 description="The users table",
-                safety=SafetyClassification(allowed_in_select=True),
-                physical_target="auth.users"
+                physical_target="auth.users",
+                columns=[
+                    AbstractColumnDef(alias="id", description="ID", safety=SafetyClassification(allowed_in_select=True), physical_target="auth.users.id")
+                ]
             )
-        ]
+        ],
+        relationships=[]
     )
 
 @pytest.fixture
@@ -75,7 +78,7 @@ async def test_compiler_engine_success(compiler_engine: CompilerEngine, mock_reg
 @pytest.fixture
 def rag_compiler_engine(compiler_engine: CompilerEngine) -> CompilerEngine:
     store = InMemoryVectorStore()
-    store.index_value(CategoricalValue(value="Alice", abstract_column="name", tenant_id="default_tenant"))
+    store.index_value(CategoricalValue(value="Alice", abstract_column="users.name", tenant_id="default_tenant"))
     compiler_engine.set_vector_store(store)
     return compiler_engine
 
@@ -108,7 +111,7 @@ async def test_compiler_engine_rag_no_match(rag_compiler_engine: CompilerEngine,
 @pytest.mark.asyncio
 async def test_compiler_engine_rag_ambiguous_match(rag_compiler_engine: CompilerEngine, mock_registry: RegistrySchema) -> None:
     # Add an ambiguous item
-    rag_compiler_engine.vector_store.index_value(CategoricalValue(value="Alice Cooper", abstract_column="name", tenant_id="default_tenant"))
+    rag_compiler_engine.vector_store.index_value(CategoricalValue(value="Alice Cooper", abstract_column="users.name", tenant_id="default_tenant"))
     
     intent = UserIntent(natural_language_query="Show me Alice or Alice Cooper")
     hints = PromptHints(column_hints=[])

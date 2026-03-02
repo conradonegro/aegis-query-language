@@ -3,7 +3,9 @@ from app.compiler.parser import SQLParser
 from app.compiler.safety import SafetyEngine
 from app.compiler.translator import DeterministicTranslator
 from app.steward import (
-    AbstractIdentifierDef,
+    AbstractTableDef,
+    AbstractColumnDef,
+    AbstractRelationshipDef,
     RegistrySchema,
     SafetyClassification,
 )
@@ -17,26 +19,28 @@ def test_deterministic_translation() -> None:
     # 1. Provide the physical mappings in the schema
     schema = RegistrySchema(
         version="v1.0.0",
-        identifiers=[
-            AbstractIdentifierDef(
+        tables=[
+            AbstractTableDef(
                 alias="table1",
                 description="The Orders Table",
-                safety=SafetyClassification(allowed_in_select=True),
-                physical_target="public.orders_v2"
-            ),
-            AbstractIdentifierDef(
-                alias="col1",
-                description="Total Sales",
-                safety=SafetyClassification(allowed_in_select=True),
-                physical_target="net_total"
-            ),
-            AbstractIdentifierDef(
-                alias="col2",
-                description="Status",
-                safety=SafetyClassification(allowed_in_where=True),
-                physical_target="order_status"
+                physical_target="public.orders_v2",
+                columns=[
+                    AbstractColumnDef(
+                        alias="col1",
+                        description="Total Sales",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="net_total"
+                    ),
+                    AbstractColumnDef(
+                        alias="col2",
+                        description="Status",
+                        safety=SafetyClassification(allowed_in_where=True),
+                        physical_target="order_status"
+                    )
+                ]
             )
-        ]
+        ],
+        relationships=[]
     )
 
     # 2. Parse and Validate the Abstract Query (LLM Output)

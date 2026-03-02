@@ -58,14 +58,15 @@ class SafetyEngine:
         # Logical / Operators
         exp.And, exp.Or, exp.Not,
         exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE,
-        exp.Like, exp.ILike, exp.In, exp.Between, exp.Is,
+        exp.Like, exp.ILike, exp.In, exp.Between, exp.Is, exp.Null,
+        exp.Paren,
         # Aggregations / Math
         exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max,
         exp.Coalesce, exp.Cast,
         # Types
         exp.DataType,
         # Alias
-        exp.Alias, exp.ColumnPosition
+        exp.Alias, exp.ColumnPosition, exp.TableAlias, exp.Tuple
     )
 
     def validate(self, ast: SQLAst) -> ValidatedAST:

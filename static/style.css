@@ -478,12 +478,37 @@ td {
     border-right: none;
 }
 
-.json-pane h4 {
-    font-size: 0.75rem;
-    padding: 0.5rem 1.5rem;
+.pane-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     background: var(--bg-main);
-    color: var(--text-dim);
     border-bottom: 1px solid var(--border-color);
+    padding: 0.5rem 1.5rem;
+}
+
+.pane-header-row h4 {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin: 0;
+}
+
+.btn-copy {
+    background-color: var(--bg-panel);
+    color: var(--text-dim);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    transition: all 0.2s ease;
+}
+
+.btn-copy:hover {
+    background-color: var(--accent);
+    color: white;
+    border-color: var(--accent);
 }
 
 .json-pane pre {
