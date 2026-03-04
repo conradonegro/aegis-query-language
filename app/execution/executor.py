@@ -44,12 +44,10 @@ class ExecutionEngine:
             # long-running queries DOSing the database.
             # Local checks skip this only for mocked sqlite unit tests.
             if self.engine.name == "postgresql":
-                timeout_sql = text("SET LOCAL statement_timeout = :timeout")
-                await conn.execute(
-                    timeout_sql,
-                    {"timeout": context.statement_timeout_ms}
-                )
-
+                # PostgreSQL doesn't support parameterized execution ($1 bindings) for SET commands.
+                # Since context.statement_timeout_ms is an internal integer, f-string compiling is fully safe.
+                timeout_sql = text(f"SET LOCAL statement_timeout = {context.statement_timeout_ms}")
+                await conn.execute(timeout_sql)
             # Execute actual query using raw sql string and bound dictionary parameters
             query_sql = text(query.sql)
             result = await conn.execute(query_sql, query.parameters)

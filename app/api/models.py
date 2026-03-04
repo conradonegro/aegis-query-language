@@ -71,3 +71,15 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="Human-readable domain boundary exception description.")
     request_id: str | None = Field(default=None, description="Request trace ID if applicable.")
     explainability: dict[str, Any] | None = Field(default=None, description="Partial pipeline traces if execution halted.")
+
+
+class ProtocolMetadataVersion(BaseModel):
+    version_id: str
+    status: str
+    created_at: str
+
+class MetadataCompileResponse(BaseModel):
+    artifact_id: str
+    version_id: str
+    artifact_hash: str
+    compiled_at: str

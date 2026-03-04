@@ -45,6 +45,7 @@ class SafetyEngine:
         exp.Where,
         exp.Group,
         exp.Order,
+        exp.Ordered,
         exp.Column,
         exp.Identifier,
         exp.Literal,
@@ -62,6 +63,7 @@ class SafetyEngine:
         exp.Paren,
         # Aggregations / Math
         exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max,
+        exp.Distinct,
         exp.Coalesce, exp.Cast,
         # Types
         exp.DataType,

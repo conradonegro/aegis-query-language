@@ -167,3 +167,6 @@ cython_debug/
 .AppleDouble
 .LSOverride
 *.db
+
+# Data artifacts
+data/

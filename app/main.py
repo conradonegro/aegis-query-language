@@ -1,10 +1,14 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.models import ErrorResponse
 from app.api.router import api_router
@@ -26,86 +30,63 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Setup test schema for now
-    schema = RegistrySchema(
-        version="1.0.0",
-        tables=[
-            AbstractTableDef(
-                alias="users",
-                description="User details",
-                physical_target="users",
-                columns=[
-                    AbstractColumnDef(
-                        alias="id",
-                        description="The integer primary key of the user",
-                        safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
-                        physical_target="id"
-                    ),
-                    AbstractColumnDef(
-                        alias="name",
-                        description="The first name of the user",
-                        safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
-                        physical_target="name"
-                    ),
-                    AbstractColumnDef(
-                        alias="created_at",
-                        description="Timestamp of creation",
-                        safety=SafetyClassification(allowed_in_select=True),
-                        physical_target="created_at"
-                    )
-                ]
-            ),
-            AbstractTableDef(
-                alias="orders",
-                description="Customer orders",
-                physical_target="orders",
-                columns=[
-                    AbstractColumnDef(
-                        alias="id",
-                        description="Primary key for orders",
-                        safety=SafetyClassification(allowed_in_select=True),
-                        physical_target="id"
-                    ),
-                    AbstractColumnDef(
-                        alias="user_id",
-                        description="Foreign key to users.id",
-                        safety=SafetyClassification(allowed_in_where=True, join_participation_allowed=True),
-                        physical_target="user_id"
-                    ),
-                    AbstractColumnDef(
-                        alias="total_amount",
-                        description="Total price of the order",
-                        safety=SafetyClassification(allowed_in_select=True, aggregation_allowed=True),
-                        physical_target="total_amount"
-                    )
-                ]
-            )
-        ],
-        relationships=[
-            AbstractRelationshipDef(
-                source_table="users",
-                source_column="id",
-                target_table="orders",
-                target_column="user_id"
-            )
-        ]
-    )
+    from app.steward.loader import RegistryLoader
+    
+    # Initialize Explicit Architectural Roles
+    runtime_db_url = os.getenv("DB_URL_RUNTIME", os.getenv("DATABASE_URL"))
+    registry_runtime_db_url = os.getenv("DB_URL_REGISTRY_RUNTIME", os.getenv("DATABASE_URL"))
+    steward_db_url = os.getenv("DB_URL_STEWARD", os.getenv("DATABASE_URL"))
+    registry_admin_db_url = os.getenv("DB_URL_REGISTRY_ADMIN", os.getenv("DATABASE_URL"))
+
+    if not all([runtime_db_url, registry_runtime_db_url, steward_db_url, registry_admin_db_url]):
+        raise RuntimeError("Least Privilege PostgreSQL connection URLs are not fully configured.")
+
+    app.state.registry_runtime_session_factory = async_sessionmaker(create_async_engine(registry_runtime_db_url), expire_on_commit=False)
+    app.state.steward_session_factory = async_sessionmaker(create_async_engine(steward_db_url), expire_on_commit=False)
+    app.state.registry_admin_session_factory = async_sessionmaker(create_async_engine(registry_admin_db_url), expire_on_commit=False)
+
+    if os.getenv("TESTING") == "true":
+        logger.info("[*] Testing mode detected: Seeding deterministic static RegistrySchema bounds")
+        schema = RegistrySchema(
+            version="1.0.0",
+            tables=[
+                AbstractTableDef(
+                    alias="users",
+                    description="User details",
+                    physical_target="users",
+                    columns=[
+                        AbstractColumnDef(alias="id", description="PK", safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True), physical_target="id"),
+                        AbstractColumnDef(alias="name", description="Name", safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True), physical_target="name"),
+                        AbstractColumnDef(alias="active", description="Active", safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True), physical_target="active"),
+                        AbstractColumnDef(alias="created_at", description="Creation", safety=SafetyClassification(allowed_in_select=True), physical_target="created_at")
+                    ]
+                ),
+                AbstractTableDef(
+                    alias="orders",
+                    description="Customer orders",
+                    physical_target="orders",
+                    columns=[
+                        AbstractColumnDef(alias="id", description="PK", safety=SafetyClassification(allowed_in_select=True), physical_target="id"),
+                        AbstractColumnDef(alias="user_id", description="FK", safety=SafetyClassification(allowed_in_where=True, join_participation_allowed=True), physical_target="user_id"),
+                        AbstractColumnDef(alias="total_amount", description="Total", safety=SafetyClassification(allowed_in_select=True, aggregation_allowed=True), physical_target="total_amount")
+                    ]
+                )
+            ],
+            relationships=[
+                AbstractRelationshipDef(source_table="users", source_column="id", target_table="orders", target_column="user_id")
+            ]
+        )
+    else:
+        # Automatically fetch and inflate the latest Active metadata payload!
+        async with app.state.registry_runtime_session_factory() as session:
+            schema = await RegistryLoader.load_active_schema(session)
+            if not schema:
+                logger.warning("[!] No Active Metadata version found. Serving empty schema fallback.")
+                schema = RegistrySchema(version="0.0.0", tables=[], relationships=[])
+            
     app.state.registry = schema
 
-    # Initialize Execution Engine (Mock for simple testing, asyncpg in prod)
-    app.state.executor = ExecutionEngine(connection_string="sqlite+aiosqlite:///:memory:")
-
-    from sqlalchemy import text
-    async with app.state.executor.engine.begin() as conn:
-        await conn.execute(text("CREATE TABLE users (id INTEGER, name TEXT, active BOOLEAN, created_at TEXT)"))
-        await conn.execute(text("INSERT INTO users VALUES (1, 'Alice', 1, '2025-01-01')"))
-        await conn.execute(text("INSERT INTO users VALUES (2, 'Bob', 1, '2025-01-02')"))
-        await conn.execute(text("INSERT INTO users VALUES (3, 'Charlie', 0, '2025-01-03')"))
-        
-        await conn.execute(text("CREATE TABLE orders (id INTEGER, user_id INTEGER, total_amount REAL)"))
-        await conn.execute(text("INSERT INTO orders VALUES (101, 1, 99.99)"))
-        await conn.execute(text("INSERT INTO orders VALUES (102, 1, 150.00)"))
-        await conn.execute(text("INSERT INTO orders VALUES (103, 2, 45.50)"))
+    app.state.executor = ExecutionEngine(connection_string=runtime_db_url)
 
     # Initialize Audit Engine
     app.state.auditor = JSONAuditLogger() # Writes natively to console output

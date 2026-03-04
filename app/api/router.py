@@ -1,10 +1,19 @@
-import asyncio
 import uuid
-from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
-from app.api.models import QueryExecuteResponse, QueryGenerateResponse, QueryRequest
+from app.api.compiler import MetadataCompiler
+from app.api.meta_models import MetadataVersion
+from app.api.models import (
+    MetadataCompileResponse,
+    ProtocolMetadataVersion,
+    QueryExecuteResponse,
+    QueryGenerateResponse,
+    QueryRequest,
+)
 from app.audit import QueryAuditEvent
 from app.compiler.engine import CompilerEngine
 from app.compiler.models import PromptHints, UserIntent
@@ -21,12 +30,23 @@ def get_compiler(request: Request) -> CompilerEngine:
 def get_executor(request: Request) -> ExecutionLayer:
     return request.app.state.executor
 
-# Use the protocol or concrete type matching the auditor interface
 def get_auditor(request: Request):
     return request.app.state.auditor
 
 def get_registry(request: Request) -> RegistrySchema:
     return request.app.state.registry
+
+async def get_registry_runtime_db_session(request: Request) -> AsyncSession:
+    async with request.app.state.registry_runtime_session_factory() as session:
+        yield session
+
+async def get_registry_admin_db_session(request: Request) -> AsyncSession:
+    async with request.app.state.registry_admin_session_factory() as session:
+        yield session
+
+async def get_steward_db_session(request: Request) -> AsyncSession:
+    async with request.app.state.steward_session_factory() as session:
+        yield session
 
 
 @api_router.post("/query/generate", response_model=QueryGenerateResponse)
@@ -117,4 +137,41 @@ async def execute_query(
         row_count=len(result.rows),
         execution_latency_ms=0.0,
         explainability=executable.explainability
+    )
+
+
+@api_router.get("/metadata/versions", response_model=list[ProtocolMetadataVersion])
+async def list_metadata_versions(
+    session: AsyncSession = Depends(get_registry_runtime_db_session)
+) -> list[ProtocolMetadataVersion]:
+    """Retrieve all metadata schema versions."""
+    res = await session.execute(select(MetadataVersion).order_by(MetadataVersion.created_at.desc()))
+    versions = res.scalars().all()
+    
+    return [
+        ProtocolMetadataVersion(
+            version_id=str(v.version_id),
+            status=v.status,
+            created_at=v.created_at.isoformat()
+        ) for v in versions
+    ]
+
+
+@api_router.post("/metadata/compile/{version_id}", response_model=MetadataCompileResponse)
+async def compile_metadata_version(
+    version_id: uuid.UUID,
+    session: AsyncSession = Depends(get_registry_admin_db_session)
+) -> MetadataCompileResponse:
+    """Compile an active metadata version into a runtime Aegis Registry artifact."""
+    artifact = await MetadataCompiler.compile_version(
+        session=session,
+        version_id=version_id,
+        actor="admin_api"
+    )
+    
+    return MetadataCompileResponse(
+        artifact_id=str(artifact.artifact_id),
+        version_id=str(artifact.version_id),
+        artifact_hash=artifact.artifact_hash,
+        compiled_at=artifact.compiled_at.isoformat()
     )
