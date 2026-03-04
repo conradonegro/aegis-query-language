@@ -11,6 +11,9 @@ class QueryRequest(BaseModel):
     intent: str = Field(..., description="The Natural Language question or request from the user.")
     schema_hints: list[str] = Field(default_factory=list, description="Optional business logic hints for the LLM context.")
     explain: bool = Field(default=False, description="Debug flag to securely expose internal pipeline compilation context.")
+    
+    session_id: str | None = Field(default=None, description="Optional ongoing Chat Session UUID to append to.")
+    provider_id: str | None = Field(default=None, description="Optional explicit LLM Provider ID to use for this execution.")
 
 
 class TranslationRepair(BaseModel):
@@ -44,6 +47,7 @@ class QueryGenerateResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     query_id: str = Field(..., description="Unique provenance ID of the Abstract AST compilation.")
+    session_id: str | None = Field(default=None, description="The Chat Session UUID holding this interaction.")
     sql: str = Field(..., description="The fully parameterized SQL string.")
     parameters: dict[str, str | int | float | bool] = Field(..., description="Bind parameters for the query.")
     latency_ms: float = Field(..., description="Compilation pipeline latency including LLM overhead.")
@@ -57,6 +61,7 @@ class QueryExecuteResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     query_id: str = Field(..., description="Unique provenance ID of the Abstract AST execution.")
+    session_id: str | None = Field(default=None, description="The Chat Session UUID holding this interaction.")
     results: list[dict[str, str | int | float | bool | None]]
     row_count: int
     execution_latency_ms: float = Field(..., description="Physical database execution latency.")
@@ -83,3 +88,53 @@ class MetadataCompileResponse(BaseModel):
     version_id: str
     artifact_hash: str
     compiled_at: str
+
+# Steward UI Schemas
+class ProtocolColumn(BaseModel):
+    column_id: str
+    real_name: str
+    alias: str
+    description: str | None
+    data_type: str
+    is_primary_key: bool
+    allowed_in_select: bool
+    allowed_in_filter: bool
+    allowed_in_join: bool
+    safety_classification: dict[str, Any] | None
+
+class ProtocolTable(BaseModel):
+    table_id: str
+    real_name: str
+    alias: str
+    description: str | None
+    active: bool
+    columns: list[ProtocolColumn]
+
+class ProtocolRelationship(BaseModel):
+    relationship_id: str
+    source_table_id: str
+    source_column_id: str
+    target_table_id: str
+    target_column_id: str
+    relationship_type: str
+    cardinality: str
+
+class ProtocolSchemaResponse(BaseModel):
+    version_id: str
+    tables: list[ProtocolTable]
+    relationships: list[ProtocolRelationship]
+
+class TableUpdateRequest(BaseModel):
+    alias: str | None = None
+    description: str | None = None
+    active: bool | None = None
+
+class ColumnUpdateRequest(BaseModel):
+    alias: str | None = None
+    description: str | None = None
+    allowed_in_select: bool | None = None
+    allowed_in_filter: bool | None = None
+    allowed_in_join: bool | None = None
+
+class VersionCreateRequest(BaseModel):
+    baseline_version_id: str | None = None

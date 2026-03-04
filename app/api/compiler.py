@@ -10,11 +10,18 @@ from sqlalchemy.orm import selectinload
 
 from app.api.meta_models import (
     CompiledRegistryArtifact,
+    MetadataAudit,
     MetadataColumn,
     MetadataRelationship,
     MetadataTable,
     MetadataVersion,
 )
+from app.audit.chaining import (
+    compute_artifact_hmac_signature,
+    compute_audit_row_hash,
+    get_canonical_json,
+)
+from app.vault import get_secrets_manager
 
 
 class MetadataCompiler:
@@ -22,10 +29,6 @@ class MetadataCompiler:
     Freezes a human-reviewed MetadataVersion into a highly optimized, immutable JSON blob
     that the Aegis AST engine natively boots from.
     """
-    @staticmethod
-    def _hash_payload(payload: dict[str, Any]) -> str:
-        blob = json.dumps(payload, sort_keys=True).encode("utf-8")
-        return hashlib.sha256(blob).hexdigest()
 
     @classmethod
     async def compile_version(cls, session: AsyncSession, version_id: uuid.UUID, actor: str) -> CompiledRegistryArtifact:
@@ -75,6 +78,7 @@ class MetadataCompiler:
                     "id": str(col.column_id),
                     "name": col.real_name,
                     "alias": col.alias,
+                    "description": col.description,
                     "type": col.data_type,
                     "is_primary": col.is_primary_key,
                     "is_nullable": col.is_nullable,
@@ -113,19 +117,58 @@ class MetadataCompiler:
                 })
         
         # 4. Sign and Compute Hash Payload
-        final_hash = cls._hash_payload(payload)
+        canonical_payload = get_canonical_json(payload)
+        final_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        
+        # Vault Signing Lifecycle
+        secrets_mgr = get_secrets_manager()
+        current_key_id = secrets_mgr.get_current_signing_key_id()
+        signing_key = secrets_mgr.get_signing_key(current_key_id)
+        
+        signature = compute_artifact_hmac_signature(signing_key, canonical_payload)
         
         artifact = CompiledRegistryArtifact(
             version_id=version.version_id,
             artifact_blob=payload,
             artifact_hash=final_hash,
             compiler_version="1.0.0",
-            signature="unsigned" # Placeholder for future RSA signing implementation
+            signature=signature,
+            signature_key_id=current_key_id
         )
-        
         session.add(artifact)
         
-        # Lock the hash trace dynamically to the version object
+        # 5. Native Deterministic WORM Audit Write
+        last_audit_res = await session.execute(
+            select(MetadataAudit).order_by(MetadataAudit.timestamp.desc(), MetadataAudit.audit_id.desc()).limit(1)
+        )
+        last_row = last_audit_res.scalar_one_or_none()
+        previous_hash = last_row.row_hash if last_row else ""
+        
+        audit_timestamp_native = datetime.utcnow()
+        audit_payload = {
+            "event": "compile_version",
+            "version_id": str(version.version_id),
+            "artifact_hash": final_hash,
+            "signature_key_id": current_key_id,
+            "status": "SUCCESS"
+        }
+        
+        audit_canonical = get_canonical_json(audit_payload)
+        new_row_hash = compute_audit_row_hash(previous_hash, audit_canonical, audit_timestamp_native.isoformat())
+        
+        audit_event = MetadataAudit(
+            version_id=version.version_id,
+            actor=actor,
+            action="deploy",
+            payload=audit_payload,
+            timestamp=audit_timestamp_native,
+            previous_hash=previous_hash,
+            row_hash=new_row_hash,
+            key_id=current_key_id
+        )
+        session.add(audit_event)
+        
+        # 6. Lock the hash trace dynamically to the version object
         version.registry_hash = final_hash
         version.approved_by = actor
         version.approved_at = datetime.utcnow()

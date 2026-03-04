@@ -101,11 +101,16 @@ class DeterministicSchemaFilter:
                 )
                 allowed_tables.append(filtered_table)
 
-        # For now, we pass all relationships through. A more advanced filter might prune
-        # relationships where the source or target table was completely dropped.
+        # 5. Prune relationships where the source or target table was completely dropped.
+        allowed_table_aliases = {t.alias for t in allowed_tables}
+        allowed_relationships = [
+            r for r in schema.relationships
+            if r.source_table in allowed_table_aliases and r.target_table in allowed_table_aliases
+        ]
+
         return FilteredSchema(
             version=schema.version,
             tables=allowed_tables,
-            relationships=schema.relationships,
+            relationships=allowed_relationships,
             omitted_columns=rejected_columns
         )

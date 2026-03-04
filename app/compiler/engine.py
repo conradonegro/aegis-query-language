@@ -15,7 +15,9 @@ from app.compiler.models import (
     PromptHints,
     UserIntent,
     RAGIncludedColumns,
+    ChatHistoryItem,
 )
+from app.compiler.llm_factory import get_llm_gateway
 from app.rag.interfaces import VectorStoreProtocol
 from app.rag.models import RAGOutcome
 from app.steward.models import RegistrySchema
@@ -50,7 +52,7 @@ class CompilerEngine:
         self.vector_store = store
 
     async def compile(
-        self, intent: UserIntent, schema: RegistrySchema, hints: PromptHints, explain: bool = False
+        self, intent: UserIntent, schema: RegistrySchema, hints: PromptHints, explain: bool = False, chat_history: list[ChatHistoryItem] | None = None, provider_id: str | None = None
     ) -> ExecutableQuery:
         """
         Executes the full pipeline.
@@ -106,13 +108,14 @@ class CompilerEngine:
             }
             
             # 2. Build Prompt Envelope
-            prompt_envelope = self.prompt_builder.build_prompt(intent, filtered_schema, hints)
+            prompt_envelope = self.prompt_builder.build_prompt(intent, filtered_schema, hints, chat_history=chat_history)
             explain_context["prompt"]["raw_system"] = prompt_envelope.system_instruction
             explain_context["prompt"]["raw_user"] = prompt_envelope.user_prompt
             explain_context["prompt"]["system_prompt_redacted"] = False
             
             # 3. Call LLM
-            llm_result = await self.llm_gateway.generate(prompt_envelope)
+            gateway = get_llm_gateway(provider_id) if provider_id else self.llm_gateway
+            llm_result = await gateway.generate(prompt_envelope)
             explain_context["llm"] = {
                 "provider": llm_result.model_id,
                 "model": llm_result.model_id,

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Steward Console | Aegis Query Language</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .steward-layout {
+            display: flex;
+            height: calc(100vh - 60px);
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 300px;
+            background: #1a1b26;
+            border-right: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            padding: 15px;
+            border-bottom: 2px solid #24283b;
+        }
+
+        .version-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .version-item {
+            padding: 15px;
+            border-bottom: 1px solid #2a2b36;
+            transition: background 0.2s;
+        }
+
+        .version-item.draft {
+            border-left: 3px solid #ff9e64;
+        }
+
+        .version-item.active {
+            border-left: 3px solid #9ece6a;
+        }
+
+        .version-item.pending_review {
+            border-left: 3px solid #7aa2f7;
+        }
+
+        .version-item.archived {
+            border-left: 3px solid #565f89;
+        }
+
+        .badge-draft {
+            background: #ff9e64;
+            color: #1a1b26;
+        }
+
+        .badge-active {
+            background: #9ece6a;
+            color: #1a1b26;
+        }
+
+        .main-content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .editor-container {
+            display: flex;
+            gap: 20px;
+            height: 100%;
+        }
+
+        .schema-col {
+            flex: 2;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+
+        .graph-col {
+            flex: 1;
+            background: #1a1b26;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            overflow-y: auto;
+        }
+
+        .tables-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            margin-top: 15px;
+        }
+
+        .schema-table {
+            background: #24283b;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #414868;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .schema-table input[type="text"] {
+            background: #1a1b26;
+            color: #c0caf5;
+            border: 1px solid #414868;
+            padding: 6px;
+            border-radius: 4px;
+            font-family: monospace;
+            transition: background 0.2s;
+        }
+
+        .column-list {
+            width: 100%;
+            text-align: left;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        .column-list th,
+        .column-list td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #333;
+            font-size: 14px;
+        }
+
+        .edge-list {
+            list-style: none;
+            padding: 0;
+            margin-top: 15px;
+        }
+
+        .edge-item {
+            padding: 12px 0;
+            border-bottom: 1px solid #333;
+            font-family: monospace;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .edge-link {
+            color: #f7768e;
+            font-size: 12px;
+        }
+
+        .edge-node {
+            background: #32344a;
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: #bb9af7;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body class="dark-theme">
+    <header class="app-header">
+        <div class="header-left">
+            <h1>Aegis Data Steward // <span class="dim">proxy-v1</span></h1>
+        </div>
+        <div class="header-right">
+            <a href="/" class="btn btn-primary" style="text-decoration: none;">Launch Query Console</a>
+        </div>
+    </header>
+
+    <div class="steward-layout">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2 style="font-size: 16px; margin: 0 0 10px 0;">Version Dashboard</h2>
+                <button id="btn_create_draft" class="btn btn-primary btn-sm" style="width: 100%;">+ Create Pipeline
+                    Draft</button>
+            </div>
+            <div id="version_container"></div>
+        </div>
+        <div class="main-content">
+            <div class="editor-container">
+                <div class="schema-col" id="schema_container">
+                    <h3 class="dim" style="text-align: center; margin-top: 50px;">Select a Metadata Version to view its
+                        Draft Schema</h3>
+                </div>
+                <div class="graph-col" id="graph_container">
+                    <!-- Edge relationships visualized here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { VersionManager } from '/static/js/version-manager.js';
+        import { SchemaView } from '/static/js/schema-view.js';
+        import { GraphView } from '/static/js/graph.js';
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const graphView = new GraphView('graph_container');
+            const schemaView = new SchemaView('schema_container', (tableId) => {
+                graphView.filterByTable(tableId);
+            });
+
+            const vm = new VersionManager('version_container', async (versionId) => {
+                await schemaView.loadSchema(versionId);
+                graphView.render(schemaView.currentSchema);
+            });
+
+            vm.init();
+        });
+    </script>
+</body>
+
+</html>

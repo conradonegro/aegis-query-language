@@ -4,6 +4,7 @@ from sqlglot import exp
 
 from app.api.models import TranslationRepair
 from app.compiler.models import ExecutableQuery, ValidatedAST
+from app.compiler.safety import UnsafeExpressionError
 from app.steward import RegistrySchema
 
 
@@ -23,37 +24,48 @@ class DeterministicTranslator:
         row_limit: int = 1000
     ) -> ExecutableQuery:
         """Translates abstract AST into parameterized physical SQL."""
+        from app.api.models import TranslationRepair
 
         # 1. Copy-on-write
         tree = ast.tree.copy()
+        repairs: list[TranslationRepair] = []
+        
+        # 2. Structural AST Repairs (e.g., WHERE SUM > 10 -> HAVING SUM > 10)
+        self._repair_where_aggregations(tree, repairs)
 
-        # 2. Build fast lookup map O(1)
+        # 3. Build fast lookup map O(1)
         alias_to_physical_table: dict[str, str] = {}
         alias_to_physical_col: dict[str, str] = {}
         
         # We need a strict map tracking which tables own which columns to resolve orchestrations
         column_ownership: dict[str, set[str]] = {}
+        alias_to_datatype: dict[str, str] = {}
         
         for table in schema.tables:
             table_alias = table.alias.lower()
             alias_to_physical_table[table_alias] = table.physical_target
             for col in table.columns:
                 col_alias = col.alias.lower()
-                alias_to_physical_col[f"{table_alias}.{col_alias}"] = col.physical_target
+                full_alias = f"{table_alias}.{col_alias}"
+                
+                alias_to_physical_col[full_alias] = col.physical_target
                 alias_to_physical_col[col_alias] = col.physical_target
+                
+                alias_to_datatype[full_alias] = col.data_type.lower()
 
                 if col_alias not in column_ownership:
                     column_ownership[col_alias] = set()
                 column_ownership[col_alias].add(table_alias)
 
+        column_datatypes: dict[int, str] = {} # Map id(exp.Column) -> data_type for validation
+
         parameters: dict[str, Any] = {}
         param_counter = 1
-        repairs: list[TranslationRepair] = []
 
-        # 3. Walk and mutate the COPIED tree
+        # 4. Walk and mutate the COPIED tree
         literals_to_replace = []
         
-        # 3a. Extract dynamic Table Aliases (e.g. `orders AS o` -> `o: orders`)
+        # 4a. Extract dynamic Table Aliases (e.g. `orders AS o` -> `o: orders`)
         dynamic_table_aliases = {}
         # Also track the full physical table scope injected into this exact query
         tables_in_scope = set()
@@ -103,6 +115,7 @@ class DeterministicTranslator:
                         
                         if full_alias in alias_to_physical_col:
                             node_inst.set("this", exp.Identifier(this=alias_to_physical_col[full_alias]))
+                            column_datatypes[id(node_inst)] = alias_to_datatype.get(full_alias, "")
                             
                             # Dialects strictly fail if querying `original_table.column` when an alias `t` is defined in FROM.
                             assigned_aliases = table_runtime_prefixes.get(resolved_table, set())
@@ -152,6 +165,7 @@ class DeterministicTranslator:
                         
                         node_inst.set("this", exp.Identifier(this=alias_to_physical_col[f"{unique_owning_table}.{c_name}"]))
                         node_inst.set("table", exp.Identifier(this=runtime_prefix))
+                        column_datatypes[id(node_inst)] = alias_to_datatype.get(f"{unique_owning_table}.{c_name}", "")
                         
                 else:
                     # No explicitly requested prefix. Check standard ambiguity.
@@ -163,6 +177,7 @@ class DeterministicTranslator:
                     elif len(scoped_owning_tables) == 1:
                          unique_owning_table = scoped_owning_tables.pop()
                          node_inst.set("this", exp.Identifier(this=alias_to_physical_col[f"{unique_owning_table}.{c_name}"]))
+                         column_datatypes[id(node_inst)] = alias_to_datatype.get(f"{unique_owning_table}.{c_name}", "")
                     else:
                         if c_name in alias_to_physical_col:
                             node_inst.set("this", exp.Identifier(this=alias_to_physical_col[c_name]))
@@ -171,7 +186,22 @@ class DeterministicTranslator:
             elif isinstance(node_inst, exp.Literal):
                 literals_to_replace.append(node_inst)
                 
-        # C. Parameterize Literals Safely
+        # D. Validate EXTRACT AST rules post-resolution
+        temporal_types = {"timestamp", "date", "datetime", "time", "interval"}
+        for extract_node in tree.find_all(exp.Extract):
+            source = extract_node.expression
+            if not isinstance(source, exp.Column):
+                 raise UnsafeExpressionError(f"EXTRACT numeric target must be natively bound to a column, found '{type(source).__name__}'.")
+            
+            if any(extract_node.find_all((exp.Subquery, exp.Select, exp.Window))):
+                 raise UnsafeExpressionError("Nested subqueries or window constructs are strictly blocked inside EXTRACT.")
+                 
+            # Extract target datatype validation
+            dtype = column_datatypes.get(id(source), "")
+            if not any(t in dtype for t in temporal_types):
+                 raise UnsafeExpressionError(f"EXTRACT operations are only permitted on temporal columns. Resolved column '{source.name}' is of type '{dtype}'.")
+
+        # E. Parameterize Literals Safely
         for node_inst in literals_to_replace:
             # We replace string/numeric literals with query parameters
             param_name = f"p{param_counter}"
@@ -227,3 +257,93 @@ class DeterministicTranslator:
             row_limit_applied=row_limit_applied,
             translation_repairs=repairs
         )
+
+    def _extract_conjunctions(self, node: exp.Expression) -> list[exp.Expression]:
+        """Flattens an AND boolean tree into a list of its leaf expressions."""
+        if isinstance(node, exp.And):
+            return self._extract_conjunctions(node.left) + self._extract_conjunctions(node.right)
+        return [node]
+
+    def _repair_where_aggregations(self, tree: exp.Expression, repairs: list["TranslationRepair"]) -> None:
+        """
+        Safely extracts pure aggregate conditions from the WHERE clause and relocates them to the HAVING clause.
+        Maintains deterministic safety by ignoring Windows, Subqueries, and ensuring AND split semantics.
+        """
+        where_node = tree.args.get("where")
+        if not where_node:
+            return
+            
+        condition = where_node.this
+        
+        # Security Policy 1: If ANY exp.Or exists anywhere in the WHERE clause, abandon rewrite entirely.
+        # Changing boolean grouping order by pulling an ORed aggregate into HAVING logically corrupts the query.
+        if any(condition.find_all(exp.Or)):
+            return
+            
+        conjunctions = self._extract_conjunctions(condition)
+        
+        where_conditions = []
+        having_conditions = []
+        
+        for c in conjunctions:
+            has_agg = any(c.find_all(exp.AggFunc))
+            has_window = any(c.find_all(exp.Window))
+            has_subquery = any(c.find_all((exp.Select, exp.Subquery)))
+            
+            # Rule 1: Do not move complex constructs like windows or subqueries. Let native PG catch them.
+            if has_window or has_subquery:
+                where_conditions.append(c)
+                continue
+                
+            # Rule 2: Move valid unmixed aggregates to HAVING
+            if has_agg:
+                # Security Policy 2: Mixed node check.
+                # Must ensure there are NO naked columns that exist *outside* an AggFunc block in this conjunction.
+                # E.g., `SUM(a) > b` -> `a` is inside SUM, `b` is naked. This is illegal grouping context.
+                has_naked_column = False
+                for col in c.find_all(exp.Column):
+                    # Check if any parent up the AST tree is an AggFunc
+                    current = col.parent
+                    is_inside_agg = False
+                    while current:
+                        if isinstance(current, exp.AggFunc):
+                            is_inside_agg = True
+                            break
+                        current = current.parent
+                        
+                    if not is_inside_agg:
+                        has_naked_column = True
+                        break
+                        
+                if has_naked_column:
+                    # Mixed scalar+aggregate leaf. Do not move. Postgres will throw standard error natively.
+                    where_conditions.append(c)
+                else:
+                    having_conditions.append(c)
+            else:
+                where_conditions.append(c)
+                
+        if not having_conditions:
+            return
+            
+        # Rebuild WHERE clause
+        if where_conditions:
+            tree.set("where", exp.Where(this=exp.and_(*where_conditions)))
+        else:
+            tree.set("where", None)
+            
+        # Rebuild HAVING clause and append any pre-existing expressions
+        existing_having = tree.args.get("having")
+        new_having_expr = exp.and_(*having_conditions)
+        
+        if existing_having:
+            new_having_expr = exp.and_(existing_having.this, new_having_expr)
+            
+        tree.set("having", exp.Having(this=new_having_expr))
+        
+        repairs.append(TranslationRepair(
+            type="where_aggregation_relocation",
+            original=condition.sql(dialect="postgres"),
+            resolved_to="Split into WHERE and HAVING",
+            reason="Pure aggregate condition found in WHERE clause. Securely relocated to HAVING."
+        ))

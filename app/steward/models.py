@@ -11,6 +11,7 @@ class SafetyClassification(BaseModel):
 class AbstractColumnDef(BaseModel):
     alias: str
     description: str
+    data_type: str = "text"
     safety: SafetyClassification
     physical_target: str
 

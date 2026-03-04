@@ -55,13 +55,21 @@ class OllamaLLMGateway(LLMGatewayProtocol):
         # (Ollama API just takes 'prompt', so we stitch our Envelope for now, 
         # or use the /api/chat endpoint if we want explicit system/user roles)
         
+        messages = [
+            {"role": "system", "content": prompt.system_instruction}
+        ]
+        
+        if prompt.schema_context:
+            messages.append({"role": "system", "content": f"Schema Context:\n{prompt.schema_context}"})
+            
+        for msg in prompt.chat_history:
+            messages.append({"role": msg.role, "content": msg.content})
+            
+        messages.append({"role": "user", "content": prompt.user_prompt})
+
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": prompt.system_instruction},
-                {"role": "system", "content": f"Schema Context:\n{prompt.schema_context}"},
-                {"role": "user", "content": prompt.user_prompt}
-            ],
+            "messages": messages,
             "stream": False # We must buffer the entire JSON response to validate it, no partial streams
         }
         
@@ -72,9 +80,9 @@ class OllamaLLMGateway(LLMGatewayProtocol):
             payload["format"] = self.json_schema
 
         try:
-            # We use a 120s timeout by default because Ollama might need to
+            # We use a 500s timeout by default because Ollama might need to
             # cold-load the LLM weights into VRAM on the first query.
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=500.0) as client:
                 response = await client.post(
                     f"{self.base_url}/api/chat",
                     json=payload

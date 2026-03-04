@@ -12,6 +12,7 @@ from app.compiler.models import (
     ValidatedAST,
     ValueMatchResult,
     RAGIncludedColumns,
+    ChatHistoryItem,
 )
 from app.steward import RegistrySchema
 
@@ -35,7 +36,7 @@ class SchemaFilterProtocol(Protocol):
 
 class PromptBuilderProtocol(Protocol):
     def build_prompt(
-        self, intent: UserIntent, schema: FilteredSchema, hints: PromptHints
+        self, intent: UserIntent, schema: FilteredSchema, hints: PromptHints, chat_history: list[ChatHistoryItem] | None = None
     ) -> PromptEnvelope:
         ...
 

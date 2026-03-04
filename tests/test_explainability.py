@@ -23,7 +23,7 @@ def test_explainability_absence_by_default():
     spy_engine = SpyExecutionEngine()
     app.dependency_overrides[get_executor] = lambda: spy_engine
     
-    payload = {"intent": "Get Alice in the system"}
+    payload = {"intent": "Get user details in the system"}
     
     try:
         with TestClient(app) as test_client:
@@ -46,7 +46,7 @@ def test_explainability_population_when_requested():
     app.dependency_overrides[get_executor] = lambda: spy_engine
     
     payload = {
-        "intent": "Get Alice from the users table",
+        "intent": "Get user details from the table",
         "explain": True
     }
     
@@ -65,7 +65,7 @@ def test_explainability_population_when_requested():
         # Vector Store Traces
         assert "rag" in explain
         assert explain["rag"]["outcome"] == "SINGLE_HIGH_CONFIDENCE_MATCH"
-        assert "Alice" in explain["rag"]["matches"]
+        assert "User details" in explain["rag"]["matches"]
         
         # Schema Traces
         assert "schema_filter" in explain

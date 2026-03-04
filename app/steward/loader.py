@@ -1,3 +1,5 @@
+import hashlib
+import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,14 @@ from app.steward.models import (
     RegistrySchema,
     SafetyClassification,
 )
+from app.audit.chaining import get_canonical_json, verify_hmac_signature
+from app.vault import get_secrets_manager
+
+logger = logging.getLogger(__name__)
+
+class UnauthorizedRegistryTamperError(Exception):
+    """Raised natively when the DB Artifact's physical footprint fails HMAC verification."""
+    pass
 
 
 class RegistryLoader:
@@ -30,6 +40,26 @@ class RegistryLoader:
         if not artifact:
             return None
 
+        # --- Cryptographic Native Tampering Detection (Phase 18) ---
+        canonical_payload = get_canonical_json(artifact.artifact_blob)
+        computed_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        
+        if computed_hash != artifact.artifact_hash:
+            logger.critical(f"Tamper Error: Registry Hash mismatch on Artifact {artifact.artifact_id}!")
+            raise UnauthorizedRegistryTamperError("Artifact Hash discrepancy detected.")
+            
+        secrets_mgr = get_secrets_manager()
+        # Fallback to dev strings exclusively if migrating from non-signed mocks
+        kid = artifact.signature_key_id or secrets_mgr.get_current_signing_key_id() 
+        signing_key = secrets_mgr.get_signing_key(kid)
+        
+        if not verify_hmac_signature(signing_key, canonical_payload, str(artifact.signature)):
+            logger.critical(f"HMAC Verification Failed! Artifact {artifact.artifact_id} - Key {kid}")
+            raise UnauthorizedRegistryTamperError(f"HMAC Signature match absolutely failed for Artifact {artifact.artifact_id}. Execution halted.")
+            
+        logger.info(f"Verified WORM Boot HMAC Signature! Artifact {artifact.artifact_id} - Key {kid}")
+        # -------------------------------------------------------------
+        
         payload = artifact.artifact_blob
         
         # Hydrate JSON blob into strict internal typed Pydantic structures needed by CompilerEngine
@@ -51,7 +81,8 @@ class RegistryLoader:
                 columns_def.append(
                     AbstractColumnDef(
                         alias=col_dict["alias"],
-                        description=f"{col_dict['type']} {'(PK)' if col_dict.get('is_primary') else ''}",
+                        description=col_dict.get("description", ""),
+                        data_type=col_dict.get("type", "text"),
                         safety=safety,
                         physical_target=col_dict["name"] # Mapping conceptual alias directly to real name
                     )

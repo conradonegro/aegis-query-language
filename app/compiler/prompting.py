@@ -2,7 +2,7 @@ import os
 
 from jinja2 import Environment, FileSystemLoader
 
-from app.compiler.models import FilteredSchema, PromptEnvelope, PromptHints, UserIntent
+from app.compiler.models import FilteredSchema, PromptEnvelope, PromptHints, UserIntent, ChatHistoryItem
 
 
 class PromptBuilder:
@@ -21,7 +21,7 @@ class PromptBuilder:
         )
 
     def build_prompt(
-        self, intent: UserIntent, schema: FilteredSchema, hints: PromptHints
+        self, intent: UserIntent, schema: FilteredSchema, hints: PromptHints, chat_history: list[ChatHistoryItem] | None = None
     ) -> PromptEnvelope:
         """
         Renders the static template into an immutable PromptEnvelope.
@@ -40,13 +40,16 @@ class PromptBuilder:
         # or just hold the assembled prompt inside `system_instruction` / `user_prompt`.
         # For our Custom LLMGateway format, we structure it logically:
 
+        # 4. Truncate Chat History to prevent context exhaustion
+        # We'll retain the last 10 messages (5 turns)
+        history = chat_history or []
+        if len(history) > 10:
+            history = history[-10:]
+
         return PromptEnvelope(
             system_instruction=system_block,
-            # We explicitly pass user intent so the gateway can map it to a user message
             user_prompt=intent.natural_language_query,
-            # We omit schema_context and hints as distinct strings
-            # since we templated them into the system instruction
-            # for tight coupling.
             schema_context="",
-            hints=""
+            hints="",
+            chat_history=history
         )

@@ -11,13 +11,28 @@
 <body class="dark-theme">
     <header class="app-header">
         <div class="header-left">
-            <h1>Aegis Console // <span class="dim">proxy-v1</span></h1>
+            <h1>Aegis Console // <span class="dim" id="active_version" title="Active Registry Schema ID"
+                    style="font-size: 14px; font-family: monospace;">Loading...</span></h1>
             <div class="status-indicator">
                 <span class="dot active"></span>
                 <span>System Online</span>
             </div>
         </div>
-        <div class="header-right">
+        <div class="header-right" style="display: flex; align-items: center; gap: 20px;">
+            <a href="/static/steward.html" class="btn btn-primary" style="text-decoration: none;">Launch Steward
+                Console</a>
+            <select id="provider_select" class="btn"
+                style="background: rgba(255, 255, 255, 0.05); color: #e0e0e0; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; padding: 6px 12px; font-family: inherit;">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="google">Google Gemini</option>
+                <option value="xai">xAI</option>
+                <option value="ollama">Ollama (Local)</option>
+            </select>
+            <select id="model_select" class="btn"
+                style="background: rgba(255, 255, 255, 0.05); color: #e0e0e0; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; padding: 6px 12px; font-family: inherit; margin-left: -10px;">
+                <!-- Populated dynamically -->
+            </select>
             <label class="toggle-switch">
                 <span class="toggle-label">Explainability Trace</span>
                 <input type="checkbox" id="explain_toggle" checked>
@@ -36,6 +51,9 @@
                 </div>
             </div>
             <div class="input-container">
+                <div id="chat_history" class="chat-history"
+                    style="max-height: 400px; overflow-y: auto; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
+                </div>
                 <textarea id="intent_input" placeholder="e.g., Get Alice from the users table..." autofocus></textarea>
             </div>
             <div class="actions">

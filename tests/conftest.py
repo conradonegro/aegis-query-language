@@ -1,4 +1,7 @@
 import os
+# Must be set globally BEFORE pytest collections import app modules
+os.environ["TESTING"] = "true"
+
 import logging
 import pytest
 import pytest_asyncio
@@ -51,6 +54,35 @@ def seed_memory_db_for_tests():
         conn.execute(text("CREATE TABLE IF NOT EXISTS orders (id INTEGER, user_id INTEGER, total_amount REAL)"))
         conn.execute(text("DELETE FROM orders"))
         conn.execute(text("DELETE FROM users"))
+        
+        # Chat history tables (mirrors PostgreSQL ORM models, using TEXT for UUIDs in SQLite)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                session_id TEXT PRIMARY KEY,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                tenant_id TEXT,
+                user_id TEXT,
+                title TEXT,
+                metadata TEXT
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                sequence_number INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                provider_id TEXT,
+                prompt_tokens INTEGER,
+                completion_tokens INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("DELETE FROM chat_messages"))
+        conn.execute(text("DELETE FROM chat_sessions"))
         
         conn.execute(text("INSERT INTO users VALUES (1, 'Alice', 1, '2025-01-01')"))
         conn.execute(text("INSERT INTO users VALUES (2, 'Bob', 1, '2025-01-02')"))

@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.engine.url import make_url
 
 from app.api.models import ErrorResponse
 from app.api.router import api_router
@@ -23,6 +24,7 @@ from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.compiler.ollama import OllamaLLMGateway, LLMGenerationError
 from app.execution.executor import ExecutionEngine
 from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef, RegistrySchema, SafetyClassification
+from app.vault import get_secrets_manager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,9 +43,35 @@ async def lifespan(app: FastAPI):
     if not all([runtime_db_url, registry_runtime_db_url, steward_db_url, registry_admin_db_url]):
         raise RuntimeError("Least Privilege PostgreSQL connection URLs are not fully configured.")
 
-    app.state.registry_runtime_session_factory = async_sessionmaker(create_async_engine(registry_runtime_db_url), expire_on_commit=False)
-    app.state.steward_session_factory = async_sessionmaker(create_async_engine(steward_db_url), expire_on_commit=False)
-    app.state.registry_admin_session_factory = async_sessionmaker(create_async_engine(registry_admin_db_url), expire_on_commit=False)
+    secrets_mgr = get_secrets_manager()
+
+    def _secure_url(raw_url: str, role_name: str) -> str:
+        url_obj = make_url(raw_url)
+        if url_obj.get_dialect().name in ["sqlite", "sqlite+aiosqlite"]:
+            return raw_url # Local test memory URI remains unmodified
+            
+        # Secure the Postgres URL dynamically without emitting to logs
+        password = secrets_mgr.get_database_password(role_name)
+        url_obj = url_obj.set(password=password)
+        
+        # Enforce SSL verification for physical persistence
+        if os.getenv("ENVIRONMENT") == "production":
+            new_query = dict(url_obj.query)
+            new_query["ssl"] = "require"
+            url_obj = url_obj.set(query=new_query)
+            
+        # render_as_string properly URL-encodes passwords protecting against special characters injected via Vault
+        return url_obj.render_as_string(hide_password=False)
+
+    secure_registry_runtime_db_url = _secure_url(registry_runtime_db_url, "user_aegis_registry_runtime")
+    secure_steward_db_url = _secure_url(steward_db_url, "user_aegis_steward")
+    secure_registry_admin_db_url = _secure_url(registry_admin_db_url, "user_aegis_registry_admin")
+    secure_runtime_db_url = _secure_url(runtime_db_url, "user_aegis_runtime")
+
+    app.state.registry_runtime_session_factory = async_sessionmaker(create_async_engine(secure_registry_runtime_db_url), expire_on_commit=False)
+    app.state.steward_session_factory = async_sessionmaker(create_async_engine(secure_steward_db_url), expire_on_commit=False)
+    app.state.registry_admin_session_factory = async_sessionmaker(create_async_engine(secure_registry_admin_db_url), expire_on_commit=False)
+    app.state.runtime_session_factory = async_sessionmaker(create_async_engine(secure_runtime_db_url), expire_on_commit=False)
 
     if os.getenv("TESTING") == "true":
         logger.info("[*] Testing mode detected: Seeding deterministic static RegistrySchema bounds")
@@ -86,7 +114,7 @@ async def lifespan(app: FastAPI):
             
     app.state.registry = schema
 
-    app.state.executor = ExecutionEngine(connection_string=runtime_db_url)
+    app.state.executor = ExecutionEngine(connection_string=secure_runtime_db_url)
 
     # Initialize Audit Engine
     app.state.auditor = JSONAuditLogger() # Writes natively to console output
@@ -112,8 +140,15 @@ async def lifespan(app: FastAPI):
     from app.rag.models import CategoricalValue
     from app.rag.store import InMemoryVectorStore
     vector_store = InMemoryVectorStore()
-    vector_store.index_value(CategoricalValue(value="Alice", abstract_column="users.name", tenant_id="default_tenant"))
-    vector_store.index_value(CategoricalValue(value="Bob", abstract_column="users.name", tenant_id="default_tenant"))
+    
+    # Pre-warm the RAG with Semantic Schema Descriptions
+    for table in schema.tables:
+        if table.description:
+             vector_store.index_value(CategoricalValue(value=table.description, abstract_column=f"{table.alias}.{table.alias}", tenant_id="default_tenant"))
+        for col in table.columns:
+            if col.description:
+                 vector_store.index_value(CategoricalValue(value=col.description, abstract_column=f"{table.alias}.{col.alias}", tenant_id="default_tenant"))
+                 
     app.state.vector_store = vector_store
     app.state.compiler.set_vector_store(vector_store)
 

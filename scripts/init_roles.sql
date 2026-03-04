@@ -35,6 +35,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO role_aegis_r
 
 GRANT USAGE ON SCHEMA aegis_meta TO role_aegis_runtime;
 GRANT SELECT ON aegis_meta.compiled_registry_artifacts TO role_aegis_runtime;
+GRANT SELECT, INSERT, UPDATE ON aegis_meta.chat_sessions TO role_aegis_runtime;
+GRANT SELECT, INSERT ON aegis_meta.chat_messages TO role_aegis_runtime;
 -- Explicit denys are handled inherently by PostgreSQL default deny posture.
 
 --------------------------------------------------------------------------------
@@ -64,7 +66,7 @@ GRANT INSERT ON aegis_meta.metadata_audit TO role_aegis_steward;
 --------------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA aegis_meta TO role_aegis_registry_admin;
 GRANT SELECT ON ALL TABLES IN SCHEMA aegis_meta TO role_aegis_registry_admin;
-GRANT UPDATE (status) ON aegis_meta.metadata_versions TO role_aegis_registry_admin;
+GRANT UPDATE (status, registry_hash, approved_by, approved_at) ON aegis_meta.metadata_versions TO role_aegis_registry_admin;
 GRANT INSERT ON aegis_meta.compiled_registry_artifacts TO role_aegis_registry_admin;
 GRANT INSERT ON aegis_meta.metadata_audit TO role_aegis_registry_admin;
 -- No access to business data (schema public omitted)

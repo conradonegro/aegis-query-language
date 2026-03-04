@@ -9,6 +9,11 @@ from app.compiler.models import SQLAst, ValidatedAST
 class SafetyViolationError(Exception):
     message: str
 
+@dataclass
+class UnsafeExpressionError(SafetyViolationError):
+    """Raised when an explicitly allowed AST node violates semantic structural rules during translation."""
+    pass
+
 class SafetyEngine:
     """
     Implements a strict allow-list based structural validation on SQL.
@@ -44,6 +49,7 @@ class SafetyEngine:
         exp.From,
         exp.Where,
         exp.Group,
+        exp.Having,
         exp.Order,
         exp.Ordered,
         exp.Column,
@@ -67,6 +73,8 @@ class SafetyEngine:
         exp.Coalesce, exp.Cast,
         # Types
         exp.DataType,
+        # Functions
+        exp.Extract,
         # Alias
         exp.Alias, exp.ColumnPosition, exp.TableAlias, exp.Tuple
     )

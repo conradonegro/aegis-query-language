@@ -1,6 +1,10 @@
+import os
 import uuid
 from datetime import datetime
 from typing import Any
+
+# SQLite (used in tests) doesn't support schemas. Conditionally strip it.
+_SCHEMA: str | None = None if os.getenv("TESTING") == "true" else "aegis_meta"
 
 from sqlalchemy import (
     Boolean,
@@ -144,6 +148,12 @@ class MetadataAudit(Base):
     action: Mapped[str] = mapped_column(Enum("create", "update", "approve", "deploy", "revoke", name="audit_action", schema="aegis_meta"))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    # Cryptographic WORM Chaining
+    previous_hash: Mapped[str | None] = mapped_column(Text)
+    row_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    hash_algorithm: Mapped[str] = mapped_column(Text, default="sha256-v1")
+    key_id: Mapped[str | None] = mapped_column(Text)
 
 
 class CompiledRegistryArtifact(Base):
@@ -160,4 +170,55 @@ class CompiledRegistryArtifact(Base):
     artifact_hash: Mapped[str] = mapped_column(Text, nullable=False)
     compiled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     compiler_version: Mapped[str] = mapped_column(Text)
+    
+    # Cryptographic HMAC Verification
     signature: Mapped[str | None] = mapped_column(Text)
+    signature_algo: Mapped[str] = mapped_column(Text, default="hmac-sha256-v1")
+    signature_key_id: Mapped[str | None] = mapped_column(Text)
+
+
+class ChatSession(Base):
+    """
+    Tracks a unified multi-turn conversation context across model executions.
+    """
+    __tablename__ = "chat_sessions"
+    __table_args__ = {"schema": _SCHEMA} if _SCHEMA else {}
+
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="default_tenant")
+    user_id: Mapped[str] = mapped_column(Text, nullable=False, default="api_user")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.sequence_number")
+
+
+class ChatMessage(Base):
+    """
+    Atomic ordered log of interaction within a particular session.
+    """
+    __tablename__ = "chat_messages"
+    
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence_number", name="uq_session_sequence"),
+        {"schema": _SCHEMA} if _SCHEMA else {}
+    )
+
+    message_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{_SCHEMA}.chat_sessions.session_id" if _SCHEMA else "chat_sessions.session_id")
+    )
+    sequence_number: Mapped[int] = mapped_column(nullable=False)
+    
+    role: Mapped[str] = mapped_column(
+        Enum("user", "assistant", "system", name="chat_role", schema=_SCHEMA),
+        nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    
+    # Provider Context
+    provider_id: Mapped[str | None] = mapped_column(Text)  # e.g., 'ollama:llama3', 'openai:gpt-4o'
+    prompt_tokens: Mapped[int | None] = mapped_column()
+    completion_tokens: Mapped[int | None] = mapped_column()
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ChatSession", back_populates="messages")

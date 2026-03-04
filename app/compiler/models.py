@@ -10,6 +10,10 @@ from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTabl
 class UserIntent(BaseModel):
     natural_language_query: str
 
+class ChatHistoryItem(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
+
 class ValueMatchResult(BaseModel):
     status: Literal["success", "ambiguous", "no_match"]
     matches: list[str] = []
@@ -38,6 +42,7 @@ class PromptEnvelope(BaseModel):
     schema_context: str
     user_prompt: str
     hints: str
+    chat_history: list[ChatHistoryItem] = Field(default_factory=list)
 
 class LLMResult(BaseModel):
     raw_text: str

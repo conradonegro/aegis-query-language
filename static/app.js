@@ -1,4 +1,7 @@
 const DOMElements = {
+    providerSelect: document.getElementById('provider_select'),
+    modelSelect: document.getElementById('model_select'),
+    chatHistory: document.getElementById('chat_history'),
     input: document.getElementById('intent_input'),
     runBtn: document.getElementById('run_btn'),
     explainToggle: document.getElementById('explain_toggle'),
@@ -31,6 +34,8 @@ const DOMElements = {
     bindParams: document.getElementById('bind_params')
 };
 
+let currentSessionId = null;
+
 // Toggle Explainability UI
 DOMElements.explainToggle.addEventListener('change', (e) => {
     if (e.target.checked) {
@@ -56,6 +61,47 @@ DOMElements.input.addEventListener('keydown', (e) => {
 
 DOMElements.runBtn.addEventListener('click', runCompilation);
 
+async function loadActiveVersion() {
+    try {
+        const res = await fetch('/api/v1/metadata/active');
+        const data = await res.json();
+        const verEl = document.getElementById('active_version');
+        if (data && data.version_id) {
+            verEl.textContent = data.version_id;
+        } else {
+            verEl.textContent = 'Development Sandbox';
+        }
+    } catch (e) {
+        console.error("Failed to load active schema version", e);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadActiveVersion();
+    updateModelDropdown();
+});
+
+const providerModels = {
+    'openai': ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'],
+    'anthropic': ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-haiku-20240307'],
+    'google': ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'],
+    'xai': ['grok-2', 'grok-2-mini', 'grok-1'],
+    'ollama': ['llama3']
+};
+
+function updateModelDropdown() {
+    const provider = DOMElements.providerSelect.value;
+    const models = providerModels[provider] || [];
+    DOMElements.modelSelect.innerHTML = '';
+    models.forEach(model => {
+        const opt = document.createElement('option');
+        opt.value = model;
+        opt.textContent = model;
+        DOMElements.modelSelect.appendChild(opt);
+    });
+}
+
+DOMElements.providerSelect.addEventListener('change', updateModelDropdown);
 function resetUI() {
     DOMElements.errorContainer.classList.add('hidden');
     DOMElements.resultsContainer.classList.add('hidden');
@@ -88,10 +134,22 @@ async function runCompilation() {
     DOMElements.runBtn.disabled = true;
     DOMElements.runBtn.textContent = 'Compiling...';
 
+    // Append to Chat UI immediately
+    const userMsg = document.createElement("div");
+    userMsg.className = "chat-message user-message";
+    userMsg.style.cssText = "background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #64B5F6;";
+    userMsg.innerHTML = `<strong>User:</strong> ${intent}`;
+    DOMElements.chatHistory.appendChild(userMsg);
+
+    // Clear intent
+    DOMElements.input.value = "";
+
     const payload = {
         intent: intent,
         explain: DOMElements.explainToggle.checked,
-        schema_hints: []
+        schema_hints: [],
+        provider_id: `${DOMElements.providerSelect.value}:${DOMElements.modelSelect.value}`,
+        session_id: currentSessionId
     };
 
     DOMElements.jsonRequest.textContent = JSON.stringify(payload, null, 2);
@@ -105,21 +163,42 @@ async function runCompilation() {
         });
 
         const data = await response.json();
+
+        if (data.session_id) {
+            currentSessionId = data.session_id;
+        }
+
         DOMElements.jsonResponse.textContent = JSON.stringify(data, null, 2);
 
         if (!response.ok) {
             handleError(data);
+
+            // Append explicit error feedback
+            const assistantMsg = document.createElement("div");
+            assistantMsg.className = "chat-message assistant-message error";
+            assistantMsg.style.cssText = "background: rgba(255,0,0,0.1); padding: 8px; border-radius: 4px; border-left: 3px solid #ff5252; color: #ff5252;";
+            assistantMsg.innerHTML = `<strong>Assistant (${DOMElements.providerSelect.value}:${DOMElements.modelSelect.value}):</strong> ${data.message || 'Execution failed.'}`;
+            DOMElements.chatHistory.appendChild(assistantMsg);
+
         } else {
             handleSuccess(data);
             if (data.explainability) {
                 renderExplainability(data.explainability);
             }
+            // Append LLM compilation trace
+            const assistantMsg = document.createElement("div");
+            assistantMsg.className = "chat-message assistant-message success";
+            assistantMsg.style.cssText = "background: rgba(0,255,0,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #4CAF50;";
+            assistantMsg.innerHTML = `<strong>Assistant (${DOMElements.providerSelect.value}:${DOMElements.modelSelect.value}):</strong> <pre style="margin: 5px 0 0 0; white-space: pre-wrap; font-family: monospace; font-size: 13px;">${data.sql}</pre>`;
+            DOMElements.chatHistory.appendChild(assistantMsg);
         }
     } catch (err) {
         handleError({ code: 0, message: "Network Error: Could not reach the API." });
     } finally {
         DOMElements.runBtn.disabled = false;
         DOMElements.runBtn.textContent = 'Run Compilation & Execute';
+        // Auto-scroll to bottom of chat history
+        DOMElements.chatHistory.scrollTop = DOMElements.chatHistory.scrollHeight;
     }
 }
 
