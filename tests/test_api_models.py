@@ -39,6 +39,7 @@ def test_api_execute_response_validation() -> None:
     """Test QueryExecuteResponse fields."""
     res = QueryExecuteResponse(
         query_id="456",
+        sql="SELECT col1 FROM t",
         results=[{"col1": "val1"}],
         row_count=1,
         execution_latency_ms=42.0

@@ -210,7 +210,8 @@ async def execute_query(
         hints=hints,
         explain=payload.explain,
         chat_history=chat_history,
-        provider_id=payload.provider_id
+        provider_id=payload.provider_id,
+        session_id=str(session_id)
     )
     
     # Save the interaction to the session
@@ -235,7 +236,14 @@ async def execute_query(
         session_id=session_id,
         sequence_number=last_seq + 2,
         role="assistant",
-        content=executable.sql,
+        # Store the abstract SQL (using alias names like col0546, table0049) rather than
+        # the physical/translated SQL. This prevents the LLM from learning physical column
+        # names from its own prior responses and hallucinating them on follow-up turns.
+        content=(
+            executable.explainability.get("translation", {}).get("llm_abstract_query")
+            if executable.explainability
+            else executable.sql
+        ) or executable.sql,
         provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
         prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
         completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
@@ -276,6 +284,7 @@ async def execute_query(
     return QueryExecuteResponse(
         query_id=executable.query_id or "",
         session_id=str(session_id),
+        sql=executable.sql,
         results=result.rows,
         row_count=len(result.rows),
         execution_latency_ms=0.0,

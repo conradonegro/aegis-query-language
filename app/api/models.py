@@ -62,6 +62,7 @@ class QueryExecuteResponse(BaseModel):
 
     query_id: str = Field(..., description="Unique provenance ID of the Abstract AST execution.")
     session_id: str | None = Field(default=None, description="The Chat Session UUID holding this interaction.")
+    sql: str = Field(..., description="The fully parameterized SQL string.")
     results: list[dict[str, str | int | float | bool | None]]
     row_count: int
     execution_latency_ms: float = Field(..., description="Physical database execution latency.")

@@ -68,8 +68,15 @@
                     <p id="error_message"></p>
                 </div>
             </div>
+        </section>
 
-            <div id="results_container" class="results-panel hidden">
+        <section class="panel right-panel" id="right_panel">
+            <div class="tabs-header">
+                <button class="tab-btn active" id="tab_results">Execution Results</button>
+                <button class="tab-btn" id="tab_trace">Compilation Pipeline</button>
+            </div>
+
+            <div id="results_container" class="results-panel tab-content hidden">
                 <div class="panel-header">
                     <h3>Physical Execution Results</h3>
                     <span class="latency" id="execution_latency"></span>
@@ -82,71 +89,72 @@
                 </div>
                 <div class="row-count">Rows returned: <span id="row_count">0</span></div>
             </div>
-        </section>
 
-        <section class="panel trace-panel" id="trace_panel">
-            <div class="panel-header">
-                <h2>Compilation Pipeline</h2>
-                <span class="latency" id="compiler_latency"></span>
-            </div>
+            <div id="trace_panel" class="trace-panel tab-content hidden">
+                <div class="panel-header">
+                    <h2>Compilation Pipeline</h2>
+                    <span class="latency" id="compiler_latency"></span>
+                </div>
 
-            <div class="trace-steps">
-                <!-- RAG Step -->
-                <div class="trace-step">
-                    <div class="step-header">
-                        <span class="step-num">1</span>
-                        <h4>Semantic Interception (RAG)</h4>
-                        <span class="outcome-badge" id="rag_outcome">WAITING</span>
-                    </div>
-                    <div class="step-details" id="rag_details">
-                        <div class="detail-row"><span>Matches:</span><span id="rag_matches" class="code-val">-</span>
+                <div class="trace-steps">
+                    <!-- RAG Step -->
+                    <div class="trace-step">
+                        <div class="step-header">
+                            <span class="step-num">1</span>
+                            <h4>Semantic Interception (RAG)</h4>
+                            <span class="outcome-badge" id="rag_outcome">WAITING</span>
                         </div>
-                        <div class="detail-row"><span>Reason:</span><span id="rag_reason" class="text-val">-</span>
+                        <div class="step-details" id="rag_details">
+                            <div class="detail-row"><span>Matches:</span><span id="rag_matches"
+                                    class="code-val">-</span>
+                            </div>
+                            <div class="detail-row"><span>Reason:</span><span id="rag_reason" class="text-val">-</span>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Schema Step -->
-                <div class="trace-step">
-                    <div class="step-header">
-                        <span class="step-num">2</span>
-                        <h4>Schema Boundaries</h4>
+                    <!-- Schema Step -->
+                    <div class="trace-step">
+                        <div class="step-header">
+                            <span class="step-num">2</span>
+                            <h4>Schema Boundaries</h4>
+                        </div>
+                        <div class="step-details">
+                            <div class="detail-row"><span>Included:</span><span id="schema_included"
+                                    class="code-val">-</span></div>
+                            <div class="detail-row"><span>Excluded:</span><span id="schema_excluded"
+                                    class="code-val dim">-</span></div>
+                        </div>
                     </div>
-                    <div class="step-details">
-                        <div class="detail-row"><span>Included:</span><span id="schema_included"
-                                class="code-val">-</span></div>
-                        <div class="detail-row"><span>Excluded:</span><span id="schema_excluded"
-                                class="code-val dim">-</span></div>
-                    </div>
-                </div>
 
-                <!-- LLM Step -->
-                <div class="trace-step">
-                    <div class="step-header">
-                        <span class="step-num">3</span>
-                        <h4>LLM Generation (<span id="llm_provider">provider</span>)</h4>
+                    <!-- LLM Step -->
+                    <div class="trace-step">
+                        <div class="step-header">
+                            <span class="step-num">3</span>
+                            <h4>LLM Generation (<span id="llm_provider">provider</span>)</h4>
+                        </div>
+                        <div class="step-details stack">
+                            <label>System Prompt (Sandbox Constraints)</label>
+                            <div class="code-block prompt-block" id="prompt_system">...</div>
+                            <label>Raw LLM Generation</label>
+                            <div class="code-block prompt-block" id="llm_raw_response">...</div>
+                            <label>Extracted Abstract SQL</label>
+                            <div class="code-block" id="llm_abstract">...</div>
+                        </div>
                     </div>
-                    <div class="step-details stack">
-                        <label>System Prompt (Sandbox Constraints)</label>
-                        <div class="code-block prompt-block" id="prompt_system">...</div>
-                        <label>Raw LLM Generation</label>
-                        <div class="code-block prompt-block" id="llm_raw_response">...</div>
-                        <label>Extracted Abstract SQL</label>
-                        <div class="code-block" id="llm_abstract">...</div>
-                    </div>
-                </div>
 
-                <!-- Translation Step -->
-                <div class="trace-step">
-                    <div class="step-header">
-                        <span class="step-num">4</span>
-                        <h4>Safety Parser & Parameterization</h4>
-                    </div>
-                    <div class="step-details stack">
-                        <label>Physical Execution SQL</label>
-                        <div class="code-block" id="param_sql">...</div>
-                        <label>Bound Parameters</label>
-                        <div class="code-block" id="bind_params">{}</div>
+                    <!-- Translation Step -->
+                    <div class="trace-step">
+                        <div class="step-header">
+                            <span class="step-num">4</span>
+                            <h4>Safety Parser & Parameterization</h4>
+                        </div>
+                        <div class="step-details stack">
+                            <label>Physical Execution SQL</label>
+                            <div class="code-block" id="param_sql">...</div>
+                            <label>Bound Parameters</label>
+                            <div class="code-block" id="bind_params">{}</div>
+                        </div>
                     </div>
                 </div>
             </div>

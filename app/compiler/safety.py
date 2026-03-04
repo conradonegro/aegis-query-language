@@ -56,6 +56,9 @@ class SafetyEngine:
         exp.Identifier,
         exp.Literal,
         exp.Boolean,
+        exp.Parameter,
+        exp.Placeholder,
+        exp.Var,
         exp.Table,
         exp.Join,
         exp.OnCondition,
@@ -73,6 +76,7 @@ class SafetyEngine:
         exp.Coalesce, exp.Cast,
         # Types
         exp.DataType,
+        exp.Interval,
         # Functions
         exp.Extract,
         # Alias

@@ -201,6 +201,10 @@ class DeterministicTranslator:
             if not any(t in dtype for t in temporal_types):
                  raise UnsafeExpressionError(f"EXTRACT operations are only permitted on temporal columns. Resolved column '{source.name}' is of type '{dtype}'.")
 
+        for interval_node in tree.find_all(exp.Interval):
+            if any(interval_node.find_all((exp.Subquery, exp.Select, exp.Window))):
+                 raise UnsafeExpressionError("Nested subqueries or window constructs are strictly blocked inside INTERVAL.")
+                 
         # E. Parameterize Literals Safely
         for node_inst in literals_to_replace:
             # We replace string/numeric literals with query parameters

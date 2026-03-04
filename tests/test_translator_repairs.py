@@ -189,3 +189,17 @@ def test_extract_nested_subquery_fails(translator: DeterministicTranslator, mock
     ast = ValidatedAST(tree=sqlglot.parse_one("SELECT EXTRACT(MONTH FROM (SELECT created_at FROM orders LIMIT 1))"))
     with pytest.raises(UnsafeExpressionError, match="must be natively bound to a column"):
         translator.translate(ast, mock_schema)
+
+def test_interval_allowed_and_translated(translator: DeterministicTranslator, mock_schema: RegistrySchema):
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT o.created_at + INTERVAL '1 day' FROM orders o"))
+    executable = translator.translate(ast, mock_schema)
+    assert "INTERVAL" in executable.sql.upper()
+
+def test_interval_nested_subquery_fails(translator: DeterministicTranslator, mock_schema: RegistrySchema):
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT o.created_at + INTERVAL '1 day' FROM orders o"))
+    # Manually inject a dangerous node into the parsed AST since strict parsers might block this natively
+    interval_node = list(ast.tree.find_all(exp.Interval))[0]
+    interval_node.this.replace(sqlglot.parse_one("(SELECT '1 day')"))
+    
+    with pytest.raises(UnsafeExpressionError, match="Nested subqueries or window constructs are strictly blocked inside INTERVAL"):
+        translator.translate(ast, mock_schema)

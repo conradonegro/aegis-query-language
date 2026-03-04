@@ -33,6 +33,11 @@ class FilteredSchema(BaseModel):
     relationships: list[AbstractRelationshipDef]
     omitted_columns: dict[str, str]
 
+class SessionQueryContext(BaseModel):
+    last_filtered_schema: FilteredSchema
+    last_successful_sql: str
+    timestamp: float
+
 class PromptHints(BaseModel):
     column_hints: list[str]
     rag_provenance: dict[str, Any] | None = None

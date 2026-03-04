@@ -3,6 +3,7 @@ import pytest
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
+from app.compiler.translator import TranslationError
 from app.compiler.interfaces import (
     LLMGatewayProtocol,
     PromptBuilderProtocol,
@@ -11,7 +12,7 @@ from app.compiler.interfaces import (
     SQLParserProtocol,
     TranslatorProtocol,
 )
-from app.compiler.models import PromptHints, UserIntent
+from app.compiler.models import PromptHints, UserIntent, LLMResult
 from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
 from app.compiler.safety import SafetyEngine
@@ -122,3 +123,84 @@ async def test_compiler_engine_rag_ambiguous_match(rag_compiler_engine: Compiler
     assert hints.rag_provenance is not None
     assert hints.rag_provenance["rag_outcome"] == "AMBIGUOUS_MATCH"
     assert "Ambiguous: 2 competing matches breached the threshold." in hints.rag_provenance["rag_reason"]
+
+@pytest.mark.asyncio
+async def test_compiler_engine_follow_up_reuse(compiler_engine: CompilerEngine, mock_registry: RegistrySchema) -> None:
+    session_id = "test_session_1"
+    
+    # 1. Fresh query
+    intent1 = UserIntent(natural_language_query="Show me all users")
+    hints1 = PromptHints(column_hints=[])
+    exec1 = await compiler_engine.compile(intent=intent1, schema=mock_registry, hints=hints1, session_id=session_id, explain=True)
+    
+    # Verify state is stored
+    assert session_id in compiler_engine._session_store
+    
+    stored_schema = compiler_engine._session_store[session_id].last_filtered_schema
+    assert len(stored_schema.tables) > 0
+    assert stored_schema.tables[0].alias == "users"
+
+    # 2. Strict Follow-up (No structural tokens, short)
+    intent2 = UserIntent(natural_language_query="and in 2016")
+    hints2 = PromptHints(column_hints=[])
+    exec2 = await compiler_engine.compile(intent=intent2, schema=mock_registry, hints=hints2, session_id=session_id, explain=True)
+    
+    assert exec2.explainability["schema_filter"]["reasons"] == ["Reused precisely from prior SessionQueryContext (Follow-up)"]
+    assert exec2.explainability["schema_filter"]["included_aliases"] == exec1.explainability["schema_filter"]["included_aliases"]
+
+
+@pytest.mark.asyncio
+async def test_compiler_engine_follow_up_topic_shift(compiler_engine: CompilerEngine, mock_registry: RegistrySchema) -> None:
+    session_id = "test_session_2"
+    
+    # 1. Fresh query
+    intent1 = UserIntent(natural_language_query="Show me all users")
+    hints1 = PromptHints(column_hints=[])
+    await compiler_engine.compile(intent=intent1, schema=mock_registry, hints=hints1, session_id=session_id, explain=True)
+    
+    # 2. Topic Shift (contains structural token "users" which forces a fresh pull)
+    intent2 = UserIntent(natural_language_query="what about authors")
+    
+    # Let's add authors to registry so we can test the shift
+    mock_registry.tables.append(AbstractTableDef(
+        alias="authors",
+        description="The authors table",
+        physical_target="auth.authors",
+        columns=[]
+    ))
+    
+    hints2 = PromptHints(column_hints=[])
+    exec2 = await compiler_engine.compile(intent=intent2, schema=mock_registry, hints=hints2, session_id=session_id, explain=True)
+    
+    # It should NOT say reused
+    assert exec2.explainability["schema_filter"]["reasons"] != ["Reused precisely from prior SessionQueryContext (Follow-up)"]
+
+
+@pytest.mark.asyncio
+async def test_compiler_engine_follow_up_failure_preservation(compiler_engine: CompilerEngine, mock_registry: RegistrySchema) -> None:
+    session_id = "test_session_3"
+    
+    # 1. Fresh query
+    intent1 = UserIntent(natural_language_query="Show me all users")
+    hints1 = PromptHints(column_hints=[])
+    await compiler_engine.compile(intent=intent1, schema=mock_registry, hints=hints1, session_id=session_id)
+    
+    original_sql = compiler_engine._session_store[session_id].last_successful_sql
+    original_timestamp = compiler_engine._session_store[session_id].timestamp
+    
+    # 2. Follow-up that fails compilation (mock a safety violation or translation error)
+    class BrokenGateway(MockLLMGateway):
+        async def generate(self, envelope) -> LLMResult:
+            return LLMResult(raw_text="SELECT * FROM hallucinated_table", model_id="mock", latency_ms=10.0, prompt_tokens=10, completion_tokens=10)
+            
+    compiler_engine.llm_gateway = BrokenGateway()
+    
+    intent2 = UserIntent(natural_language_query="and in 2016")
+    hints2 = PromptHints(column_hints=[])
+    
+    with pytest.raises(TranslationError):
+        await compiler_engine.compile(intent=intent2, schema=mock_registry, hints=hints2, session_id=session_id)
+        
+    # 3. Assert state was NOT corrupted by the failure
+    assert compiler_engine._session_store[session_id].last_successful_sql == original_sql
+    assert compiler_engine._session_store[session_id].timestamp == original_timestamp

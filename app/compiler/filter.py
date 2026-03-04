@@ -13,30 +13,81 @@ class DeterministicSchemaFilter:
     def __init__(self, cutoff_threshold: int = 1):
         self.cutoff_threshold = cutoff_threshold
 
-    def _tokenize(self, text: str) -> set[str]:
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
         """Normalizes and extracts alphanumeric vocabulary tokens."""
         # Lowercase, remove non-alphanumeric except spaces, split
         clean = re.sub(r'[^a-z0-9\s]', '', text.lower())
         # Drop common english stop words
         stop_words = {
             "select", "show", "get", "find", "all", "the", "a", "an",
-            "and", "or", "of", "in", "to", "for", "with", "by"
+            "and", "or", "of", "in", "to", "for", "with", "by", "is", "are", "do", "does"
         }
         return {word for word in clean.split() if word and word not in stop_words}
 
+    @staticmethod
+    def token_match_score(tokens_a: set[str], tokens_b: set[str]) -> int:
+        return sum(
+            1 for a in tokens_a for b in tokens_b
+            if a == b or (len(a) > 3 and len(b) > 3 and (a in b or b in a))
+        )
+
+    def is_follow_up(self, intent: UserIntent, last_schema: FilteredSchema | None, full_schema: RegistrySchema | None = None) -> bool:
+        """
+        Determines strictly if the intent is a follow-up query relying on prior context.
+        Checks intent tokens against BOTH the prior filtered schema AND the full registry
+        schema to detect topic drift toward any table in the system, not just previously
+        surfaced ones.
+        """
+        if not last_schema:
+            return False
+
+        intent_tokens = self._tokenize(intent.natural_language_query)
+        if len(intent_tokens) == 0:
+            return False
+
+        # Build the combined table pool: prior schema + full registry (if provided)
+        all_tables = list(last_schema.tables)
+        if full_schema:
+            prior_aliases = {t.alias for t in last_schema.tables}
+            for table in full_schema.tables:
+                if table.alias not in prior_aliases:
+                    all_tables.append(table)
+
+        # 1. Rule Priority: Check for ANY structural alias matches against all known tables.
+        # If the user introduces any structural tokens, it's ALWAYS a fresh query.
+        has_structural_match = False
+        for table in all_tables:
+            table_tokens = self._tokenize(table.alias) | self._tokenize(table.description)
+            if self.token_match_score(intent_tokens, table_tokens) >= self.cutoff_threshold:
+                has_structural_match = True
+                break
+
+            for col in table.columns:
+                col_tokens = self._tokenize(col.alias) | self._tokenize(col.description)
+                if self.token_match_score(intent_tokens, col_tokens) >= self.cutoff_threshold:
+                    has_structural_match = True
+                    break
+
+            if has_structural_match:
+                break
+
+        if has_structural_match:
+            return False
+
+        # 2. Heuristic check: No structural matches AND token count < 8 implies follow-up.
+        if len(intent_tokens) < 8:
+            return True
+
+        return False
+
     def filter_schema(self, intent: UserIntent, schema: RegistrySchema, included_columns: RAGIncludedColumns | None = None) -> FilteredSchema:
+
         intent_tokens = self._tokenize(intent.natural_language_query)
         forced_columns = set(included_columns.columns if included_columns else [])
 
         allowed_tables = []
         rejected_columns = {}
-        
-        # Helper for safer substring matching
-        def token_match_score(tokens_a: set[str], tokens_b: set[str]) -> int:
-            return sum(
-                1 for a in tokens_a for b in tokens_b
-                if a == b or (len(a) > 3 and len(b) > 3 and (a in b or b in a))
-            )
 
         # 1. First pass to find directly matched tables
         matched_tables = set()
@@ -49,12 +100,12 @@ class DeterministicSchemaFilter:
                 
         for table in schema.tables:
             table_tokens = self._tokenize(table.alias) | self._tokenize(table.description)
-            table_overlap = token_match_score(intent_tokens, table_tokens)
+            table_overlap = self.token_match_score(intent_tokens, table_tokens)
             
             col_overlap_total = 0
             for col in table.columns:
                 col_tokens = self._tokenize(col.alias) | self._tokenize(col.description)
-                col_overlap_total += token_match_score(intent_tokens, col_tokens)
+                col_overlap_total += self.token_match_score(intent_tokens, col_tokens)
             
             if table_overlap >= self.cutoff_threshold or col_overlap_total >= self.cutoff_threshold:
                 matched_tables.add(table.alias)
@@ -77,12 +128,12 @@ class DeterministicSchemaFilter:
                 continue
 
             table_tokens = self._tokenize(table.alias) | self._tokenize(table.description)
-            table_overlap = token_match_score(intent_tokens, table_tokens)
+            table_overlap = self.token_match_score(intent_tokens, table_tokens)
             
             allowed_columns = []
             for col in table.columns:
                 col_tokens = self._tokenize(col.alias) | self._tokenize(col.description)
-                col_overlap = token_match_score(intent_tokens, col_tokens)
+                col_overlap = self.token_match_score(intent_tokens, col_tokens)
                 
                 full_col_name = f"{table.alias}.{col.alias}"
                 

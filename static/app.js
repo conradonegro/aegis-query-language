@@ -31,7 +31,11 @@ const DOMElements = {
     llmRawResponse: document.getElementById('llm_raw_response'),
     llmAbstract: document.getElementById('llm_abstract'),
     paramSql: document.getElementById('param_sql'),
-    bindParams: document.getElementById('bind_params')
+    bindParams: document.getElementById('bind_params'),
+
+    // Tabs
+    tabResults: document.getElementById('tab_results'),
+    tabTrace: document.getElementById('tab_trace')
 };
 
 let currentSessionId = null;
@@ -39,11 +43,36 @@ let currentSessionId = null;
 // Toggle Explainability UI
 DOMElements.explainToggle.addEventListener('change', (e) => {
     if (e.target.checked) {
-        DOMElements.tracePanel.classList.remove('hidden');
+        DOMElements.tabTrace.style.display = 'inline-block';
     } else {
-        DOMElements.tracePanel.classList.add('hidden');
+        DOMElements.tabTrace.style.display = 'none';
+        if (DOMElements.tabTrace.classList.contains('active')) {
+            switchTab('results');
+        }
     }
 });
+
+// Tab switching logic
+function switchTab(tab) {
+    if (tab === 'results') {
+        DOMElements.tabResults.classList.add('active');
+        DOMElements.tabTrace.classList.remove('active');
+        DOMElements.resultsContainer.classList.add('active');
+        DOMElements.resultsContainer.classList.remove('hidden');
+        DOMElements.tracePanel.classList.remove('active');
+        DOMElements.tracePanel.classList.add('hidden');
+    } else if (tab === 'trace') {
+        DOMElements.tabTrace.classList.add('active');
+        DOMElements.tabResults.classList.remove('active');
+        DOMElements.tracePanel.classList.add('active');
+        DOMElements.tracePanel.classList.remove('hidden');
+        DOMElements.resultsContainer.classList.remove('active');
+        DOMElements.resultsContainer.classList.add('hidden');
+    }
+}
+
+DOMElements.tabResults.addEventListener('click', () => switchTab('results'));
+DOMElements.tabTrace.addEventListener('click', () => switchTab('trace'));
 
 // Toggle Drawer UI
 DOMElements.drawerToggle.addEventListener('click', () => {
@@ -104,7 +133,11 @@ function updateModelDropdown() {
 DOMElements.providerSelect.addEventListener('change', updateModelDropdown);
 function resetUI() {
     DOMElements.errorContainer.classList.add('hidden');
-    DOMElements.resultsContainer.classList.add('hidden');
+    // Hide data content but preserve the active tab state. We'll show the active container fully after success/error.
+    DOMElements.resultsBody.innerHTML = '';
+    DOMElements.rowCount.textContent = '0';
+    DOMElements.executionLatency.textContent = '';
+
 
     DOMElements.ragOutcome.textContent = '-';
     DOMElements.ragOutcome.className = 'outcome-badge outcome-neutral';
@@ -144,11 +177,15 @@ async function runCompilation() {
     // Clear intent
     DOMElements.input.value = "";
 
+    // Store the active model and provider when compilation is triggered
+    const activeProvider = DOMElements.providerSelect.value;
+    const activeModel = DOMElements.modelSelect.value;
+
     const payload = {
         intent: intent,
         explain: DOMElements.explainToggle.checked,
         schema_hints: [],
-        provider_id: `${DOMElements.providerSelect.value}:${DOMElements.modelSelect.value}`,
+        provider_id: `${activeProvider}:${activeModel}`,
         session_id: currentSessionId
     };
 
@@ -177,7 +214,7 @@ async function runCompilation() {
             const assistantMsg = document.createElement("div");
             assistantMsg.className = "chat-message assistant-message error";
             assistantMsg.style.cssText = "background: rgba(255,0,0,0.1); padding: 8px; border-radius: 4px; border-left: 3px solid #ff5252; color: #ff5252;";
-            assistantMsg.innerHTML = `<strong>Assistant (${DOMElements.providerSelect.value}:${DOMElements.modelSelect.value}):</strong> ${data.message || 'Execution failed.'}`;
+            assistantMsg.innerHTML = `<strong>Assistant (${activeProvider}:${activeModel}):</strong> ${data.message || 'Execution failed.'}`;
             DOMElements.chatHistory.appendChild(assistantMsg);
 
         } else {
@@ -189,7 +226,7 @@ async function runCompilation() {
             const assistantMsg = document.createElement("div");
             assistantMsg.className = "chat-message assistant-message success";
             assistantMsg.style.cssText = "background: rgba(0,255,0,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #4CAF50;";
-            assistantMsg.innerHTML = `<strong>Assistant (${DOMElements.providerSelect.value}:${DOMElements.modelSelect.value}):</strong> <pre style="margin: 5px 0 0 0; white-space: pre-wrap; font-family: monospace; font-size: 13px;">${data.sql}</pre>`;
+            assistantMsg.innerHTML = `<strong>Assistant (${activeProvider}:${activeModel}):</strong> <pre style="margin: 5px 0 0 0; white-space: pre-wrap; font-family: monospace; font-size: 13px;">${data.sql}</pre>`;
             DOMElements.chatHistory.appendChild(assistantMsg);
         }
     } catch (err) {
@@ -225,7 +262,11 @@ function handleError(errorData) {
 }
 
 function handleSuccess(data) {
-    DOMElements.resultsContainer.classList.remove('hidden');
+    // If trace tab is currently hidden but no other is active, show the one active
+    if (!DOMElements.tabResults.classList.contains('active') && !DOMElements.tabTrace.classList.contains('active')) {
+        switchTab('results');
+    }
+
     DOMElements.rowCount.textContent = data.row_count;
     DOMElements.executionLatency.textContent = `${data.execution_latency_ms.toFixed(2)}ms DB exec`;
 
