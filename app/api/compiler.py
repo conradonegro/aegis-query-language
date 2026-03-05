@@ -82,6 +82,11 @@ class MetadataCompiler:
                     "type": col.data_type,
                     "is_primary": col.is_primary_key,
                     "is_nullable": col.is_nullable,
+                    "allowed_in_select": col.allowed_in_select,
+                    "allowed_in_filter": col.allowed_in_filter,
+                    "allowed_in_join": col.allowed_in_join,
+                    "is_sensitive": col.is_sensitive,
+                    "safety_classification": col.safety_classification or {},
                 })
             
             table_idx_map[tbl.table_id] = tbl_dict

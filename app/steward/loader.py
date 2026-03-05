@@ -69,13 +69,24 @@ class RegistryLoader:
         for tbl_dict in payload.get("tables", []):
             columns_def = []
             for col_dict in tbl_dict.get("columns", []):
-                
+
+                sc_extra = col_dict.get("safety_classification") or {}
+                _numeric_types = {
+                    "numeric", "integer", "real", "double precision",
+                    "bigint", "smallint", "float", "decimal",
+                }
                 safety = SafetyClassification(
-                    allowed_in_where=True,
-                    allowed_in_select=True,
-                    allowed_in_group_by=True,
-                    aggregation_allowed=col_dict.get("type") in ("numeric", "integer", "real", "double precision"),
-                    join_participation_allowed=True
+                    allowed_in_select=col_dict.get("allowed_in_select", False),
+                    allowed_in_where=col_dict.get("allowed_in_filter", False),
+                    allowed_in_group_by=sc_extra.get(
+                        "allowed_in_group_by",
+                        col_dict.get("allowed_in_select", False),
+                    ),
+                    aggregation_allowed=sc_extra.get(
+                        "aggregation_allowed",
+                        col_dict.get("type", "") in _numeric_types,
+                    ),
+                    join_participation_allowed=col_dict.get("allowed_in_join", False),
                 )
                 
                 columns_def.append(

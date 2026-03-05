@@ -4,7 +4,7 @@ import sqlglot
 
 from app.api.models import TranslationRepair
 from app.compiler.models import ValidatedAST
-from app.compiler.safety import UnsafeExpressionError
+from app.compiler.safety import UnsafeExpressionError, SafetyPolicyViolationError
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.steward.models import (
     AbstractTableDef,
@@ -27,8 +27,24 @@ def mock_schema() -> RegistrySchema:
                 description="users",
                 physical_target="phys_users",
                 columns=[
-                    AbstractColumnDef(alias="id", description="user id", safety=SafetyClassification(allowed_in_select=True), physical_target="id"),
-                    AbstractColumnDef(alias="name", description="name", safety=SafetyClassification(allowed_in_select=True), physical_target="name")
+                    AbstractColumnDef(
+                        alias="id", description="user id", physical_target="id",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            allowed_in_where=True,
+                            allowed_in_group_by=True,
+                            aggregation_allowed=True,
+                            join_participation_allowed=True,
+                        ),
+                    ),
+                    AbstractColumnDef(
+                        alias="name", description="name", physical_target="name",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            allowed_in_where=True,
+                            allowed_in_group_by=True,
+                        ),
+                    ),
                 ]
             ),
             AbstractTableDef(
@@ -36,12 +52,32 @@ def mock_schema() -> RegistrySchema:
                 description="orders",
                 physical_target="phys_orders",
                 columns=[
-                    AbstractColumnDef(alias="id", description="order id", safety=SafetyClassification(allowed_in_select=True), physical_target="id"),
-                    AbstractColumnDef(alias="total_amount", description="total", safety=SafetyClassification(allowed_in_select=True), physical_target="total_amount"),
-                    AbstractColumnDef(alias="name", description="order name", safety=SafetyClassification(allowed_in_select=True), physical_target="name"), # INTENTIONAL COLLISION
-                    AbstractColumnDef(alias="created_at", description="date", data_type="timestamp", safety=SafetyClassification(allowed_in_select=True), physical_target="created_at")
+                    AbstractColumnDef(
+                        alias="id", description="order id", physical_target="id",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            allowed_in_where=True,
+                            join_participation_allowed=True,
+                        ),
+                    ),
+                    AbstractColumnDef(
+                        alias="total_amount", description="total", physical_target="total_amount",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            aggregation_allowed=True,
+                        ),
+                    ),
+                    AbstractColumnDef(
+                        alias="name", description="order name", physical_target="name",  # INTENTIONAL COLLISION
+                        safety=SafetyClassification(allowed_in_select=True),
+                    ),
+                    AbstractColumnDef(
+                        alias="created_at", description="date", data_type="timestamp",
+                        physical_target="created_at",
+                        safety=SafetyClassification(allowed_in_select=True),
+                    ),
                 ]
-            )
+            ),
         ],
         relationships=[]
     )
@@ -203,3 +239,115 @@ def test_interval_nested_subquery_fails(translator: DeterministicTranslator, moc
     
     with pytest.raises(UnsafeExpressionError, match="Nested subqueries or window constructs are strictly blocked inside INTERVAL"):
         translator.translate(ast, mock_schema)
+
+
+# ---------------------------------------------------------------------------
+# SafetyClassification enforcement tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def restricted_schema() -> RegistrySchema:
+    """Schema with tightly controlled per-column safety flags for enforcement testing."""
+    return RegistrySchema(
+        version="1.0",
+        tables=[
+            AbstractTableDef(
+                alias="accounts",
+                description="accounts",
+                physical_target="phys_accounts",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id", description="pk", physical_target="id",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            allowed_in_where=True,
+                            join_participation_allowed=True,
+                        ),
+                    ),
+                    AbstractColumnDef(
+                        alias="secret", description="sensitive field", physical_target="secret",
+                        safety=SafetyClassification(),  # all False — fully blocked
+                    ),
+                    AbstractColumnDef(
+                        alias="balance", description="numeric balance", physical_target="balance",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            # aggregation_allowed intentionally False
+                        ),
+                    ),
+                    AbstractColumnDef(
+                        alias="category", description="category", physical_target="category",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            allowed_in_where=True,
+                            # join_participation_allowed intentionally False
+                        ),
+                    ),
+                ]
+            ),
+        ],
+        relationships=[]
+    )
+
+
+def test_select_blocked_column_raises(translator: DeterministicTranslator, restricted_schema: RegistrySchema):
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT accounts.secret FROM accounts"))
+    with pytest.raises(SafetyPolicyViolationError, match="not permitted in SELECT"):
+        translator.translate(ast, restricted_schema)
+
+
+def test_where_blocked_column_raises(translator: DeterministicTranslator, restricted_schema: RegistrySchema):
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT accounts.id FROM accounts WHERE accounts.secret = 'x'"))
+    with pytest.raises(SafetyPolicyViolationError, match="not permitted in WHERE"):
+        translator.translate(ast, restricted_schema)
+
+
+def test_aggregation_blocked_column_raises(translator: DeterministicTranslator, restricted_schema: RegistrySchema):
+    # balance has allowed_in_select=True but aggregation_allowed=False
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT SUM(accounts.balance) FROM accounts"))
+    with pytest.raises(SafetyPolicyViolationError, match="not permitted inside aggregation"):
+        translator.translate(ast, restricted_schema)
+
+
+def test_join_blocked_column_raises(translator: DeterministicTranslator, restricted_schema: RegistrySchema):
+    # category has join_participation_allowed=False — block it when used in JOIN ON
+    join_schema = RegistrySchema(
+        version="1.0",
+        tables=[
+            AbstractTableDef(
+                alias="accounts", description="accounts", physical_target="phys_accounts",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id", description="pk", physical_target="id",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, join_participation_allowed=True,
+                        ),
+                    ),
+                    AbstractColumnDef(
+                        alias="category", description="category", physical_target="category",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            # join_participation_allowed intentionally False
+                        ),
+                    ),
+                ]
+            ),
+            AbstractTableDef(
+                alias="tags", description="tags", physical_target="phys_tags",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id", description="pk", physical_target="id",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, join_participation_allowed=True,
+                        ),
+                    ),
+                ]
+            ),
+        ],
+        relationships=[]
+    )
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT a.id FROM accounts a JOIN tags t ON a.category = t.id"
+    ))
+    with pytest.raises(SafetyPolicyViolationError, match="not permitted in JOIN"):
+        translator.translate(ast, join_schema)

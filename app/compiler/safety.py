@@ -14,6 +14,17 @@ class UnsafeExpressionError(SafetyViolationError):
     """Raised when an explicitly allowed AST node violates semantic structural rules during translation."""
     pass
 
+class SafetyPolicyViolationError(SafetyViolationError):
+    """Raised when a column is referenced in a SQL clause its SafetyClassification prohibits."""
+
+    def __init__(self, message: str) -> None:
+        # Call Exception.__init__ directly to set args so str(exc) == message.
+        # Cannot use @dataclass here because its generated __init__ never calls
+        # super().__init__(message), leaving self.args empty and breaking
+        # pytest.raises(match=...) and any caller doing str(exc).
+        Exception.__init__(self, message)
+        self.message = message
+
 class SafetyEngine:
     """
     Implements a strict allow-list based structural validation on SQL.

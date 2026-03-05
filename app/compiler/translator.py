@@ -4,7 +4,7 @@ from sqlglot import exp
 
 from app.api.models import TranslationRepair
 from app.compiler.models import ExecutableQuery, ValidatedAST
-from app.compiler.safety import UnsafeExpressionError
+from app.compiler.safety import UnsafeExpressionError, SafetyPolicyViolationError
 from app.steward import RegistrySchema
 
 
@@ -40,18 +40,20 @@ class DeterministicTranslator:
         # We need a strict map tracking which tables own which columns to resolve orchestrations
         column_ownership: dict[str, set[str]] = {}
         alias_to_datatype: dict[str, str] = {}
-        
+        alias_to_safety: dict[str, "SafetyClassification"] = {}
+
         for table in schema.tables:
             table_alias = table.alias.lower()
             alias_to_physical_table[table_alias] = table.physical_target
             for col in table.columns:
                 col_alias = col.alias.lower()
                 full_alias = f"{table_alias}.{col_alias}"
-                
+
                 alias_to_physical_col[full_alias] = col.physical_target
                 alias_to_physical_col[col_alias] = col.physical_target
-                
+
                 alias_to_datatype[full_alias] = col.data_type.lower()
+                alias_to_safety[full_alias] = col.safety
 
                 if col_alias not in column_ownership:
                     column_ownership[col_alias] = set()
@@ -116,7 +118,7 @@ class DeterministicTranslator:
                         if full_alias in alias_to_physical_col:
                             node_inst.set("this", exp.Identifier(this=alias_to_physical_col[full_alias]))
                             column_datatypes[id(node_inst)] = alias_to_datatype.get(full_alias, "")
-                            
+
                             # Dialects strictly fail if querying `original_table.column` when an alias `t` is defined in FROM.
                             assigned_aliases = table_runtime_prefixes.get(resolved_table, set())
                             if t_prefix in assigned_aliases:
@@ -127,8 +129,9 @@ class DeterministicTranslator:
                                 runtime_prefix = next(iter(assigned_aliases))
                             else:
                                 raise TranslationError(f"Ambiguous target prefix '{t_prefix}' for column '{c_name}' from self-joined table '{resolved_table}' with aliases {list(assigned_aliases)}.")
-                                
+
                             node_inst.set("table", exp.Identifier(this=runtime_prefix))
+                            self._check_column_safety(c_name, resolved_table, alias_to_safety[full_alias], node_inst)
                         else:
                             raise TranslationError(f"Column '{full_alias}' does not exist in schema context.")
                             
@@ -162,10 +165,12 @@ class DeterministicTranslator:
                             resolved_to=f"{real_physical_table}.{alias_to_physical_col[f'{unique_owning_table}.{c_name}']}",
                             reason=f"Unique column ownership logically inferred over mapped structure."
                         ))
-                        
-                        node_inst.set("this", exp.Identifier(this=alias_to_physical_col[f"{unique_owning_table}.{c_name}"]))
+
+                        owning_full_alias = f"{unique_owning_table}.{c_name}"
+                        node_inst.set("this", exp.Identifier(this=alias_to_physical_col[owning_full_alias]))
                         node_inst.set("table", exp.Identifier(this=runtime_prefix))
-                        column_datatypes[id(node_inst)] = alias_to_datatype.get(f"{unique_owning_table}.{c_name}", "")
+                        column_datatypes[id(node_inst)] = alias_to_datatype.get(owning_full_alias, "")
+                        self._check_column_safety(c_name, unique_owning_table, alias_to_safety[owning_full_alias], node_inst)
                         
                 else:
                     # No explicitly requested prefix. Check standard ambiguity.
@@ -176,8 +181,10 @@ class DeterministicTranslator:
                          raise TranslationError(f"Ambiguous naked column '{c_name}'. Belongs to multiple scoped tables: {list(scoped_owning_tables)}. Explicit aliasing required.")
                     elif len(scoped_owning_tables) == 1:
                          unique_owning_table = scoped_owning_tables.pop()
-                         node_inst.set("this", exp.Identifier(this=alias_to_physical_col[f"{unique_owning_table}.{c_name}"]))
-                         column_datatypes[id(node_inst)] = alias_to_datatype.get(f"{unique_owning_table}.{c_name}", "")
+                         no_prefix_full_alias = f"{unique_owning_table}.{c_name}"
+                         node_inst.set("this", exp.Identifier(this=alias_to_physical_col[no_prefix_full_alias]))
+                         column_datatypes[id(node_inst)] = alias_to_datatype.get(no_prefix_full_alias, "")
+                         self._check_column_safety(c_name, unique_owning_table, alias_to_safety[no_prefix_full_alias], node_inst)
                     else:
                         if c_name in alias_to_physical_col:
                             node_inst.set("this", exp.Identifier(this=alias_to_physical_col[c_name]))
@@ -261,6 +268,93 @@ class DeterministicTranslator:
             row_limit_applied=row_limit_applied,
             translation_repairs=repairs
         )
+
+    def _get_column_sql_context(self, col_node: exp.Column) -> set[str]:
+        """
+        Returns the set of SQL contexts a column participates in.
+
+        Two independent checks:
+        - Aggregation: is the column wrapped inside any AggFunc? (does not stop clause detection)
+        - Clause: what is the nearest bounding SQL clause?
+
+        Uses sqlglot's native find_ancestor so intermediate nodes
+        (exp.Alias, exp.Cast, exp.Paren, operators, etc.) are traversed transparently.
+        """
+        contexts: set[str] = set()
+
+        if col_node.find_ancestor(exp.AggFunc):
+            contexts.add("aggregation")
+
+        clause = col_node.find_ancestor(
+            exp.Where, exp.Group, exp.Having, exp.Join, exp.Order, exp.Select
+        )
+        if isinstance(clause, exp.Where):    contexts.add("where")
+        elif isinstance(clause, exp.Group):  contexts.add("group_by")
+        elif isinstance(clause, exp.Having): contexts.add("having")
+        elif isinstance(clause, exp.Join):   contexts.add("join")
+        elif isinstance(clause, exp.Order):  contexts.add("order_by")
+        elif isinstance(clause, exp.Select): contexts.add("select")
+
+        return contexts
+
+    def _check_column_safety(
+        self,
+        col_alias: str,
+        table_alias: str,
+        safety: "SafetyClassification",
+        col_node: exp.Column,
+    ) -> None:
+        """
+        Raises SafetyPolicyViolationError if the column is used in a SQL clause
+        its SafetyClassification does not permit.
+
+        Called after physical name resolution so the error message uses the
+        abstract alias (human-readable) not the physical target name.
+        """
+        from app.steward.models import SafetyClassification  # local import avoids circular dep
+
+        contexts = self._get_column_sql_context(col_node)
+        label = f"'{table_alias}.{col_alias}'"
+
+        if "aggregation" in contexts:
+            # Column is inside an aggregation function — aggregation_allowed is the sole
+            # gating check. The surrounding clause (WHERE, HAVING, SELECT) is irrelevant
+            # because the column is not directly exposed there; only the aggregate result is.
+            if not safety.aggregation_allowed:
+                raise SafetyPolicyViolationError(
+                    message=f"Column {label} is not permitted inside aggregation functions."
+                )
+        else:
+            if "select" in contexts and not safety.allowed_in_select:
+                raise SafetyPolicyViolationError(
+                    message=f"Column {label} is not permitted in SELECT."
+                )
+
+            if "order_by" in contexts and not safety.allowed_in_select:
+                raise SafetyPolicyViolationError(
+                    message=f"Column {label} is not permitted in ORDER BY."
+                )
+
+            if "where" in contexts and not safety.allowed_in_where:
+                raise SafetyPolicyViolationError(
+                    message=f"Column {label} is not permitted in WHERE conditions."
+                )
+
+            if "group_by" in contexts and not safety.allowed_in_group_by:
+                raise SafetyPolicyViolationError(
+                    message=f"Column {label} is not permitted in GROUP BY."
+                )
+
+            if "join" in contexts and not safety.join_participation_allowed:
+                raise SafetyPolicyViolationError(
+                    message=f"Column {label} is not permitted in JOIN conditions."
+                )
+
+            if "having" in contexts and not safety.allowed_in_where:
+                # Bare column in HAVING (no aggregation wrapping) — semantically a filter predicate
+                raise SafetyPolicyViolationError(
+                    message=f"Column {label} is not permitted in HAVING conditions."
+                )
 
     def _extract_conjunctions(self, node: exp.Expression) -> list[exp.Expression]:
         """Flattens an AND boolean tree into a list of its leaf expressions."""
