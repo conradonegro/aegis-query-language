@@ -4,7 +4,6 @@ const DOMElements = {
     chatHistory: document.getElementById('chat_history'),
     input: document.getElementById('intent_input'),
     runBtn: document.getElementById('run_btn'),
-    explainToggle: document.getElementById('explain_toggle'),
     tracePanel: document.getElementById('trace_panel'),
     errorContainer: document.getElementById('error_container'),
     errorTitle: document.getElementById('error_title'),
@@ -15,12 +14,11 @@ const DOMElements = {
     rowCount: document.getElementById('row_count'),
     executionLatency: document.getElementById('execution_latency'),
     compilerLatency: document.getElementById('compiler_latency'),
-    drawerToggle: document.getElementById('drawer_toggle'),
-    drawerContent: document.getElementById('drawer_content'),
     jsonRequest: document.getElementById('json_request'),
     jsonResponse: document.getElementById('json_response'),
+    jsonTabContent: document.getElementById('json_tab_content'),
 
-    // Trace Nodes
+    // Trace nodes
     ragOutcome: document.getElementById('rag_outcome'),
     ragMatches: document.getElementById('rag_matches'),
     ragReason: document.getElementById('rag_reason'),
@@ -35,130 +33,198 @@ const DOMElements = {
 
     // Tabs
     tabResults: document.getElementById('tab_results'),
-    tabTrace: document.getElementById('tab_trace')
+    tabTrace: document.getElementById('tab_trace'),
+    tabJson: document.getElementById('tab_json'),
+
+    // Panels (for resizing)
+    inputPanel: document.getElementById('input_panel'),
+    rightPanel: document.getElementById('right_panel'),
+    resizeHandle: document.getElementById('resize_handle'),
 };
 
 let currentSessionId = null;
 
-// Toggle Explainability UI
-DOMElements.explainToggle.addEventListener('change', (e) => {
-    if (e.target.checked) {
-        DOMElements.tabTrace.style.display = 'inline-block';
+// ─── Per-turn snapshot store ──────────────────────────────────────────────────
+// Each snapshot mirrors the full right-pane state for one query turn.
+// Nothing is ever sent to the backend when restoring — purely visual.
+const turnSnapshots = [];
+
+function captureSnapshot(jsonReq, jsonRes, errorData, successData, explainData) {
+    turnSnapshots.push({ jsonReq, jsonRes, errorData, successData, explainData });
+    return turnSnapshots.length - 1;
+}
+
+function restoreSnapshot(idx) {
+    const snap = turnSnapshots[idx];
+    if (!snap) return;
+
+    // JSON Tab
+    DOMElements.jsonRequest.textContent = snap.jsonReq;
+    DOMElements.jsonResponse.textContent = snap.jsonRes;
+
+    // Error pane
+    if (snap.errorData) {
+        DOMElements.errorContainer.classList.remove('hidden');
+        DOMElements.errorTitle.textContent = snap.errorData.title;
+        DOMElements.errorMessage.textContent = snap.errorData.message;
     } else {
-        DOMElements.tabTrace.style.display = 'none';
-        if (DOMElements.tabTrace.classList.contains('active')) {
-            switchTab('results');
-        }
+        DOMElements.errorContainer.classList.add('hidden');
     }
+
+    // Results pane
+    if (snap.successData) {
+        applySuccessData(snap.successData);
+    } else {
+        DOMElements.resultsHead.innerHTML = '';
+        DOMElements.resultsBody.innerHTML = '';
+        DOMElements.rowCount.textContent = '0';
+        DOMElements.executionLatency.textContent = '';
+    }
+
+    // Compilation pipeline pane
+    if (snap.explainData) {
+        renderExplainability(snap.explainData);
+    } else {
+        resetTraceUI();
+    }
+
+    // Visual flash: remove → force reflow → re-add so animation restarts
+    DOMElements.rightPanel.classList.remove('panel-flash');
+    void DOMElements.rightPanel.offsetWidth;
+    DOMElements.rightPanel.classList.add('panel-flash');
+    setTimeout(() => DOMElements.rightPanel.classList.remove('panel-flash'), 800);
+
+    // Highlight the active turn pair in the chat history
+    document.querySelectorAll('.turn-pair').forEach(el => el.classList.remove('turn-selected'));
+    const active = document.querySelector(`.turn-pair[data-turn-idx="${idx}"]`);
+    if (active) active.classList.add('turn-selected');
+}
+
+// ─── Tab switching ─────────────────────────────────────────────────────────────
+const TAB_MAP = () => ({
+    results: { btn: DOMElements.tabResults, content: DOMElements.resultsContainer },
+    trace: { btn: DOMElements.tabTrace, content: DOMElements.tracePanel },
+    json: { btn: DOMElements.tabJson, content: DOMElements.jsonTabContent },
 });
 
-// Tab switching logic
 function switchTab(tab) {
-    if (tab === 'results') {
-        DOMElements.tabResults.classList.add('active');
-        DOMElements.tabTrace.classList.remove('active');
-        DOMElements.resultsContainer.classList.add('active');
-        DOMElements.resultsContainer.classList.remove('hidden');
-        DOMElements.tracePanel.classList.remove('active');
-        DOMElements.tracePanel.classList.add('hidden');
-    } else if (tab === 'trace') {
-        DOMElements.tabTrace.classList.add('active');
-        DOMElements.tabResults.classList.remove('active');
-        DOMElements.tracePanel.classList.add('active');
-        DOMElements.tracePanel.classList.remove('hidden');
-        DOMElements.resultsContainer.classList.remove('active');
-        DOMElements.resultsContainer.classList.add('hidden');
-    }
+    Object.entries(TAB_MAP()).forEach(([key, { btn, content }]) => {
+        btn.classList.toggle('active', key === tab);
+        content.classList.toggle('active', key === tab);
+        content.classList.toggle('hidden', key !== tab);
+    });
 }
 
 DOMElements.tabResults.addEventListener('click', () => switchTab('results'));
 DOMElements.tabTrace.addEventListener('click', () => switchTab('trace'));
+DOMElements.tabJson.addEventListener('click', () => switchTab('json'));
 
-// Toggle Drawer UI
-DOMElements.drawerToggle.addEventListener('click', () => {
-    DOMElements.drawerContent.classList.toggle('hidden');
-    DOMElements.drawerToggle.classList.toggle('open');
+// ─── Resizable panes ──────────────────────────────────────────────────────────
+let isResizing = false;
+let resizeStartX = 0;
+let resizeStartLW = 0;
+let resizeStartRW = 0;
+
+DOMElements.resizeHandle.addEventListener('mousedown', e => {
+    isResizing = true;
+    resizeStartX = e.clientX;
+    resizeStartLW = DOMElements.inputPanel.getBoundingClientRect().width;
+    resizeStartRW = DOMElements.rightPanel.getBoundingClientRect().width;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
 });
 
-// Allow Enter to submit
-DOMElements.input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        runCompilation();
-    }
+document.addEventListener('mousemove', e => {
+    if (!isResizing) return;
+    const dx = e.clientX - resizeStartX;
+    const total = resizeStartLW + resizeStartRW;
+    const minW = 300;
+    const newLeft = Math.max(minW, Math.min(resizeStartLW + dx, total - minW));
+    DOMElements.inputPanel.style.flex = 'none';
+    DOMElements.inputPanel.style.width = newLeft + 'px';
+    DOMElements.rightPanel.style.flex = 'none';
+    DOMElements.rightPanel.style.width = (total - newLeft) + 'px';
 });
 
-DOMElements.runBtn.addEventListener('click', runCompilation);
-
-async function loadActiveVersion() {
-    try {
-        const res = await fetch('/api/v1/metadata/active');
-        const data = await res.json();
-        const verEl = document.getElementById('active_version');
-        if (data && data.version_id) {
-            verEl.textContent = data.version_id;
-        } else {
-            verEl.textContent = 'Development Sandbox';
-        }
-    } catch (e) {
-        console.error("Failed to load active schema version", e);
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    loadActiveVersion();
-    updateModelDropdown();
+document.addEventListener('mouseup', () => {
+    if (!isResizing) return;
+    isResizing = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
 });
 
+// ─── Provider / Model dropdowns ───────────────────────────────────────────────
 const providerModels = {
     'openai': ['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'],
     'anthropic': ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-haiku-20240307'],
     'google': ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'],
     'xai': ['grok-2', 'grok-2-mini', 'grok-1'],
-    'ollama': ['llama3']
+    'ollama': ['llama3'],
 };
 
 function updateModelDropdown() {
     const provider = DOMElements.providerSelect.value;
-    const models = providerModels[provider] || [];
     DOMElements.modelSelect.innerHTML = '';
-    models.forEach(model => {
+    (providerModels[provider] || []).forEach(model => {
         const opt = document.createElement('option');
-        opt.value = model;
-        opt.textContent = model;
+        opt.value = opt.textContent = model;
         DOMElements.modelSelect.appendChild(opt);
     });
 }
 
 DOMElements.providerSelect.addEventListener('change', updateModelDropdown);
+
+// ─── Input listeners ──────────────────────────────────────────────────────────
+DOMElements.input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runCompilation(); }
+});
+DOMElements.runBtn.addEventListener('click', runCompilation);
+
+// ─── Boot ──────────────────────────────────────────────────────────────────────
+async function loadActiveVersion() {
+    try {
+        const res = await fetch('/api/v1/metadata/active');
+        const data = await res.json();
+        document.getElementById('active_version').textContent =
+            (data && data.version_id) ? data.version_id : 'Development Sandbox';
+    } catch (e) { console.error('Failed to load active schema version', e); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadActiveVersion();
+    updateModelDropdown();
+    switchTab('results');
+});
+
+// ─── UI reset ─────────────────────────────────────────────────────────────────
 function resetUI() {
     DOMElements.errorContainer.classList.add('hidden');
-    // Hide data content but preserve the active tab state. We'll show the active container fully after success/error.
+    DOMElements.resultsHead.innerHTML = '';
     DOMElements.resultsBody.innerHTML = '';
     DOMElements.rowCount.textContent = '0';
     DOMElements.executionLatency.textContent = '';
+    resetTraceUI();
+}
 
-
+function resetTraceUI() {
     DOMElements.ragOutcome.textContent = '-';
     DOMElements.ragOutcome.className = 'outcome-badge outcome-neutral';
     DOMElements.ragMatches.textContent = '-';
     DOMElements.ragReason.textContent = '-';
     DOMElements.ragReason.className = 'text-val';
-
     DOMElements.schemaIncluded.textContent = '-';
     DOMElements.schemaExcluded.textContent = '-';
-
     DOMElements.llmProvider.textContent = 'provider';
     DOMElements.promptSystem.textContent = '...';
     DOMElements.llmRawResponse.textContent = '...';
     DOMElements.llmAbstract.textContent = '...';
     DOMElements.paramSql.textContent = '...';
     DOMElements.bindParams.textContent = '{}';
-
     DOMElements.compilerLatency.textContent = '';
-    DOMElements.executionLatency.textContent = '';
 }
 
+// ─── Main compilation entry point ─────────────────────────────────────────────
 async function runCompilation() {
     const intent = DOMElements.input.value.trim();
     if (!intent) return;
@@ -167,139 +233,138 @@ async function runCompilation() {
     DOMElements.runBtn.disabled = true;
     DOMElements.runBtn.textContent = 'Compiling...';
 
-    // Append to Chat UI immediately
-    const userMsg = document.createElement("div");
-    userMsg.className = "chat-message user-message";
-    userMsg.style.cssText = "background: rgba(255,255,255,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #64B5F6;";
-    userMsg.innerHTML = `<strong>User:</strong> ${intent}`;
-    DOMElements.chatHistory.appendChild(userMsg);
-
-    // Clear intent
-    DOMElements.input.value = "";
-
-    // Store the active model and provider when compilation is triggered
     const activeProvider = DOMElements.providerSelect.value;
     const activeModel = DOMElements.modelSelect.value;
 
+    // Build the turn-pair container before clearing input
+    const turnPair = document.createElement('div');
+    turnPair.className = 'turn-pair';
+
+    const userMsg = document.createElement('div');
+    userMsg.className = 'chat-message user-message';
+    userMsg.innerHTML = `<strong>User:</strong> ${intent}`;
+    turnPair.appendChild(userMsg);
+    DOMElements.chatHistory.appendChild(turnPair);
+    DOMElements.input.value = '';
+
     const payload = {
-        intent: intent,
-        explain: DOMElements.explainToggle.checked,
+        intent,
+        explain: true, // pipeline always enabled
         schema_hints: [],
         provider_id: `${activeProvider}:${activeModel}`,
-        session_id: currentSessionId
+        session_id: currentSessionId,
     };
 
-    DOMElements.jsonRequest.textContent = JSON.stringify(payload, null, 2);
+    const jsonReqStr = JSON.stringify(payload, null, 2);
+    DOMElements.jsonRequest.textContent = jsonReqStr;
     DOMElements.jsonResponse.textContent = 'Awaiting response...';
 
     try {
         const response = await fetch('/api/v1/query/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
         });
 
         const data = await response.json();
+        if (data.session_id) currentSessionId = data.session_id;
 
-        if (data.session_id) {
-            currentSessionId = data.session_id;
-        }
+        const jsonResStr = JSON.stringify(data, null, 2);
+        DOMElements.jsonResponse.textContent = jsonResStr;
 
-        DOMElements.jsonResponse.textContent = JSON.stringify(data, null, 2);
+        let errorData = null;
+        let successData = null;
 
         if (!response.ok) {
-            handleError(data);
+            errorData = buildErrorData(data);
+            handleError(errorData);
 
-            // Append explicit error feedback
-            const assistantMsg = document.createElement("div");
-            assistantMsg.className = "chat-message assistant-message error";
-            assistantMsg.style.cssText = "background: rgba(255,0,0,0.1); padding: 8px; border-radius: 4px; border-left: 3px solid #ff5252; color: #ff5252;";
-            assistantMsg.innerHTML = `<strong>Assistant (${activeProvider}:${activeModel}):</strong> ${data.message || 'Execution failed.'}`;
-            DOMElements.chatHistory.appendChild(assistantMsg);
-
+            const assistantMsg = document.createElement('div');
+            assistantMsg.className = 'chat-message assistant-message error';
+            assistantMsg.innerHTML =
+                `<strong>Assistant (${activeProvider}:${activeModel}):</strong> ${data.message || 'Execution failed.'}`;
+            turnPair.appendChild(assistantMsg);
         } else {
-            handleSuccess(data);
-            if (data.explainability) {
-                renderExplainability(data.explainability);
-            }
-            // Append LLM compilation trace
-            const assistantMsg = document.createElement("div");
-            assistantMsg.className = "chat-message assistant-message success";
-            assistantMsg.style.cssText = "background: rgba(0,255,0,0.05); padding: 8px; border-radius: 4px; border-left: 3px solid #4CAF50;";
-            assistantMsg.innerHTML = `<strong>Assistant (${activeProvider}:${activeModel}):</strong> <pre style="margin: 5px 0 0 0; white-space: pre-wrap; font-family: monospace; font-size: 13px;">${data.sql}</pre>`;
-            DOMElements.chatHistory.appendChild(assistantMsg);
+            successData = buildSuccessData(data);
+            applySuccessData(successData);
+            if (data.explainability) renderExplainability(data.explainability);
+
+            const assistantMsg = document.createElement('div');
+            assistantMsg.className = 'chat-message assistant-message success';
+            assistantMsg.innerHTML =
+                `<strong>Assistant (${activeProvider}:${activeModel}):</strong>` +
+                `<pre style="margin:5px 0 0;white-space:pre-wrap;font-family:monospace;font-size:13px;">${data.sql}</pre>`;
+            turnPair.appendChild(assistantMsg);
         }
+
+        // ── Capture & wire snapshot ───────────────────────────────────────────
+        const snapIdx = captureSnapshot(
+            jsonReqStr,
+            jsonResStr,
+            errorData,
+            successData,
+            data.explainability || null
+        );
+
+        turnPair.dataset.turnIdx = snapIdx;
+        turnPair.title = 'Click to restore this turn\'s results';
+        turnPair.addEventListener('click', () => restoreSnapshot(snapIdx));
+
+        // Auto-select the newest turn
+        document.querySelectorAll('.turn-pair').forEach(el => el.classList.remove('turn-selected'));
+        turnPair.classList.add('turn-selected');
+
     } catch (err) {
-        handleError({ code: 0, message: "Network Error: Could not reach the API." });
+        handleError({ title: 'Network Error', message: 'Could not reach the API.' });
     } finally {
         DOMElements.runBtn.disabled = false;
         DOMElements.runBtn.textContent = 'Run Compilation & Execute';
-        // Auto-scroll to bottom of chat history
         DOMElements.chatHistory.scrollTop = DOMElements.chatHistory.scrollHeight;
     }
 }
 
-function handleError(errorData) {
-    DOMElements.errorContainer.classList.remove('hidden');
-    // Interpret common proxy HTTP codes into clear UX domains
-    if (errorData.code === 400 && errorData.message.includes('RAG')) {
-        DOMElements.errorTitle.textContent = 'Semantic RAG Failure (400)';
-    } else if (errorData.code === 403) {
-        DOMElements.errorTitle.textContent = 'Safety Policy Violation (403)';
-    } else if (errorData.code === 400 && errorData.message.includes('Translation')) {
-        DOMElements.errorTitle.textContent = 'LLM Syntax Malformation (400)';
-    } else if (errorData.code === 502) {
-        DOMElements.errorTitle.textContent = 'LLM Generation Error (502)';
-    } else {
-        DOMElements.errorTitle.textContent = `Execution Halted (${errorData.code || 'Error'})`;
-    }
-
-    DOMElements.errorMessage.textContent = errorData.message;
-
-    if (errorData.explainability) {
-        renderExplainability(errorData.explainability);
-    }
+// ─── Error helpers ────────────────────────────────────────────────────────────
+function buildErrorData(data) {
+    let title;
+    if (data.code === 400 && data.message?.includes('RAG')) title = 'Semantic RAG Failure (400)';
+    else if (data.code === 403) title = 'Safety Policy Violation (403)';
+    else if (data.code === 400 && data.message?.includes('Translation')) title = 'LLM Syntax Malformation (400)';
+    else if (data.code === 502) title = 'LLM Generation Error (502)';
+    else title = `Execution Halted (${data.code || 'Error'})`;
+    return { title, message: data.message || 'Unknown error.' };
 }
 
-function handleSuccess(data) {
-    // If trace tab is currently hidden but no other is active, show the one active
-    if (!DOMElements.tabResults.classList.contains('active') && !DOMElements.tabTrace.classList.contains('active')) {
-        switchTab('results');
-    }
+function handleError({ title, message }) {
+    DOMElements.errorContainer.classList.remove('hidden');
+    DOMElements.errorTitle.textContent = title;
+    DOMElements.errorMessage.textContent = message;
+}
 
-    DOMElements.rowCount.textContent = data.row_count;
-    DOMElements.executionLatency.textContent = `${data.execution_latency_ms.toFixed(2)}ms DB exec`;
+// ─── Success data helpers ─────────────────────────────────────────────────────
+function buildSuccessData(data) {
+    return { rowCount: data.row_count, latency: data.execution_latency_ms, results: data.results || [], sql: data.sql };
+}
 
-    // Build Table
+function applySuccessData(sd) {
+    DOMElements.rowCount.textContent = sd.rowCount;
+    DOMElements.executionLatency.textContent = `${(sd.latency || 0).toFixed(2)}ms DB exec`;
     DOMElements.resultsHead.innerHTML = '';
     DOMElements.resultsBody.innerHTML = '';
 
-    if (data.results && data.results.length > 0) {
-        // Headers
-        const cols = Object.keys(data.results[0]);
+    if (sd.results && sd.results.length > 0) {
+        const cols = Object.keys(sd.results[0]);
         const headerRow = document.createElement('tr');
-        cols.forEach(col => {
-            const th = document.createElement('th');
-            th.textContent = col;
-            headerRow.appendChild(th);
-        });
+        cols.forEach(col => { const th = document.createElement('th'); th.textContent = col; headerRow.appendChild(th); });
         DOMElements.resultsHead.appendChild(headerRow);
 
-        // Body
-        data.results.forEach(row => {
+        sd.results.forEach(row => {
             const tr = document.createElement('tr');
             cols.forEach(col => {
                 const td = document.createElement('td');
                 const val = row[col];
-                if (typeof val === 'boolean') {
-                    td.textContent = val ? 'TRUE' : 'FALSE';
-                    td.className = 'dim';
-                } else if (val === null) {
-                    td.textContent = 'NULL';
-                    td.className = 'dim';
-                } else {
-                    td.textContent = val;
-                }
+                if (typeof val === 'boolean') { td.textContent = val ? 'TRUE' : 'FALSE'; td.className = 'dim'; }
+                else if (val === null) { td.textContent = 'NULL'; td.className = 'dim'; }
+                else { td.textContent = val; }
                 tr.appendChild(td);
             });
             DOMElements.resultsBody.appendChild(tr);
@@ -309,50 +374,35 @@ function handleSuccess(data) {
     }
 }
 
+// ─── Explainability renderer ──────────────────────────────────────────────────
 function renderExplainability(exp) {
-    // Latency approximation (Query pipeline without physical execution)
     let totalMs = 0;
     if (exp.llm) totalMs += exp.llm.latency_ms;
     DOMElements.compilerLatency.textContent = `~${totalMs.toFixed(2)}ms Pipeline`;
 
-    // 1. RAG
     if (exp.rag) {
         DOMElements.ragOutcome.textContent = exp.rag.outcome.replace(/_/g, ' ');
-        if (exp.rag.outcome === 'SINGLE_HIGH_CONFIDENCE_MATCH') {
-            DOMElements.ragOutcome.className = 'outcome-badge outcome-success';
-            DOMElements.ragMatches.textContent = exp.rag.matches.join(', ');
-        } else if (exp.rag.outcome === 'AMBIGUOUS_MATCH') {
-            DOMElements.ragOutcome.className = 'outcome-badge outcome-warn';
-            DOMElements.ragMatches.textContent = exp.rag.matches.join(', ');
-        } else {
-            DOMElements.ragOutcome.className = 'outcome-badge';
-            DOMElements.ragMatches.textContent = '[]';
-        }
+        if (exp.rag.outcome === 'SINGLE_HIGH_CONFIDENCE_MATCH') { DOMElements.ragOutcome.className = 'outcome-badge outcome-success'; DOMElements.ragMatches.textContent = exp.rag.matches.join(', '); }
+        else if (exp.rag.outcome === 'AMBIGUOUS_MATCH') { DOMElements.ragOutcome.className = 'outcome-badge outcome-warn'; DOMElements.ragMatches.textContent = exp.rag.matches.join(', '); }
+        else { DOMElements.ragOutcome.className = 'outcome-badge'; DOMElements.ragMatches.textContent = '[]'; }
         DOMElements.ragReason.textContent = exp.rag.reason || 'N/A';
     }
 
-    // 2. Schema
     if (exp.schema_filter) {
         DOMElements.schemaIncluded.textContent = `[${exp.schema_filter.included_aliases.join(', ')}]`;
         DOMElements.schemaExcluded.textContent = `[${exp.schema_filter.excluded_aliases.join(', ')}]`;
     }
 
-    // 3. Prompt
     if (exp.prompt) {
-        if (!exp.prompt.system_prompt_redacted && exp.prompt.raw_system) {
-            DOMElements.promptSystem.textContent = exp.prompt.raw_system;
-        } else {
-            DOMElements.promptSystem.textContent = '[REDACTED]';
-        }
+        DOMElements.promptSystem.textContent = (!exp.prompt.system_prompt_redacted && exp.prompt.raw_system)
+            ? exp.prompt.raw_system : '[REDACTED]';
     }
 
-    // 4. LLM
     if (exp.llm) {
         DOMElements.llmProvider.textContent = `${exp.llm.provider} - ${exp.llm.latency_ms.toFixed(0)}ms`;
         DOMElements.llmRawResponse.textContent = exp.llm.raw_response || '...';
     }
 
-    // 5. Translation
     if (exp.translation) {
         DOMElements.llmAbstract.textContent = exp.translation.llm_abstract_query || 'N/A';
         DOMElements.paramSql.textContent = exp.translation.parameterized_sql || 'N/A';
@@ -360,31 +410,16 @@ function renderExplainability(exp) {
     }
 }
 
-// Global copy handler for the raw JSON payload Drawer
+// ─── Copy to clipboard ────────────────────────────────────────────────────────
 window.copyToClipboard = function (elementId) {
     const el = document.getElementById(elementId);
     if (!el) return;
-
-    // Copy the text content safely
-    navigator.clipboard.writeText(el.textContent)
-        .then(() => {
-            // Find the button within the preceding header row
-            const headerRow = el.parentElement.previousElementSibling;
-            const btn = headerRow ? headerRow.querySelector('.btn-copy') : null;
-
-            if (btn) {
-                const originalText = btn.textContent;
-                btn.textContent = 'Copied!';
-                btn.style.backgroundColor = 'var(--bg-success)';
-                btn.style.color = 'var(--text-main)';
-                setTimeout(() => {
-                    btn.textContent = originalText;
-                    btn.style.backgroundColor = '';
-                    btn.style.color = '';
-                }, 2000);
-            }
-        })
-        .catch(err => {
-            console.error('Failed to copy text: ', err);
-        });
+    navigator.clipboard.writeText(el.textContent).then(() => {
+        const btn = el.parentElement?.previousElementSibling?.querySelector('.btn-copy');
+        if (btn) {
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 2000);
+        }
+    }).catch(err => console.error('Failed to copy:', err));
 };

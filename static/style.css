@@ -59,6 +59,37 @@ body {
     gap: 0.5rem;
 }
 
+.chat-history {
+    max-height: 400px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Turn pair: clickable history block */
+.turn-pair {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.turn-pair:hover {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: var(--border-color);
+}
+
+.turn-pair.turn-selected {
+    border-color: var(--accent);
+    background: rgba(88, 166, 255, 0.05);
+}
+
 .dot {
     width: 8px;
     height: 8px;
@@ -118,7 +149,7 @@ input:checked+.slider::before {
     flex: 1;
     overflow: hidden;
     padding: 1.5rem;
-    gap: 1.5rem;
+    gap: 0;
 }
 
 .panel {
@@ -133,6 +164,28 @@ input:checked+.slider::before {
 .input-panel {
     flex: 1.2;
     min-width: 0;
+}
+
+/* Resize handle between panes */
+.resize-handle {
+    flex: 0 0 6px;
+    cursor: col-resize;
+    background: var(--border-color);
+    border-radius: 3px;
+    margin: 0 6px;
+    transition: background 0.2s;
+    position: relative;
+}
+
+.resize-handle::after {
+    content: '';
+    position: absolute;
+    inset: 0 -4px;
+}
+
+.resize-handle:hover,
+.resize-handle:active {
+    background: var(--accent);
 }
 
 .right-panel {
@@ -193,6 +246,30 @@ input:checked+.slider::before {
 
 .tab-content.hidden {
     display: none !important;
+}
+
+/* JSON Trace tab: two panes side by side */
+#json_tab_content {
+    flex-direction: row;
+}
+
+/* Panel flash animation on snapshot restore */
+@keyframes panel-flash {
+    0% {
+        box-shadow: 0 0 0 2px var(--accent), 0 0 16px rgba(88, 166, 255, 0.25);
+    }
+
+    60% {
+        box-shadow: 0 0 0 2px var(--accent), 0 0 16px rgba(88, 166, 255, 0.15);
+    }
+
+    100% {
+        box-shadow: none;
+    }
+}
+
+.panel-flash {
+    animation: panel-flash 0.8s ease-out forwards;
 }
 
 .panel-header {

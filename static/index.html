@@ -33,16 +33,11 @@
                 style="background: rgba(255, 255, 255, 0.05); color: #e0e0e0; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; padding: 6px 12px; font-family: inherit; margin-left: -10px;">
                 <!-- Populated dynamically -->
             </select>
-            <label class="toggle-switch">
-                <span class="toggle-label">Explainability Trace</span>
-                <input type="checkbox" id="explain_toggle" checked>
-                <span class="slider round"></span>
-            </label>
         </div>
     </header>
 
     <main class="console-layout">
-        <section class="panel input-panel">
+        <section class="panel input-panel" id="input_panel">
             <div class="panel-header">
                 <h2>Intent Input</h2>
                 <div class="badges">
@@ -70,10 +65,13 @@
             </div>
         </section>
 
+        <div class="resize-handle" id="resize_handle"></div>
+
         <section class="panel right-panel" id="right_panel">
             <div class="tabs-header">
                 <button class="tab-btn active" id="tab_results">Execution Results</button>
                 <button class="tab-btn" id="tab_trace">Compilation Pipeline</button>
+                <button class="tab-btn" id="tab_json">JSON Trace</button>
             </div>
 
             <div id="results_container" class="results-panel tab-content hidden">
@@ -158,31 +156,25 @@
                     </div>
                 </div>
             </div>
+
+            <div id="json_tab_content" class="tab-content hidden">
+                <div class="json-pane">
+                    <div class="pane-header-row">
+                        <h4>Outbound Post Body</h4>
+                        <button class="btn btn-copy" onclick="copyToClipboard('json_request')">Copy JSON</button>
+                    </div>
+                    <pre><code id="json_request">{}</code></pre>
+                </div>
+                <div class="json-pane">
+                    <div class="pane-header-row">
+                        <h4>Inbound Response Payload</h4>
+                        <button class="btn btn-copy" onclick="copyToClipboard('json_response')">Copy JSON</button>
+                    </div>
+                    <pre><code id="json_response">{}</code></pre>
+                </div>
+            </div>
         </section>
     </main>
-
-    <div class="developer-drawer">
-        <div class="drawer-header" id="drawer_toggle">
-            <h3>Developer JSON Trace</h3>
-            <span class="arrow">▲</span>
-        </div>
-        <div class="drawer-content hidden" id="drawer_content">
-            <div class="json-pane">
-                <div class="pane-header-row">
-                    <h4>Outbound Post Body</h4>
-                    <button class="btn btn-copy" onclick="copyToClipboard('json_request')">Copy JSON</button>
-                </div>
-                <pre><code id="json_request">{}</code></pre>
-            </div>
-            <div class="json-pane">
-                <div class="pane-header-row">
-                    <h4>Inbound Response Payload</h4>
-                    <button class="btn btn-copy" onclick="copyToClipboard('json_response')">Copy JSON</button>
-                </div>
-                <pre><code id="json_response">{}</code></pre>
-            </div>
-        </div>
-    </div>
 
     <script src="/static/app.js"></script>
 </body>
