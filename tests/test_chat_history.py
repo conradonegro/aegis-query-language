@@ -68,6 +68,84 @@ def test_chat_session_created_on_first_request():
         app.dependency_overrides.clear()
 
 
+_PHYSICAL_SQL = "SELECT real_column FROM real_table"
+_ABSTRACT_SQL = "SELECT col0001 FROM table0001"
+
+
+class MockCompilerAbstractTurn1:
+    """Returns an ExecutableQuery with both abstract and physical SQL set."""
+
+    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
+        from app.compiler.models import ExecutableQuery
+        return ExecutableQuery(
+            sql=_PHYSICAL_SQL,
+            abstract_sql=_ABSTRACT_SQL,
+            parameters={},
+            query_id=str(uuid.uuid4()),
+            compilation_latency_ms=10.0,
+            registry_version="test-1.0",
+            safety_engine_version="test-1.0",
+            abstract_query_hash="aabbcc",
+        )
+
+
+class MockCompilerAbstractTurn2:
+    """
+    Asserts that the assistant message stored from turn 1 is the abstract SQL,
+    not the physical SQL.
+    """
+
+    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
+        from app.compiler.models import ExecutableQuery
+        assert chat_history is not None
+        assistant_messages = [m for m in chat_history if m.role == "assistant"]
+        assert len(assistant_messages) >= 1, "Expected at least one assistant message in history"
+        stored_content = assistant_messages[0].content
+        # Must contain the obfuscated aliases
+        assert "col0001" in stored_content, f"Expected obfuscated alias in history, got: {stored_content!r}"
+        assert "table0001" in stored_content, f"Expected obfuscated alias in history, got: {stored_content!r}"
+        # Must NOT contain the physical schema names
+        assert "real_column" not in stored_content, f"Physical column leaked into history: {stored_content!r}"
+        assert "real_table" not in stored_content, f"Physical table leaked into history: {stored_content!r}"
+        return ExecutableQuery(
+            sql="SELECT 1",
+            parameters={},
+            query_id=str(uuid.uuid4()),
+            compilation_latency_ms=1.0,
+            registry_version="test-1.0",
+            safety_engine_version="test-1.0",
+            abstract_query_hash="ddeeff",
+        )
+
+
+def test_chat_history_stores_abstract_sql_not_physical():
+    """
+    The assistant message persisted to chat history must use abstract_sql
+    (obfuscated aliases) and must not contain physical schema names.
+    This must hold when explain=False (the default), not just when explain=True.
+    """
+    app.dependency_overrides[get_compiler] = lambda: MockCompilerAbstractTurn1()
+
+    with TestClient(app) as client:
+        # Turn 1: no explain flag — default behaviour
+        resp1 = client.post(
+            "/api/v1/query/generate",
+            json={"intent": "Show all users", "schema_hints": []},
+        )
+        assert resp1.status_code == 200, resp1.text
+        session_id = resp1.json()["session_id"]
+
+        # Turn 2: assert the history injected into compile() used abstract_sql
+        app.dependency_overrides[get_compiler] = lambda: MockCompilerAbstractTurn2()
+        resp2 = client.post(
+            "/api/v1/query/generate",
+            json={"intent": "follow up", "schema_hints": [], "session_id": session_id},
+        )
+        assert resp2.status_code == 200, resp2.text
+
+    app.dependency_overrides.clear()
+
+
 def test_chat_session_preserved_across_provider_switch():
     """
     Sending the same session_id on a second request with a different provider

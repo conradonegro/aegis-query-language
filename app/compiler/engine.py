@@ -1,3 +1,4 @@
+import hashlib
 import time
 import uuid
 
@@ -164,23 +165,29 @@ class CompilerEngine:
                 
             abstract_query = AbstractQuery(sql=abstract_sql)
             explain_context["translation"]["llm_abstract_query"] = abstract_query.sql
-            
-            # 5. Parse 
+
+            # 5. Parse
             ast = self.parser.parse(abstract_query)
-            
+
             # 6. Safety Validation
             validated_ast = self.safety_engine.validate(ast)
-            
+
             # 7. Physical Translation
-            executable = self.translator.translate(validated_ast, schema)
+            # Hash the abstract query before translation so the provenance digest
+            # reflects what the LLM actually produced, not the physical form.
+            abstract_query_hash = hashlib.sha256(abstract_sql.encode()).hexdigest()
+            executable = self.translator.translate(
+                validated_ast, schema, abstract_query_hash=abstract_query_hash
+            )
             explain_context["translation"]["parameterized_sql"] = executable.sql
             explain_context["translation"]["parameters"] = executable.parameters
             explain_context["translation_repairs"] = [r.model_dump() for r in executable.translation_repairs]
-            
-            # Decorate with metadata 
+
+            # Decorate with metadata
+            executable.abstract_sql = abstract_query.sql
             executable.query_id = str(uuid.uuid4())
             executable.compilation_latency_ms = (time.perf_counter() - start) * 1000.0
-            
+
             if explain:
                 executable.explainability = explain_context
                 

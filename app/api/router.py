@@ -146,15 +146,15 @@ async def generate_query(
         session_id=session_id,
         sequence_number=last_seq + 2,
         role="assistant",
-        content=executable.sql,
+        content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
         provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
         prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
         completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
     )
     session.add_all([user_msg, assistant_msg])
     await session.commit()
-    
-    
+
+
     return QueryGenerateResponse(
         query_id=executable.query_id or "",
         session_id=str(session_id),
@@ -242,14 +242,10 @@ async def execute_query(
         session_id=session_id,
         sequence_number=last_seq + 2,
         role="assistant",
-        # Store the abstract SQL (using alias names like col0546, table0049) rather than
-        # the physical/translated SQL. This prevents the LLM from learning physical column
-        # names from its own prior responses and hallucinating them on follow-up turns.
-        content=(
-            executable.explainability.get("translation", {}).get("llm_abstract_query")
-            if executable.explainability
-            else executable.sql
-        ) or executable.sql,
+        # Store abstract_sql (obfuscated aliases) rather than the physical SQL so the LLM
+        # cannot learn physical column/table names from its own prior responses.
+        # abstract_sql is always populated by the compiler engine regardless of explain flag.
+        content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
         provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
         prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
         completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
