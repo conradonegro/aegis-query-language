@@ -24,8 +24,9 @@ class MockLLMGateway:
         # Calculate simulated latency
         latency_ms = (time.time() - start_time) * 1000.0
 
-        # Provide the hardcoded mock SQL
-        raw_sql = self.mock_response_sql
+        # Provide the hardcoded mock SQL as JSON
+        import json
+        raw_sql = json.dumps({"sql": self.mock_response_sql})
 
         # Count simulated tokens
         # Very rough approximation: 1 token per 4 chars

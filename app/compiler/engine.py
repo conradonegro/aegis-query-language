@@ -141,7 +141,28 @@ class CompilerEngine:
                 "raw_response": llm_result.raw_text
             }
             
-            abstract_query = AbstractQuery(sql=llm_result.raw_text)
+            import json
+            import re
+            
+            raw_text = llm_result.raw_text.strip()
+            
+            # Robust JSON extraction: Strip potential markdown code blocks
+            json_match = re.search(r'```json\s*(.*?)\s*```', raw_text, re.DOTALL)
+            if json_match:
+                raw_text = json_match.group(1).strip()
+            elif raw_text.startswith("```") and raw_text.endswith("```"):
+                # Handle generic backticks
+                raw_text = re.sub(r'^```(\w+)?\n?', '', raw_text)
+                raw_text = re.sub(r'\n?```$', '', raw_text).strip()
+                
+            try:
+                payload = json.loads(raw_text)
+                abstract_sql = payload.get("sql", "").strip() if isinstance(payload, dict) else str(payload)
+            except json.JSONDecodeError:
+                # Fallback to direct text if JSON parsing fails (e.g. if LLM ignored instructions)
+                abstract_sql = raw_text
+                
+            abstract_query = AbstractQuery(sql=abstract_sql)
             explain_context["translation"]["llm_abstract_query"] = abstract_query.sql
             
             # 5. Parse 
