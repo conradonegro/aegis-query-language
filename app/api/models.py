@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -139,3 +139,7 @@ class ColumnUpdateRequest(BaseModel):
 
 class VersionCreateRequest(BaseModel):
     baseline_version_id: str | None = None
+
+class VersionStatusUpdateRequest(BaseModel):
+    status: Literal["draft", "pending_review", "active", "archived"]
+    reason: str | None = None

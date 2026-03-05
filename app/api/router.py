@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
@@ -6,14 +7,18 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+from app.audit.chaining import compute_audit_row_hash, get_canonical_json
+from app.vault import get_secrets_manager
+
 from app.api.compiler import MetadataCompiler
 from app.api.meta_models import (
     MetadataVersion,
     MetadataTable,
     MetadataColumn,
     MetadataRelationship,
+    MetadataAudit,
     ChatSession,
-    ChatMessage
+    ChatMessage,
 )
 from app.api.models import (
     MetadataCompileResponse,
@@ -25,6 +30,7 @@ from app.api.models import (
     TableUpdateRequest,
     ColumnUpdateRequest,
     VersionCreateRequest,
+    VersionStatusUpdateRequest,
     QueryExecuteResponse,
     QueryGenerateResponse,
     QueryRequest,
@@ -307,6 +313,126 @@ async def list_metadata_versions(
             created_at=v.created_at.isoformat()
         ) for v in versions
     ]
+
+
+# Valid forward/backward transitions in the review lifecycle.
+_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    "draft":          {"pending_review"},
+    "pending_review": {"active", "draft"},
+    "active":         {"archived"},
+    "archived":       set(),  # terminal — clone to create a new draft
+}
+
+# Semantic audit action for each transition (matches MetadataAudit.action enum).
+_TRANSITION_AUDIT_ACTION: dict[tuple[str, str], str] = {
+    ("draft",          "pending_review"): "update",   # submitted for review
+    ("pending_review", "active"):         "approve",  # reviewer approved
+    ("pending_review", "draft"):          "update",   # reviewer rejected / returned
+    ("active",         "archived"):       "revoke",   # retired from production
+}
+
+
+@api_router.patch("/metadata/versions/{version_id}/status", response_model=ProtocolMetadataVersion)
+async def update_version_status(
+    version_id: uuid.UUID,
+    payload: VersionStatusUpdateRequest,
+    session: AsyncSession = Depends(get_steward_db_session),
+) -> ProtocolMetadataVersion:
+    """
+    Advance or retract a MetadataVersion through its review lifecycle.
+
+    Allowed transitions:
+      draft → pending_review
+      pending_review → active | draft
+      active → archived
+
+    archived is a terminal state — clone the version to start a new draft.
+    Every transition is written to the WORM audit chain atomically with the
+    status change. If the requested status equals the current status the
+    request is treated as a no-op and returns 200 without touching the DB.
+    """
+    res = await session.execute(
+        select(MetadataVersion).where(MetadataVersion.version_id == version_id)
+    )
+    version = res.scalar_one_or_none()
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    # Idempotency: already at the target status — return without side-effects
+    if version.status == payload.status:
+        return ProtocolMetadataVersion(
+            version_id=str(version.version_id),
+            status=version.status,
+            created_at=version.created_at.isoformat(),
+        )
+
+    allowed = _ALLOWED_TRANSITIONS.get(version.status, set())
+    if payload.status not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Transition from '{version.status}' to '{payload.status}' is not permitted. "
+                f"Allowed targets: {sorted(allowed) if allowed else 'none — this is a terminal state'}."
+            ),
+        )
+
+    previous_status = version.status
+
+    # Apply status change
+    version.status = payload.status
+    if payload.reason:
+        version.change_reason = payload.reason
+
+    # Approval timestamps are populated when a version becomes active
+    if payload.status == "active":
+        version.approved_by = "admin_api"
+        version.approved_at = datetime.utcnow()
+
+    # Build the WORM audit chain record — must happen in the same transaction
+    last_audit_res = await session.execute(
+        select(MetadataAudit)
+        .order_by(MetadataAudit.timestamp.desc(), MetadataAudit.audit_id.desc())
+        .limit(1)
+    )
+    last_row = last_audit_res.scalar_one_or_none()
+    previous_hash = last_row.row_hash if last_row else ""
+
+    audit_timestamp = datetime.utcnow()
+    audit_action = _TRANSITION_AUDIT_ACTION[(previous_status, payload.status)]
+    audit_payload = {
+        "event": "status_transition",
+        "version_id": str(version_id),
+        "from_status": previous_status,
+        "to_status": payload.status,
+        "reason": payload.reason,
+        "status": "SUCCESS",
+    }
+
+    audit_canonical = get_canonical_json(audit_payload)
+    new_row_hash = compute_audit_row_hash(previous_hash, audit_canonical, audit_timestamp.isoformat())
+
+    secrets_mgr = get_secrets_manager()
+    audit_event = MetadataAudit(
+        version_id=version_id,
+        actor="admin_api",
+        action=audit_action,
+        payload=audit_payload,
+        timestamp=audit_timestamp,
+        previous_hash=previous_hash,
+        row_hash=new_row_hash,
+        key_id=secrets_mgr.get_current_signing_key_id(),
+    )
+    session.add(audit_event)
+
+    # Single atomic commit — status change and audit record together.
+    # If audit chain construction raises, the status change is also rolled back.
+    await session.commit()
+
+    return ProtocolMetadataVersion(
+        version_id=str(version.version_id),
+        status=version.status,
+        created_at=version.created_at.isoformat(),
+    )
 
 
 @api_router.get("/metadata/active")
