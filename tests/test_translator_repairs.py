@@ -3,12 +3,13 @@ from sqlglot import exp
 import sqlglot
 
 from app.api.models import TranslationRepair
-from app.compiler.models import ValidatedAST
-from app.compiler.safety import UnsafeExpressionError, SafetyPolicyViolationError
+from app.compiler.models import ValidatedAST, SQLAst
+from app.compiler.safety import UnsafeExpressionError, SafetyPolicyViolationError, SafetyEngine, SafetyViolationError
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.steward.models import (
     AbstractTableDef,
     AbstractColumnDef,
+    AbstractRelationshipDef,
     RegistrySchema,
     SafetyClassification,
 )
@@ -344,10 +345,141 @@ def test_join_blocked_column_raises(translator: DeterministicTranslator, restric
                 ]
             ),
         ],
-        relationships=[]
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="accounts", source_column="category",
+                target_table="tags", target_column="id",
+            )
+        ],
     )
     ast = ValidatedAST(tree=sqlglot.parse_one(
         "SELECT a.id FROM accounts a JOIN tags t ON a.category = t.id"
     ))
     with pytest.raises(SafetyPolicyViolationError, match="not permitted in JOIN"):
-        translator.translate(ast, join_schema)
+        translator.translate(ast, join_schema, relationships=join_schema.relationships)
+
+
+# ---------------------------------------------------------------------------
+# Relationship graph JOIN validation tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def join_graph_schema() -> RegistrySchema:
+    """Schema with two tables linked by a declared relationship."""
+    return RegistrySchema(
+        version="1.0",
+        tables=[
+            AbstractTableDef(
+                alias="posts", description="blog posts", physical_target="phys_posts",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id", description="pk", physical_target="id",
+                        safety=SafetyClassification(allowed_in_select=True, join_participation_allowed=True),
+                    ),
+                    AbstractColumnDef(
+                        alias="author_id", description="fk to users", physical_target="author_id",
+                        safety=SafetyClassification(allowed_in_select=True, join_participation_allowed=True),
+                    ),
+                    AbstractColumnDef(
+                        alias="title", description="title", physical_target="title",
+                        safety=SafetyClassification(allowed_in_select=True),
+                    ),
+                ]
+            ),
+            AbstractTableDef(
+                alias="users", description="users", physical_target="phys_users",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id", description="pk", physical_target="id",
+                        safety=SafetyClassification(allowed_in_select=True, join_participation_allowed=True),
+                    ),
+                    AbstractColumnDef(
+                        alias="name", description="name", physical_target="name",
+                        safety=SafetyClassification(allowed_in_select=True),
+                    ),
+                ]
+            ),
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="posts", source_column="author_id",
+                target_table="users", target_column="id",
+            )
+        ],
+    )
+
+
+def test_join_on_declared_relationship_passes(
+    translator: DeterministicTranslator, join_graph_schema: RegistrySchema
+):
+    """A JOIN whose ON columns match a declared relationship edge must succeed."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT p.title, u.name FROM posts p JOIN users u ON p.author_id = u.id"
+    ))
+    executable = translator.translate(
+        ast, join_graph_schema, relationships=join_graph_schema.relationships
+    )
+    assert "phys_posts" in executable.sql
+    assert "phys_users" in executable.sql
+
+
+def test_join_on_undeclared_edge_raises(
+    translator: DeterministicTranslator, join_graph_schema: RegistrySchema
+):
+    """A JOIN whose ON columns do NOT match any declared edge must be rejected."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        # Hallucinated: joining on title = name — no such relationship declared
+        "SELECT p.title FROM posts p JOIN users u ON p.title = u.name"
+    ))
+    with pytest.raises(TranslationError, match="Hallucinated JOIN blocked"):
+        translator.translate(
+            ast, join_graph_schema, relationships=join_graph_schema.relationships
+        )
+
+
+def test_join_without_relationships_arg_skips_graph_validation(
+    translator: DeterministicTranslator, join_graph_schema: RegistrySchema
+):
+    """When relationships=None (not passed), graph validation is skipped entirely."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT p.title FROM posts p JOIN users u ON p.title = u.name"
+    ))
+    # No relationships argument — should not raise TranslationError for graph mismatch.
+    # Safety flag errors (SafetyPolicyViolationError) are acceptable; graph errors are not.
+    try:
+        translator.translate(ast, join_graph_schema)
+    except (TranslationError, SafetyPolicyViolationError) as e:
+        assert "Hallucinated JOIN blocked" not in str(e)
+
+
+# ---------------------------------------------------------------------------
+# Implicit cross-join safety engine tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def safety_engine() -> SafetyEngine:
+    return SafetyEngine()
+
+
+def test_implicit_cross_join_blocked(safety_engine: SafetyEngine):
+    """FROM a, b without explicit JOIN ON must be rejected at the safety engine level."""
+    tree = sqlglot.parse_one("SELECT posts.id FROM posts, users")
+    ast = SQLAst(tree=tree)
+    with pytest.raises(SafetyViolationError, match="Implicit or cross JOIN detected"):
+        safety_engine.validate(ast)
+
+
+def test_explicit_cross_join_blocked(safety_engine: SafetyEngine):
+    """CROSS JOIN (no ON condition) must also be blocked."""
+    tree = sqlglot.parse_one("SELECT posts.id FROM posts CROSS JOIN users")
+    ast = SQLAst(tree=tree)
+    with pytest.raises(SafetyViolationError, match="Implicit or cross JOIN detected"):
+        safety_engine.validate(ast)
+
+
+def test_explicit_join_with_on_passes_safety(safety_engine: SafetyEngine):
+    """An explicit JOIN with an ON condition must pass the cross-join check."""
+    tree = sqlglot.parse_one("SELECT p.id FROM posts p JOIN users u ON p.author_id = u.id")
+    ast = SQLAst(tree=tree)
+    validated = safety_engine.validate(ast)
+    assert validated is not None

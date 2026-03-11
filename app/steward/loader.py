@@ -61,16 +61,26 @@ class RegistryLoader:
         # -------------------------------------------------------------
         
         payload = artifact.artifact_blob
-        
+
         # Hydrate JSON blob into strict internal typed Pydantic structures needed by CompilerEngine
         tables_def = []
         relationships_def = []
+
+        # Pre-pass: build a global column-ID → abstract alias map so relationship
+        # target_column can be resolved without a second nested scan.
+        col_id_to_alias: dict[str, str] = {}
+        for tbl_dict in payload.get("tables", []):
+            for col_dict in tbl_dict.get("columns", []):
+                col_id = col_dict.get("id")
+                if col_id:
+                    col_id_to_alias[col_id] = col_dict["alias"]
 
         for tbl_dict in payload.get("tables", []):
             columns_def = []
             for col_dict in tbl_dict.get("columns", []):
 
                 sc_extra = col_dict.get("safety_classification") or {}
+                col_type = col_dict.get("type", "").lower()
                 _numeric_types = {
                     "numeric", "integer", "real", "double precision",
                     "bigint", "smallint", "float", "decimal",
@@ -84,7 +94,7 @@ class RegistryLoader:
                     ),
                     aggregation_allowed=sc_extra.get(
                         "aggregation_allowed",
-                        col_dict.get("type", "") in _numeric_types,
+                        col_type in _numeric_types,
                     ),
                     join_participation_allowed=col_dict.get("allowed_in_join", False),
                 )
@@ -108,19 +118,20 @@ class RegistryLoader:
                 )
             )
             
-            # Map Relationships internally against string abstract aliases so Engine RAG succeeds
+            # Map relationships using the pre-built column-ID → alias map for both ends.
             for rel_dict in tbl_dict.get("relationships", []):
-                # Search the col map local alias to match against source UUID
-                source_col = next((c for c in tbl_dict.get("columns", []) if c["id"] == rel_dict["source_column_id"]), None)
-                target_col = None # Can't immediately map Target Column purely from dictionary flattening without a pass, but for LLM, only table edge connects matter!
-                
-                # In Steward Schema right now, we just map table-to-table string bindings for edges conceptually
+                source_col = next(
+                    (c for c in tbl_dict.get("columns", []) if c["id"] == rel_dict.get("source_column_id")),
+                    None,
+                )
+                target_col_alias = col_id_to_alias.get(rel_dict.get("target_column_id", ""), "")
+
                 relationships_def.append(
                     AbstractRelationshipDef(
                         source_table=tbl_dict["alias"],
                         source_column=source_col["alias"] if source_col else "",
                         target_table=rel_dict["target_table"],
-                        target_column="" # Omitted temporarily as LLMs generally can construct native target bindings when source keys match physical mappings
+                        target_column=target_col_alias,
                     )
                 )
 

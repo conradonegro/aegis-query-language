@@ -118,9 +118,16 @@ class DeterministicSchemaFilter:
             if rel.target_table in matched_tables:
                 augmented_tables.add(rel.source_table)
                 
-        # 3. Determine all columns involved in relationships to protect them
-        rel_columns = {f"{r.source_table}.{r.source_column}" for r in schema.relationships} | \
-                      {f"{r.target_table}.{r.target_column}" for r in schema.relationships}
+        # 3. Determine FK columns for relationships where BOTH endpoints are in scope.
+        # Scoping to augmented_tables avoids including FK columns that point to tables
+        # the LLM was never shown (which would confuse the prompt and the JOIN validator).
+        rel_columns: set[str] = set()
+        for r in schema.relationships:
+            if r.source_table in augmented_tables and r.target_table in augmented_tables:
+                if r.source_column:
+                    rel_columns.add(f"{r.source_table}.{r.source_column}")
+                if r.target_column:
+                    rel_columns.add(f"{r.target_table}.{r.target_column}")
 
         # 4. Filter structures down
         for table in schema.tables:

@@ -177,7 +177,9 @@ class CompilerEngine:
             # reflects what the LLM actually produced, not the physical form.
             abstract_query_hash = hashlib.sha256(abstract_sql.encode()).hexdigest()
             executable = self.translator.translate(
-                validated_ast, schema, abstract_query_hash=abstract_query_hash
+                validated_ast, schema,
+                abstract_query_hash=abstract_query_hash,
+                relationships=filtered_schema.relationships,
             )
             explain_context["translation"]["parameterized_sql"] = executable.sql
             explain_context["translation"]["parameters"] = executable.parameters

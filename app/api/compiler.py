@@ -63,7 +63,7 @@ class MetadataCompiler:
         for tbl in version.tables:
             if not tbl.active:
                 continue
-                
+
             tbl_dict = {
                 "id": str(tbl.table_id),
                 "name": tbl.real_name,
@@ -72,7 +72,7 @@ class MetadataCompiler:
                 "columns": [],
                 "relationships": []
             }
-            
+
             for col in tbl.columns:
                 tbl_dict["columns"].append({
                     "id": str(col.column_id),

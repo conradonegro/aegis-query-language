@@ -6,6 +6,7 @@ from app.api.models import TranslationRepair
 from app.compiler.models import ExecutableQuery, ValidatedAST
 from app.compiler.safety import UnsafeExpressionError, SafetyPolicyViolationError
 from app.steward import RegistrySchema
+from app.steward.models import AbstractRelationshipDef
 
 
 class TranslationError(Exception):
@@ -21,7 +22,8 @@ class DeterministicTranslator:
     def translate(
         self, ast: ValidatedAST, schema: RegistrySchema,
         abstract_query_hash: str = "default_hash", safety_version: str = "v1.0.0",
-        row_limit: int = 1000
+        row_limit: int = 1000,
+        relationships: list[AbstractRelationshipDef] | None = None,
     ) -> ExecutableQuery:
         """Translates abstract AST into parameterized physical SQL."""
         from app.api.models import TranslationRepair
@@ -29,8 +31,13 @@ class DeterministicTranslator:
         # 1. Copy-on-write
         tree = ast.tree.copy()
         repairs: list[TranslationRepair] = []
-        
-        # 2. Structural AST Repairs (e.g., WHERE SUM > 10 -> HAVING SUM > 10)
+
+        # 2. Relationship graph validation — must run on the abstract AST before any
+        #    physical substitution so column/table names still match schema aliases.
+        if relationships:
+            self._validate_join_graph(tree, relationships)
+
+        # 3. Structural AST Repairs (e.g., WHERE SUM > 10 -> HAVING SUM > 10)
         self._repair_where_aggregations(tree, repairs)
 
         # 3. Build fast lookup map O(1)
@@ -268,6 +275,73 @@ class DeterministicTranslator:
             row_limit_applied=row_limit_applied,
             translation_repairs=repairs
         )
+
+    def _validate_join_graph(
+        self,
+        tree: exp.Expression,
+        relationships: list[AbstractRelationshipDef],
+    ) -> None:
+        """
+        Validates that every explicit JOIN ON condition references a declared relationship edge.
+
+        Two-layer defence:
+        1. The ON condition column pair must match a declared edge in relationships (structural).
+        2. join_participation_allowed on each column is enforced separately by _check_column_safety.
+
+        Runs on the abstract AST (before physical substitution) so names match schema aliases.
+        Raises TranslationError for undeclared JOIN edges (hallucinated JOINs).
+        """
+        # Build SQL-alias → abstract-table-alias map from abstract table nodes.
+        sql_alias_to_table: dict[str, str] = {}
+        for table_node in tree.find_all(exp.Table):
+            t_name = table_node.name.lower()
+            sql_alias_to_table[t_name] = t_name
+            if table_node.alias:
+                sql_alias_to_table[table_node.alias.lower()] = t_name
+
+        # Build a frozenset edge index for O(1) pair lookup.
+        # An edge is directional in the data model but bidirectional for JOIN ON semantics.
+        declared_edges: set[frozenset] = set()
+        for rel in relationships:
+            if rel.source_column and rel.target_column:
+                declared_edges.add(frozenset({
+                    f"{rel.source_table}.{rel.source_column}",
+                    f"{rel.target_table}.{rel.target_column}",
+                }))
+
+        def _resolve(col: exp.Column) -> str | None:
+            c_name = col.name.lower()
+            t_prefix = col.table.lower() if col.table else ""
+            if not t_prefix:
+                return None
+            abstract_table = sql_alias_to_table.get(t_prefix, t_prefix)
+            return f"{abstract_table}.{c_name}"
+
+        for join_node in tree.find_all(exp.Join):
+            on_clause = join_node.args.get("on")
+            if on_clause is None:
+                # No ON condition — implicit/cross join; handled by SafetyEngine.
+                continue
+
+            for eq_node in on_clause.find_all(exp.EQ):
+                left, right = eq_node.left, eq_node.right
+                if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
+                    continue
+
+                left_ref = _resolve(left)
+                right_ref = _resolve(right)
+
+                if left_ref is None or right_ref is None:
+                    # Cannot resolve without an explicit table prefix — skip (TranslationError
+                    # for ambiguous naked columns will surface later in the column walk).
+                    continue
+
+                pair = frozenset({left_ref, right_ref})
+                if pair not in declared_edges:
+                    raise TranslationError(
+                        f"JOIN condition '{left_ref} = {right_ref}' does not correspond to any "
+                        f"declared relationship in the schema. Hallucinated JOIN blocked."
+                    )
 
     def _get_column_sql_context(self, col_node: exp.Column) -> set[str]:
         """
