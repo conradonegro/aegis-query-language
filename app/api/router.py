@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
@@ -390,7 +390,7 @@ async def update_version_status(
     # Approval timestamps are populated when a version becomes active
     if payload.status == "active":
         version.approved_by = "admin_api"
-        version.approved_at = datetime.utcnow()
+        version.approved_at = datetime.now(timezone.utc)
 
     # Build the WORM audit chain record — must happen in the same transaction
     last_audit_res = await session.execute(
@@ -401,7 +401,7 @@ async def update_version_status(
     last_row = last_audit_res.scalar_one_or_none()
     previous_hash = last_row.row_hash if last_row else ""
 
-    audit_timestamp = datetime.utcnow()
+    audit_timestamp = datetime.now(timezone.utc)
     audit_action = _TRANSITION_AUDIT_ACTION[(previous_status, payload.status)]
     audit_payload = {
         "event": "status_transition",

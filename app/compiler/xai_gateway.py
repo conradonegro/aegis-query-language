@@ -43,10 +43,7 @@ class XAILLMGateway(LLMGatewayProtocol):
         
         for msg in prompt.chat_history:
             messages.append({"role": msg.role, "content": msg.content})
-            
-        if prompt.schema_context:
-            messages.append({"role": "system", "content": f"Schema Context:\n{prompt.schema_context}"})
-            
+
         messages.append({"role": "user", "content": prompt.user_prompt})
 
         payload: dict[str, Any] = {
@@ -55,9 +52,6 @@ class XAILLMGateway(LLMGatewayProtocol):
             "stream": False,
             "temperature": 0.0
         }
-        
-        if prompt.hints:
-            messages.append({"role": "user", "content": f"Hints:\n{prompt.hints}"})
             
         if self.strict_json:
             payload["response_format"] = {"type": "json_object"}

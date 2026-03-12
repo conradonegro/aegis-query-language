@@ -38,20 +38,14 @@ class GoogleLLMGateway(LLMGatewayProtocol):
         start_time = time.perf_counter()
         
         system_content = prompt.system_instruction
-        if prompt.schema_context:
-            system_content += f"\n\nSchema Context:\n{prompt.schema_context}"
 
         contents = []
         for msg in prompt.chat_history:
             # Gemini roles: "user", "model"
             role = "user" if msg.role == "user" else "model"
             contents.append({"role": role, "parts": [{"text": msg.content}]})
-            
-        final_user_prompt = prompt.user_prompt
-        if prompt.hints:
-            final_user_prompt += f"\n\nHints:\n{prompt.hints}"
-            
-        contents.append({"role": "user", "parts": [{"text": final_user_prompt}]})
+
+        contents.append({"role": "user", "parts": [{"text": prompt.user_prompt}]})
 
         payload: dict[str, Any] = {
             "systemInstruction": {

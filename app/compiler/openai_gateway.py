@@ -49,9 +49,6 @@ class OpenAILLMGateway(LLMGatewayProtocol):
             messages.append({"role": msg.role, "content": msg.content})
             
         # Append implicit schema contexts and the final user prompt
-        if prompt.schema_context:
-            messages.append({"role": "system", "content": f"Schema Context:\n{prompt.schema_context}"})
-            
         messages.append({"role": "user", "content": prompt.user_prompt})
 
         payload: dict[str, Any] = {
@@ -60,9 +57,6 @@ class OpenAILLMGateway(LLMGatewayProtocol):
             "stream": False
         }
         
-        if prompt.hints:
-            messages.append({"role": "user", "content": f"Hints:\n{prompt.hints}"})
-            
         if self.strict_json:
             payload["response_format"] = {"type": "json_object"}
 

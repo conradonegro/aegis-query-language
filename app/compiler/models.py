@@ -44,9 +44,7 @@ class PromptHints(BaseModel):
 
 class PromptEnvelope(BaseModel):
     system_instruction: str
-    schema_context: str
     user_prompt: str
-    hints: str
     chat_history: list[ChatHistoryItem] = Field(default_factory=list)
 
 class LLMResult(BaseModel):

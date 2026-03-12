@@ -134,9 +134,9 @@ async def test_compiler_engine_follow_up_reuse(compiler_engine: CompilerEngine, 
     exec1 = await compiler_engine.compile(intent=intent1, schema=mock_registry, hints=hints1, session_id=session_id, explain=True)
     
     # Verify state is stored
-    assert session_id in compiler_engine._session_store
-    
-    stored_schema = compiler_engine._session_store[session_id].last_filtered_schema
+    assert session_id in compiler_engine.session_store._local
+
+    stored_schema = compiler_engine.session_store._local[session_id].last_filtered_schema
     assert len(stored_schema.tables) > 0
     assert stored_schema.tables[0].alias == "users"
 
@@ -185,8 +185,8 @@ async def test_compiler_engine_follow_up_failure_preservation(compiler_engine: C
     hints1 = PromptHints(column_hints=[])
     await compiler_engine.compile(intent=intent1, schema=mock_registry, hints=hints1, session_id=session_id)
     
-    original_sql = compiler_engine._session_store[session_id].last_successful_sql
-    original_timestamp = compiler_engine._session_store[session_id].timestamp
+    original_sql = compiler_engine.session_store._local[session_id].last_successful_sql
+    original_timestamp = compiler_engine.session_store._local[session_id].timestamp
     
     # 2. Follow-up that fails compilation (mock a safety violation or translation error)
     class BrokenGateway(MockLLMGateway):
@@ -202,5 +202,5 @@ async def test_compiler_engine_follow_up_failure_preservation(compiler_engine: C
         await compiler_engine.compile(intent=intent2, schema=mock_registry, hints=hints2, session_id=session_id)
         
     # 3. Assert state was NOT corrupted by the failure
-    assert compiler_engine._session_store[session_id].last_successful_sql == original_sql
-    assert compiler_engine._session_store[session_id].timestamp == original_timestamp
+    assert compiler_engine.session_store._local[session_id].last_successful_sql == original_sql
+    assert compiler_engine.session_store._local[session_id].timestamp == original_timestamp

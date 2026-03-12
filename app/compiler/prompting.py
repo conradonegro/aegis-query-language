@@ -32,8 +32,7 @@ class PromptBuilder:
         # 2. Render the system block directly
         system_block = template.render(
              schema=schema,
-             intent=intent,
-             hints=hints
+             hints=hints,
         )
 
         # 3. We'll decompose the rendered text slightly to fit the discrete envelope,
@@ -49,7 +48,5 @@ class PromptBuilder:
         return PromptEnvelope(
             system_instruction=system_block,
             user_prompt=intent.natural_language_query,
-            schema_context="",
-            hints="",
-            chat_history=history
+            chat_history=history,
         )

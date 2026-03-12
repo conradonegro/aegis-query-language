@@ -1,7 +1,7 @@
 import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -52,7 +52,7 @@ class MetadataCompiler:
         # 1. Build the physical runtime Dictionary Payload mapping
         payload: dict[str, Any] = {
             "meta_version": str(version.version_id),
-            "compiled_at": datetime.utcnow().isoformat(),
+            "compiled_at": datetime.now(timezone.utc).isoformat(),
             "tables": [],
             "roles": {"system": "admin"} # Mock roles injection for future
         }
@@ -149,7 +149,7 @@ class MetadataCompiler:
         last_row = last_audit_res.scalar_one_or_none()
         previous_hash = last_row.row_hash if last_row else ""
         
-        audit_timestamp_native = datetime.utcnow()
+        audit_timestamp_native = datetime.now(timezone.utc)
         audit_payload = {
             "event": "compile_version",
             "version_id": str(version.version_id),
@@ -176,7 +176,7 @@ class MetadataCompiler:
         # 6. Lock the hash trace dynamically to the version object
         version.registry_hash = final_hash
         version.approved_by = actor
-        version.approved_at = datetime.utcnow()
+        version.approved_at = datetime.now(timezone.utc)
         
         await session.commit()
         return artifact

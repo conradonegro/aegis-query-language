@@ -44,9 +44,7 @@ def test_prompt_builder() -> None:
 async def test_mock_gateway() -> None:
     envelope = PromptEnvelope(
         system_instruction="System template",
-        schema_context="",
         user_prompt="Count users",
-        hints=""
     )
 
     gateway = MockLLMGateway(mock_response_sql="SELECT COUNT(*) FROM users")

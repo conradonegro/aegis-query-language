@@ -29,9 +29,6 @@ Relationships:
 {% endfor %}
 {%- endif %}
 
-User Intent:
-{{ intent.natural_language_query }}
-
 {% if hints.column_hints -%}
 Additional Helpful Context:
 {% for hint in hints.column_hints -%}

@@ -12,9 +12,7 @@ from app.compiler.gateway import MockLLMGateway
 def prompt_envelope():
     return PromptEnvelope(
         system_instruction="You are a SQL generator.",
-        schema_context="table users (id int, name text);",
         user_prompt="Get all users",
-        hints=""
     )
 
 

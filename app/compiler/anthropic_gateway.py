@@ -38,20 +38,14 @@ class AnthropicLLMGateway(LLMGatewayProtocol):
         
         # Anthropic extracts the system prompt from the messages array
         system_content = prompt.system_instruction
-        if prompt.schema_context:
-            system_content += f"\n\nSchema Context:\n{prompt.schema_context}"
 
         messages = []
         for msg in prompt.chat_history:
             # Anthropic enforces alternating user/assistant roles, mapping system to user if it slips in
             role = msg.role if msg.role in ["user", "assistant"] else "user"
             messages.append({"role": role, "content": msg.content})
-            
-        final_user_prompt = prompt.user_prompt
-        if prompt.hints:
-            final_user_prompt += f"\n\nHints:\n{prompt.hints}"
-            
-        messages.append({"role": "user", "content": final_user_prompt})
+
+        messages.append({"role": "user", "content": prompt.user_prompt})
         
         # If strict json is required, we force Claude to start its response with a JSON bracket
         # using Anthropic's prefilling feature.

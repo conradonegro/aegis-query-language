@@ -24,18 +24,14 @@ class MockLLMGateway:
         # Calculate simulated latency
         latency_ms = (time.time() - start_time) * 1000.0
 
-        # Provide the hardcoded mock SQL as JSON
-        import json
-        raw_sql = json.dumps({"sql": self.mock_response_sql})
-
         # Count simulated tokens
         # Very rough approximation: 1 token per 4 chars
         prompt_lengths = len(prompt.system_instruction) + len(prompt.user_prompt)
         prompt_tokens = max(1, prompt_lengths // 4)
-        completion_tokens = max(1, len(raw_sql) // 4)
+        completion_tokens = max(1, len(self.mock_response_sql) // 4)
 
         return LLMResult(
-            raw_text=raw_sql,
+            raw_text=self.mock_response_sql,
             model_id="mock-aegis-v1",
             latency_ms=latency_ms,
             prompt_tokens=prompt_tokens,

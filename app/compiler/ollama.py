@@ -59,9 +59,6 @@ class OllamaLLMGateway(LLMGatewayProtocol):
             {"role": "system", "content": prompt.system_instruction}
         ]
         
-        if prompt.schema_context:
-            messages.append({"role": "system", "content": f"Schema Context:\n{prompt.schema_context}"})
-            
         for msg in prompt.chat_history:
             messages.append({"role": msg.role, "content": msg.content})
             
@@ -73,9 +70,6 @@ class OllamaLLMGateway(LLMGatewayProtocol):
             "stream": False # We must buffer the entire JSON response to validate it, no partial streams
         }
         
-        if prompt.hints:
-            payload["messages"].append({"role": "user", "content": f"Hints:\n{prompt.hints}"})
-            
         if self.strict_json:
             payload["format"] = self.json_schema
 

@@ -17,7 +17,7 @@ from app.api.router import get_compiler
 class MockCompilerTurnA:
     """Returns a fixed SELECT for turn 1."""
 
-    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None):
+    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
         from app.compiler.models import ExecutableQuery
         return ExecutableQuery(
             sql="SELECT * FROM users",
@@ -33,7 +33,7 @@ class MockCompilerTurnA:
 class MockCompilerTurnB:
     """Returns a filtered SELECT for turn 2, reflecting history."""
 
-    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None):
+    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
         from app.compiler.models import ExecutableQuery
         # Verify that the history from turn 1 was injected
         assert chat_history is not None and len(chat_history) >= 2
