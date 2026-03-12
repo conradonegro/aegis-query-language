@@ -12,6 +12,10 @@ from app.vault import get_secrets_manager
 
 logger = logging.getLogger(__name__)
 
+# Shared client — reuses the connection pool across all remote LLM calls instead
+# of creating and tearing down a new pool on every request.
+_http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=60.0)
+
 
 class RemoteLLMGateway(ABC):
     """
@@ -22,8 +26,6 @@ class RemoteLLMGateway(ABC):
     provider-specific payload building, header construction, and response
     extraction.
     """
-
-    _timeout: float = 60.0
 
     def __init__(self, model: str, strict_json: bool = True) -> None:
         self.model = model
@@ -73,14 +75,13 @@ class RemoteLLMGateway(ABC):
         start_time = time.perf_counter()
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(
-                    self._endpoint_url,
-                    json=self._build_payload(prompt),
-                    headers=self._build_headers(api_key),
-                )
-                response.raise_for_status()
-                data = response.json()
+            response = await _http_client.post(
+                self._endpoint_url,
+                json=self._build_payload(prompt),
+                headers=self._build_headers(api_key),
+            )
+            response.raise_for_status()
+            data = response.json()
         except httpx.HTTPError as e:
             raise LLMGenerationError(
                 f"HTTP error communicating with {self._provider_name}: {e}"

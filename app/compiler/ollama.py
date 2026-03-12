@@ -9,6 +9,11 @@ from app.compiler.models import LLMResult, PromptEnvelope
 
 logger = logging.getLogger(__name__)
 
+# Shared client — long timeout because Ollama may need to cold-load model weights
+# into VRAM on the first request.
+_http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=500.0)
+
+
 class LLMGenerationError(Exception):
     """Raised when the LLM fails to generate a valid response that meets strict constraints."""
     def __init__(self, message: str, raw_response: str = ""):
@@ -83,15 +88,12 @@ class OllamaLLMGateway:
             payload["format"] = self.json_schema
 
         try:
-            # We use a 500s timeout by default because Ollama might need to
-            # cold-load the LLM weights into VRAM on the first query.
-            async with httpx.AsyncClient(timeout=500.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/api/chat",
-                    json=payload
-                )
-                response.raise_for_status()
-                data = response.json()
+            response = await _http_client.post(
+                f"{self.base_url}/api/chat",
+                json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
         except httpx.HTTPError as e:
             raise LLMGenerationError(f"HTTP Error communicating with Ollama: {e}")
         except Exception as e:
