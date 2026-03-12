@@ -1,8 +1,11 @@
+import json
+
 import pytest
 
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
+from app.compiler.ollama import LLMGenerationError
 from app.compiler.translator import TranslationError
 from app.compiler.interfaces import (
     LLMGatewayProtocol,
@@ -204,3 +207,26 @@ async def test_compiler_engine_follow_up_failure_preservation(compiler_engine: C
     # 3. Assert state was NOT corrupted by the failure
     assert compiler_engine.session_store._local[session_id].last_successful_sql == original_sql
     assert compiler_engine.session_store._local[session_id].timestamp == original_timestamp
+
+
+@pytest.mark.asyncio
+async def test_compiler_engine_llm_refusal_is_raised(compiler_engine: CompilerEngine, mock_registry: RegistrySchema) -> None:
+    """
+    When any gateway returns a refusal JSON payload the engine must raise
+    LLMGenerationError — not silently pass or crash with a parse error.
+    This exercises the code path that was previously unreachable because
+    real gateways stripped the JSON before the engine could inspect it.
+    """
+    class RefusingGateway(MockLLMGateway):
+        async def generate(self, envelope) -> LLMResult:
+            payload = json.dumps({"refused": True, "reason": "destructive intent detected"})
+            return LLMResult(raw_text=payload, model_id="mock", latency_ms=1.0, prompt_tokens=5, completion_tokens=5)
+
+    compiler_engine.llm_gateway = RefusingGateway()
+    intent = UserIntent(natural_language_query="DROP all users")
+    hints = PromptHints(column_hints=[])
+
+    with pytest.raises(LLMGenerationError) as exc:
+        await compiler_engine.compile(intent=intent, schema=mock_registry, hints=hints)
+
+    assert "refused" in str(exc.value).lower() or "destructive" in str(exc.value).lower()

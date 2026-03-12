@@ -88,20 +88,14 @@ class GoogleLLMGateway(LLMGatewayProtocol):
             
         message_content = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
         
+        # Validate JSON is well-formed; the engine handles structural validation
+        # (including refusal detection and sql/refused contract enforcement).
         if self.strict_json:
             try:
-                parsed = json.loads(message_content)
-                if "sql" not in parsed:
-                    raise LLMGenerationError("Google JSON response missing required 'sql' field.", raw_response=message_content)
-                final_text = parsed["sql"]
-                
-                if ";" in final_text and len([s for s in final_text.split(";") if s.strip()]) > 1:
-                     raise LLMGenerationError("Google returned multiple SQL statements. Only single queries are permitted.", raw_response=message_content)
-                     
+                json.loads(message_content)
             except json.JSONDecodeError:
                 raise LLMGenerationError(f"Google failed to return valid JSON. Raw output: {message_content[:100]}...", raw_response=message_content)
-        else:
-            final_text = message_content
+        final_text = message_content
             
         usage = data.get("usageMetadata", {})
         prompt_tokens = usage.get("promptTokenCount", 0)

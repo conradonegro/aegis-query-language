@@ -33,16 +33,26 @@ class OllamaLLMGateway(LLMGatewayProtocol):
         self.model = model
         self.strict_json = strict_json
         
-        # The exact JSON schema we require Ollama to output
+        # The JSON schema we require Ollama to output.
+        # Both sql and refused are optional at schema level so the LLM can
+        # signal a refusal without being forced to invent a sql value.
+        # The engine's LLMQueryResponse validator enforces the contract.
         self.json_schema = {
             "type": "object",
             "properties": {
                 "sql": {
                     "type": "string",
                     "description": "The final abstracted SQL dialect string"
+                },
+                "refused": {
+                    "type": "boolean",
+                    "description": "True if the request was refused"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for refusal if refused is true"
                 }
-            },
-            "required": ["sql"]
+            }
         }
 
     async def generate(self, prompt: PromptEnvelope) -> LLMResult:
@@ -92,23 +102,14 @@ class OllamaLLMGateway(LLMGatewayProtocol):
         
         message_content = data.get("message", {}).get("content", "")
         
-        # Evaluate Strict JSON Constraints
+        # Validate JSON is well-formed; the engine handles structural validation
+        # (including refusal detection and sql/refused contract enforcement).
         if self.strict_json:
             try:
-                parsed = json.loads(message_content)
-                if "sql" not in parsed:
-                    raise LLMGenerationError("Ollama JSON response missing required 'sql' field.", raw_response=message_content)
-                # Extract just the SQL string
-                final_text = parsed["sql"]
-                
-                # Assert no multi-statements (SafetyEngine handles deep AST, but surface check here)
-                if ";" in final_text and len([s for s in final_text.split(";") if s.strip()]) > 1:
-                     raise LLMGenerationError("Ollama returned multiple SQL statements. Only single queries are permitted.", raw_response=message_content)
-                     
+                json.loads(message_content)
             except json.JSONDecodeError:
                 raise LLMGenerationError(f"Ollama failed to return valid JSON. Raw output: {message_content[:100]}...", raw_response=message_content)
-        else:
-            final_text = message_content
+        final_text = message_content
             
         # Ollama telemetry
         prompt_eval_count = data.get("prompt_eval_count", 0)

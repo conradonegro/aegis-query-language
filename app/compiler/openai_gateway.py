@@ -87,21 +87,14 @@ class OpenAILLMGateway(LLMGatewayProtocol):
             
         message_content = choices[0].get("message", {}).get("content", "")
         
-        # Evaluate Strict JSON Constraints
+        # Validate JSON is well-formed; the engine handles structural validation
+        # (including refusal detection and sql/refused contract enforcement).
         if self.strict_json:
             try:
-                parsed = json.loads(message_content)
-                if "sql" not in parsed:
-                    raise LLMGenerationError("OpenAI JSON response missing required 'sql' field.", raw_response=message_content)
-                final_text = parsed["sql"]
-                
-                if ";" in final_text and len([s for s in final_text.split(";") if s.strip()]) > 1:
-                     raise LLMGenerationError("OpenAI returned multiple SQL statements. Only single queries are permitted.", raw_response=message_content)
-                     
+                json.loads(message_content)
             except json.JSONDecodeError:
                 raise LLMGenerationError(f"OpenAI failed to return valid JSON. Raw output: {message_content[:100]}...", raw_response=message_content)
-        else:
-            final_text = message_content
+        final_text = message_content
             
         usage = data.get("usage", {})
         prompt_tokens = usage.get("prompt_tokens", 0)

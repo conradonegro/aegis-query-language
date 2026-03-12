@@ -45,8 +45,8 @@ async def test_ollama_gateway_success(mock_post, prompt_envelope):
     mock_post.return_value = build_mock_response(valid_json_response)
     
     result = await gateway.generate(prompt_envelope)
-    
-    assert result.raw_text == "SELECT * FROM users"
+
+    assert result.raw_text == json.dumps({"sql": "SELECT * FROM users"})
     assert result.model_id == "llama3"
     assert result.prompt_tokens == 10
     assert result.completion_tokens == 20
@@ -71,35 +71,42 @@ async def test_ollama_gateway_invalid_json_fails_strictly(mock_post, prompt_enve
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
-async def test_ollama_gateway_missing_required_field_fails(mock_post, prompt_envelope):
-    """Test that valid JSON missing the 'sql' key is strictly rejected."""
+async def test_ollama_gateway_passes_through_non_sql_json(mock_post, prompt_envelope):
+    """
+    The gateway must pass valid JSON through unchanged even when the 'sql' key
+    is absent.  Structural contract enforcement (sql vs refused) belongs in the
+    engine's LLMQueryResponse validator, not in the gateway.
+    """
     gateway = OllamaLLMGateway(strict_json=True)
-    
-    # Mock Ollama returning valid JSON but wrong schema
+
     wrong_schema_response = json.dumps({"query": "SELECT * FROM users"})
     mock_post.return_value = build_mock_response(wrong_schema_response)
-    
-    with pytest.raises(LLMGenerationError) as exc:
-        await gateway.generate(prompt_envelope)
-        
-    assert "missing required 'sql' field" in str(exc.value).lower()
+
+    result = await gateway.generate(prompt_envelope)
+
+    # Gateway returns the raw JSON; engine handles structure validation
+    assert result.raw_text == wrong_schema_response
     
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
-async def test_ollama_gateway_multi_statement_rejection(mock_post, prompt_envelope):
-    """Test that multiple SQL statements in the JSON are rejected at the edge."""
+async def test_ollama_gateway_passes_through_multi_statement_json(mock_post, prompt_envelope):
+    """
+    The gateway must pass multi-statement SQL through as raw JSON.
+    Multi-statement detection is enforced by the SQLParser downstream,
+    not by the gateway.
+    """
     gateway = OllamaLLMGateway(strict_json=True)
-    
+
     multi_statement_response = json.dumps({
         "sql": "SELECT * FROM users; DROP TABLE users;"
     })
     mock_post.return_value = build_mock_response(multi_statement_response)
-    
-    with pytest.raises(LLMGenerationError) as exc:
-        await gateway.generate(prompt_envelope)
-        
-    assert "multiple sql statements" in str(exc.value).lower()
+
+    result = await gateway.generate(prompt_envelope)
+
+    # Gateway returns raw JSON; SQLParser enforces single-statement rule
+    assert result.raw_text == multi_statement_response
     
 
 @pytest.mark.asyncio
