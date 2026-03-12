@@ -45,12 +45,55 @@ from app.api.models import (
 )
 from app.audit import QueryAuditEvent
 from app.compiler.engine import CompilerEngine
-from app.compiler.models import PromptHints, UserIntent
+from app.compiler.models import ChatHistoryItem, PromptHints, UserIntent
 from app.execution import ExecutionContext
 from app.execution.interfaces import ExecutionLayer
 from app.steward import RegistrySchema
 
 api_router = APIRouter()
+
+
+async def _resolve_session(
+    payload_session_id: str | None,
+    session: AsyncSession,
+) -> tuple[uuid.UUID, list[ChatHistoryItem]]:
+    """
+    Resolve or create a chat session.
+
+    If payload_session_id is a valid UUID referencing an existing ChatSession,
+    its message history is loaded and returned. Otherwise a new session row is
+    created and committed so the PK exists before any message writes.
+    """
+    session_id: uuid.UUID | None = None
+    chat_history: list[ChatHistoryItem] = []
+
+    if payload_session_id:
+        try:
+            session_uuid = uuid.UUID(payload_session_id)
+            res = await session.execute(
+                select(ChatSession).where(ChatSession.session_id == session_uuid)
+            )
+            chat_session = res.scalar_one_or_none()
+            if chat_session:
+                session_id = session_uuid
+                msgs_res = await session.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.session_id == session_uuid)
+                    .order_by(ChatMessage.sequence_number)
+                )
+                for msg in msgs_res.scalars().all():
+                    chat_history.append(ChatHistoryItem(role=msg.role, content=msg.content))
+        except ValueError:
+            pass  # Ignore invalid UUID format and fall back to none
+
+    if not session_id:
+        session_id = uuid.uuid4()
+        new_session = ChatSession(session_id=session_id)
+        session.add(new_session)
+        # Commit to ensure the PK exists before messages are flushed.
+        await session.commit()
+
+    return session_id, chat_history
 
 
 def get_compiler(request: Request) -> CompilerEngine:
@@ -94,35 +137,9 @@ async def generate_query(
     """
     intent = UserIntent(natural_language_query=payload.intent)
     hints = PromptHints(column_hints=payload.schema_hints)
-    
-    # Session Management
-    session_id = None
-    chat_history = []
-    if payload.session_id:
-        try:
-            session_uuid = uuid.UUID(payload.session_id)
-            res = await session.execute(
-                select(ChatSession).where(ChatSession.session_id == session_uuid)
-            )
-            chat_session = res.scalar_one_or_none()
-            if chat_session:
-                session_id = session_uuid
-                msgs_res = await session.execute(
-                    select(ChatMessage).where(ChatMessage.session_id == session_uuid).order_by(ChatMessage.sequence_number)
-                )
-                from app.compiler.models import ChatHistoryItem
-                for msg in msgs_res.scalars().all():
-                    chat_history.append(ChatHistoryItem(role=msg.role, content=msg.content))
-        except ValueError:
-            pass # Ignore invalid UUID format and fallback to none
-            
-    if not session_id:
-        session_id = uuid.uuid4()
-        new_session = ChatSession(session_id=session_id)
-        session.add(new_session)
-        # We explicitly commit to ensure the PK exists before messages are flushed
-        await session.commit()
-    
+
+    session_id, chat_history = await _resolve_session(payload.session_id, session)
+
     executable = await compiler.compile(
         schema=registry,
         intent=intent,
@@ -189,34 +206,9 @@ async def execute_query(
     """
     intent = UserIntent(natural_language_query=payload.intent)
     hints = PromptHints(column_hints=payload.schema_hints)
-    
-    # Session Management
-    session_id = None
-    chat_history = []
-    if payload.session_id:
-        try:
-            session_uuid = uuid.UUID(payload.session_id)
-            res = await session.execute(
-                select(ChatSession).where(ChatSession.session_id == session_uuid)
-            )
-            chat_session = res.scalar_one_or_none()
-            if chat_session:
-                session_id = session_uuid
-                msgs_res = await session.execute(
-                    select(ChatMessage).where(ChatMessage.session_id == session_uuid).order_by(ChatMessage.sequence_number)
-                )
-                from app.compiler.models import ChatHistoryItem
-                for msg in msgs_res.scalars().all():
-                    chat_history.append(ChatHistoryItem(role=msg.role, content=msg.content))
-        except ValueError:
-            pass # Ignore invalid UUID format and fallback to none
-            
-    if not session_id:
-        session_id = uuid.uuid4()
-        new_session = ChatSession(session_id=session_id)
-        session.add(new_session)
-        await session.commit()
-    
+
+    session_id, chat_history = await _resolve_session(payload.session_id, session)
+
     # Compile
     executable = await compiler.compile(
         schema=registry,
