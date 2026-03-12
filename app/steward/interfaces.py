@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from app.steward import RegistrySchema
+from app.steward.models import RegistrySchema
 
 
 class RegistryReader(Protocol):

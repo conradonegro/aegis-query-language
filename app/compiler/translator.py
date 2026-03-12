@@ -18,7 +18,7 @@ class DeterministicTranslator:
     using copy-on-write to preserve the original AST.
     """
 
-    def translate(
+    def translate(  # noqa: C901
         self, ast: ValidatedAST, schema: RegistrySchema,
         abstract_query_hash: str = "default_hash", safety_version: str = "v1.0.0",
         row_limit: int = 1000,
@@ -125,7 +125,8 @@ class DeterministicTranslator:
                             node_inst.set("this", exp.Identifier(this=alias_to_physical_col[full_alias]))
                             column_datatypes[id(node_inst)] = alias_to_datatype.get(full_alias, "")
 
-                            # Dialects strictly fail if querying `original_table.column` when an alias `t` is defined in FROM.
+                            # Dialects strictly fail if querying `original_table.column`
+                            # when an alias `t` is defined in FROM.
                             assigned_aliases = table_runtime_prefixes.get(resolved_table, set())
                             if t_prefix in assigned_aliases:
                                 runtime_prefix = t_prefix
@@ -134,7 +135,10 @@ class DeterministicTranslator:
                             elif len(assigned_aliases) == 1:
                                 runtime_prefix = next(iter(assigned_aliases))
                             else:
-                                raise TranslationError(f"Ambiguous target prefix '{t_prefix}' for column '{c_name}' from self-joined table '{resolved_table}' with aliases {list(assigned_aliases)}.")
+                                raise TranslationError(
+                                    f"Ambiguous target prefix '{t_prefix}' for column '{c_name}' from"
+                                    f" self-joined table '{resolved_table}' with aliases {list(assigned_aliases)}."
+                                )
 
                             node_inst.set("table", exp.Identifier(this=runtime_prefix))
                             self._check_column_safety(c_name, resolved_table, alias_to_safety[full_alias], node_inst)
@@ -147,10 +151,17 @@ class DeterministicTranslator:
                         scoped_owning_tables = owning_tables.intersection(tables_in_scope)
 
                         if not scoped_owning_tables:
-                            raise TranslationError(f"Orphaned prefix '{t_prefix}' refers to column '{c_name}', which does not belong to any table formally declared in scope {list(tables_in_scope)}.")
+                            raise TranslationError(
+                                f"Orphaned prefix '{t_prefix}' refers to column '{c_name}',"
+                                f" which does not belong to any table formally declared in scope"
+                                f" {list(tables_in_scope)}."
+                            )
 
                         if len(scoped_owning_tables) > 1:
-                            raise TranslationError(f"Ambiguous orphaned prefix '{t_prefix}' for column '{c_name}'. Exists in multiple scoped tables: {list(scoped_owning_tables)}.")
+                            raise TranslationError(
+                                f"Ambiguous orphaned prefix '{t_prefix}' for column '{c_name}'."
+                                f" Exists in multiple scoped tables: {list(scoped_owning_tables)}."
+                            )
 
                         # Exactly ONE table in scope owns this column! Provable deterministic repair.
                         unique_owning_table = scoped_owning_tables.pop()
@@ -163,7 +174,11 @@ class DeterministicTranslator:
                         elif len(assigned_aliases) == 1:
                             runtime_prefix = next(iter(assigned_aliases))
                         else:
-                            raise TranslationError(f"Cannot auto-heal orphaned prefix '{t_prefix}' for column '{c_name}' due to ambiguous multiple aliases for table '{unique_owning_table}' ({list(assigned_aliases)}).")
+                            raise TranslationError(
+                                f"Cannot auto-heal orphaned prefix '{t_prefix}' for column '{c_name}'"
+                                f" due to ambiguous multiple aliases for table '{unique_owning_table}'"
+                                f" ({list(assigned_aliases)})."
+                            )
 
                         repairs.append(TranslationRepair(
                             type="orphaned_alias",
@@ -176,7 +191,9 @@ class DeterministicTranslator:
                         node_inst.set("this", exp.Identifier(this=alias_to_physical_col[owning_full_alias]))
                         node_inst.set("table", exp.Identifier(this=runtime_prefix))
                         column_datatypes[id(node_inst)] = alias_to_datatype.get(owning_full_alias, "")
-                        self._check_column_safety(c_name, unique_owning_table, alias_to_safety[owning_full_alias], node_inst)
+                        self._check_column_safety(
+                            c_name, unique_owning_table, alias_to_safety[owning_full_alias], node_inst
+                        )
 
                 else:
                     # No explicitly requested prefix. Check standard ambiguity.
@@ -184,13 +201,18 @@ class DeterministicTranslator:
                     scoped_owning_tables = owning_tables.intersection(tables_in_scope)
 
                     if len(scoped_owning_tables) > 1:
-                         raise TranslationError(f"Ambiguous naked column '{c_name}'. Belongs to multiple scoped tables: {list(scoped_owning_tables)}. Explicit aliasing required.")
+                        raise TranslationError(
+                            f"Ambiguous naked column '{c_name}'. Belongs to multiple scoped tables:"
+                            f" {list(scoped_owning_tables)}. Explicit aliasing required."
+                        )
                     elif len(scoped_owning_tables) == 1:
-                         unique_owning_table = scoped_owning_tables.pop()
-                         no_prefix_full_alias = f"{unique_owning_table}.{c_name}"
-                         node_inst.set("this", exp.Identifier(this=alias_to_physical_col[no_prefix_full_alias]))
-                         column_datatypes[id(node_inst)] = alias_to_datatype.get(no_prefix_full_alias, "")
-                         self._check_column_safety(c_name, unique_owning_table, alias_to_safety[no_prefix_full_alias], node_inst)
+                        unique_owning_table = scoped_owning_tables.pop()
+                        no_prefix_full_alias = f"{unique_owning_table}.{c_name}"
+                        node_inst.set("this", exp.Identifier(this=alias_to_physical_col[no_prefix_full_alias]))
+                        column_datatypes[id(node_inst)] = alias_to_datatype.get(no_prefix_full_alias, "")
+                        self._check_column_safety(
+                            c_name, unique_owning_table, alias_to_safety[no_prefix_full_alias], node_inst
+                        )
                     else:
                         if c_name in alias_to_physical_col:
                             node_inst.set("this", exp.Identifier(this=alias_to_physical_col[c_name]))
@@ -204,19 +226,29 @@ class DeterministicTranslator:
         for extract_node in tree.find_all(exp.Extract):
             source = extract_node.expression
             if not isinstance(source, exp.Column):
-                 raise UnsafeExpressionError(f"EXTRACT numeric target must be natively bound to a column, found '{type(source).__name__}'.")
+                raise UnsafeExpressionError(
+                    f"EXTRACT numeric target must be natively bound to a column,"
+                    f" found '{type(source).__name__}'."
+                )
 
             if any(extract_node.find_all(exp.Subquery, exp.Select, exp.Window)):
-                 raise UnsafeExpressionError("Nested subqueries or window constructs are strictly blocked inside EXTRACT.")
+                raise UnsafeExpressionError(
+                    "Nested subqueries or window constructs are strictly blocked inside EXTRACT."
+                )
 
             # Extract target datatype validation
             dtype = column_datatypes.get(id(source), "")
             if not any(t in dtype for t in temporal_types):
-                 raise UnsafeExpressionError(f"EXTRACT operations are only permitted on temporal columns. Resolved column '{source.name}' is of type '{dtype}'.")
+                raise UnsafeExpressionError(
+                    f"EXTRACT operations are only permitted on temporal columns."
+                    f" Resolved column '{source.name}' is of type '{dtype}'."
+                )
 
         for interval_node in tree.find_all(exp.Interval):
             if any(interval_node.find_all(exp.Subquery, exp.Select, exp.Window)):
-                 raise UnsafeExpressionError("Nested subqueries or window constructs are strictly blocked inside INTERVAL.")
+                raise UnsafeExpressionError(
+                    "Nested subqueries or window constructs are strictly blocked inside INTERVAL."
+                )
 
         # E. Parameterize Literals Safely
         for node_inst in literals_to_replace:
@@ -275,7 +307,7 @@ class DeterministicTranslator:
             translation_repairs=repairs
         )
 
-    def _validate_join_graph(
+    def _validate_join_graph(  # noqa: C901
         self,
         tree: exp.Expression,
         relationships: list[AbstractRelationshipDef],
@@ -361,12 +393,18 @@ class DeterministicTranslator:
         clause = col_node.find_ancestor(
             exp.Where, exp.Group, exp.Having, exp.Join, exp.Order, exp.Select
         )
-        if isinstance(clause, exp.Where):    contexts.add("where")
-        elif isinstance(clause, exp.Group):  contexts.add("group_by")
-        elif isinstance(clause, exp.Having): contexts.add("having")
-        elif isinstance(clause, exp.Join):   contexts.add("join")
-        elif isinstance(clause, exp.Order):  contexts.add("order_by")
-        elif isinstance(clause, exp.Select): contexts.add("select")
+        if isinstance(clause, exp.Where):
+            contexts.add("where")
+        elif isinstance(clause, exp.Group):
+            contexts.add("group_by")
+        elif isinstance(clause, exp.Having):
+            contexts.add("having")
+        elif isinstance(clause, exp.Join):
+            contexts.add("join")
+        elif isinstance(clause, exp.Order):
+            contexts.add("order_by")
+        elif isinstance(clause, exp.Select):
+            contexts.add("select")
 
         return contexts
 
@@ -434,7 +472,9 @@ class DeterministicTranslator:
             return self._extract_conjunctions(node.left) + self._extract_conjunctions(node.right)
         return [node]
 
-    def _repair_where_aggregations(self, tree: exp.Expression, repairs: list["TranslationRepair"]) -> None:
+    def _repair_where_aggregations(  # noqa: C901
+        self, tree: exp.Expression, repairs: list["TranslationRepair"]
+    ) -> None:
         """
         Safely extracts pure aggregate conditions from the WHERE clause and relocates them to the HAVING clause.
         Maintains deterministic safety by ignoring Windows, Subqueries, and ensuring AND split semantics.

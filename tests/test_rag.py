@@ -41,9 +41,10 @@ def test_rag_tenant_isolation(store: InMemoryVectorStore) -> None:
 
 
 def test_rag_ambiguous_match(store: InMemoryVectorStore) -> None:
-    # Add another value that is extremely similar "Nvidia Corporation", such that querying "Nvidia" matches both strongly.
+    # Add another value that is extremely similar "Nvidia Corporation",
+    # such that querying "Nvidia" matches both strongly.
     store.index_value(CategoricalValue(value="Nvidia Corporation", abstract_column="companies", tenant_id="t1"))
-    
+
     res = store.search("Show me Nvidia or Nvidia Corporation", tenant_id="t1")
     # Because both have substring match in the query, both score high
     assert res.outcome == RAGOutcome.AMBIGUOUS_MATCH

@@ -1,9 +1,9 @@
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class RAGOutcome(str, Enum):
+class RAGOutcome(StrEnum):
     """Explicit modeled outcomes for a RAG lookup."""
     NO_MATCH = "NO_MATCH"
     SINGLE_HIGH_CONFIDENCE_MATCH = "SINGLE_HIGH_CONFIDENCE_MATCH"
@@ -32,6 +32,10 @@ class RAGResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     outcome: RAGOutcome
-    match: ValueMatch | None = Field(default=None, description="The winning match if outcome is SINGLE_HIGH_CONFIDENCE_MATCH.")
-    candidates: list[ValueMatch] | None = Field(default=None, description="The competing candidates if outcome was AMBIGUOUS_MATCH")
+    match: ValueMatch | None = Field(
+        default=None, description="The winning match if outcome is SINGLE_HIGH_CONFIDENCE_MATCH."
+    )
+    candidates: list[ValueMatch] | None = Field(
+        default=None, description="The competing candidates if outcome was AMBIGUOUS_MATCH"
+    )
     reason: str = Field(..., description="The explanation for the outcome.")
