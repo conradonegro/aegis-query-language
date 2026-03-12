@@ -1,6 +1,7 @@
 import hashlib
 import time
 import uuid
+from typing import Any
 
 from app.compiler.interfaces import (
     LLMGatewayProtocol,
@@ -67,7 +68,7 @@ class CompilerEngine:
         """
         start = time.perf_counter()
         
-        explain_context = {
+        explain_context: dict[str, Any] = {
             "rag": {"outcome": "NOT_EVALUATED", "matches": [], "scores": [], "reason": "No vector store or execution required"},
             "schema_filter": {"included_aliases": [], "excluded_aliases": [], "reasons": []},
             "prompt": {"system_prompt_redacted": True, "user_prompt": intent.natural_language_query, "raw_system": "", "raw_user": ""},
@@ -226,7 +227,6 @@ class CompilerEngine:
 
         except Exception as e:
             if explain:
-                if hasattr(e, "raw_response"):
-                    explain_context["llm"]["raw_response"] = e.raw_response
-                e.explainability = explain_context
+                explain_context["llm"]["raw_response"] = getattr(e, "raw_response", "")
+                setattr(e, "explainability", explain_context)
             raise e

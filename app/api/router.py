@@ -1,7 +1,9 @@
 import asyncio
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
@@ -29,6 +31,7 @@ from app.api.meta_models import (
     ChatMessage,
 )
 from app.api.models import (
+    ExplainabilityContext,
     MetadataCompileResponse,
     ProtocolMetadataVersion,
     ProtocolSchemaResponse,
@@ -82,7 +85,10 @@ async def _resolve_session(
                     .order_by(ChatMessage.sequence_number)
                 )
                 for msg in msgs_res.scalars().all():
-                    chat_history.append(ChatHistoryItem(role=msg.role, content=msg.content))
+                    chat_history.append(ChatHistoryItem(
+                        role=cast(Literal["user", "assistant", "system"], msg.role),
+                        content=msg.content,
+                    ))
         except ValueError:
             pass  # Ignore invalid UUID format and fall back to none
 
@@ -97,30 +103,30 @@ async def _resolve_session(
 
 
 def get_compiler(request: Request) -> CompilerEngine:
-    return request.app.state.compiler
+    return cast(CompilerEngine, request.app.state.compiler)
 
 def get_executor(request: Request) -> ExecutionLayer:
-    return request.app.state.executor
+    return cast(ExecutionLayer, request.app.state.executor)
 
-def get_auditor(request: Request):
+def get_auditor(request: Request) -> Any:
     return request.app.state.auditor
 
 def get_registry(request: Request) -> RegistrySchema:
-    return request.app.state.registry
+    return cast(RegistrySchema, request.app.state.registry)
 
-async def get_registry_runtime_db_session(request: Request) -> AsyncSession:
+async def get_registry_runtime_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.registry_runtime_session_factory() as session:
         yield session
 
-async def get_registry_admin_db_session(request: Request) -> AsyncSession:
+async def get_registry_admin_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.registry_admin_session_factory() as session:
         yield session
-        
-async def get_runtime_db_session(request: Request) -> AsyncSession:
+
+async def get_runtime_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.runtime_session_factory() as session:
         yield session
 
-async def get_steward_db_session(request: Request) -> AsyncSession:
+async def get_steward_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.steward_session_factory() as session:
         yield session
 
@@ -186,7 +192,7 @@ async def generate_query(
         sql=executable.sql,
         parameters=executable.parameters,
         latency_ms=executable.compilation_latency_ms or 0.0,
-        explainability=executable.explainability
+        explainability=cast(ExplainabilityContext | None, executable.explainability),
     )
 
 
@@ -196,7 +202,7 @@ async def execute_query(
     background_tasks: BackgroundTasks,
     compiler: CompilerEngine = Depends(get_compiler),
     executor: ExecutionLayer = Depends(get_executor),
-    auditor=Depends(get_auditor),
+    auditor: Any = Depends(get_auditor),
     registry: RegistrySchema = Depends(get_registry),
     session: AsyncSession = Depends(get_runtime_db_session)
 ) -> QueryExecuteResponse:
@@ -289,7 +295,7 @@ async def execute_query(
         results=result.rows,
         row_count=len(result.rows),
         execution_latency_ms=0.0,
-        explainability=executable.explainability
+        explainability=cast(ExplainabilityContext | None, executable.explainability),
     )
 
 
@@ -433,7 +439,7 @@ async def update_version_status(
 @api_router.get("/metadata/active")
 async def get_active_metadata(
     registry: RegistrySchema = Depends(get_registry)
-):
+) -> dict[str, str | None]:
     """Retrieve the ID of the actively loaded registry schema."""
     return {"version_id": str(registry.version) if hasattr(registry, "version") else None}
 
@@ -459,10 +465,10 @@ async def compile_metadata_version(
     async with request.app.state.registry_runtime_session_factory() as rt_session:
         schema = await RegistryLoader.load_active_schema(rt_session)
         request.app.state.registry = schema
-        
+
         # Dynamically re-warm the RAG Vector Store with the new Obfuscated Schema Baseline
         vector_store = InMemoryVectorStore()
-        for table in schema.tables:
+        for table in (schema.tables if schema is not None else []):
             if table.description:
                 vector_store.index_value(CategoricalValue(value=table.description, abstract_column=f"{table.alias}.{table.alias}", tenant_id="default_tenant"))
             for col in table.columns:
@@ -549,7 +555,7 @@ async def update_metadata_table(
     table_id: uuid.UUID,
     payload: TableUpdateRequest,
     session: AsyncSession = Depends(get_steward_db_session)
-):
+) -> ProtocolTable:
     stmt = select(MetadataTable).where(MetadataTable.table_id == table_id).options(selectinload(MetadataTable.columns))
     res = await session.execute(stmt)
     table = res.scalar_one_or_none()
@@ -569,7 +575,7 @@ async def update_metadata_column(
     column_id: uuid.UUID,
     payload: ColumnUpdateRequest,
     session: AsyncSession = Depends(get_steward_db_session)
-):
+) -> ProtocolColumn:
     stmt = select(MetadataColumn).where(MetadataColumn.column_id == column_id)
     res = await session.execute(stmt)
     col = res.scalar_one_or_none()
@@ -590,7 +596,7 @@ async def update_metadata_column(
 async def create_metadata_version(
     payload: VersionCreateRequest,
     session: AsyncSession = Depends(get_steward_db_session)
-):
+) -> ProtocolMetadataVersion:
     new_version_id = uuid.uuid4()
     new_version = MetadataVersion(version_id=new_version_id, status="draft", change_reason="Steward UI clone")
     session.add(new_version)
@@ -685,7 +691,7 @@ async def create_metadata_version(
 async def obfuscate_schema(
     version_id: uuid.UUID,
     session: AsyncSession = Depends(get_steward_db_session)
-):
+) -> dict[str, int | str]:
     stmt = (
         select(MetadataVersion)
         .where(MetadataVersion.version_id == version_id)

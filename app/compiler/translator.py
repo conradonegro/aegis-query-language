@@ -6,7 +6,7 @@ from app.api.models import TranslationRepair
 from app.compiler.models import ExecutableQuery, ValidatedAST
 from app.compiler.safety import UnsafeExpressionError, SafetyPolicyViolationError
 from app.steward import RegistrySchema
-from app.steward.models import AbstractRelationshipDef
+from app.steward.models import AbstractRelationshipDef, SafetyClassification
 
 
 class TranslationError(Exception):
@@ -47,7 +47,7 @@ class DeterministicTranslator:
         # We need a strict map tracking which tables own which columns to resolve orchestrations
         column_ownership: dict[str, set[str]] = {}
         alias_to_datatype: dict[str, str] = {}
-        alias_to_safety: dict[str, "SafetyClassification"] = {}
+        alias_to_safety: dict[str, SafetyClassification] = {}
 
         for table in schema.tables:
             table_alias = table.alias.lower()
@@ -207,7 +207,7 @@ class DeterministicTranslator:
             if not isinstance(source, exp.Column):
                  raise UnsafeExpressionError(f"EXTRACT numeric target must be natively bound to a column, found '{type(source).__name__}'.")
             
-            if any(extract_node.find_all((exp.Subquery, exp.Select, exp.Window))):
+            if any(extract_node.find_all(exp.Subquery, exp.Select, exp.Window)):
                  raise UnsafeExpressionError("Nested subqueries or window constructs are strictly blocked inside EXTRACT.")
                  
             # Extract target datatype validation
@@ -216,7 +216,7 @@ class DeterministicTranslator:
                  raise UnsafeExpressionError(f"EXTRACT operations are only permitted on temporal columns. Resolved column '{source.name}' is of type '{dtype}'.")
 
         for interval_node in tree.find_all(exp.Interval):
-            if any(interval_node.find_all((exp.Subquery, exp.Select, exp.Window))):
+            if any(interval_node.find_all(exp.Subquery, exp.Select, exp.Window)):
                  raise UnsafeExpressionError("Nested subqueries or window constructs are strictly blocked inside INTERVAL.")
                  
         # E. Parameterize Literals Safely
@@ -301,7 +301,7 @@ class DeterministicTranslator:
 
         # Build a frozenset edge index for O(1) pair lookup.
         # An edge is directional in the data model but bidirectional for JOIN ON semantics.
-        declared_edges: set[frozenset] = set()
+        declared_edges: set[frozenset[str]] = set()
         for rel in relationships:
             if rel.source_column and rel.target_column:
                 declared_edges.add(frozenset({
@@ -375,7 +375,7 @@ class DeterministicTranslator:
         self,
         col_alias: str,
         table_alias: str,
-        safety: "SafetyClassification",
+        safety: SafetyClassification,
         col_node: exp.Column,
     ) -> None:
         """
@@ -385,7 +385,6 @@ class DeterministicTranslator:
         Called after physical name resolution so the error message uses the
         abstract alias (human-readable) not the physical target name.
         """
-        from app.steward.models import SafetyClassification  # local import avoids circular dep
 
         contexts = self._get_column_sql_context(col_node)
         label = f"'{table_alias}.{col_alias}'"
@@ -460,7 +459,7 @@ class DeterministicTranslator:
         for c in conjunctions:
             has_agg = any(c.find_all(exp.AggFunc))
             has_window = any(c.find_all(exp.Window))
-            has_subquery = any(c.find_all((exp.Select, exp.Subquery)))
+            has_subquery = any(c.find_all(exp.Select, exp.Subquery))
             
             # Rule 1: Do not move complex constructs like windows or subqueries. Let native PG catch them.
             if has_window or has_subquery:
