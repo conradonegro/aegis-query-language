@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -125,7 +126,9 @@ async def lifespan(app: FastAPI):
     redis_client = aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
     session_store = SessionStore(redis_client=redis_client)
     if redis_url:
-        logger.info(f"Session store: Redis ({redis_url})")
+        _parsed = urlparse(redis_url)
+        _safe = urlunparse(_parsed._replace(password="***")) if _parsed.password else redis_url
+        logger.info(f"Session store: Redis ({_safe})")
     else:
         logger.info("Session store: in-memory (set REDIS_URL to enable Redis)")
 
