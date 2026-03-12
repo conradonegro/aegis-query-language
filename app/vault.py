@@ -4,8 +4,8 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-import hvac
-from hvac.exceptions import VaultError
+import hvac  # type: ignore[import-untyped]
+from hvac.exceptions import VaultError  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ class HashiCorpVaultProvider(SecretsManager):
         cache_hit = self._secret_cache.get(path)
         if cache_hit and now < cache_hit["expires_at"]:
             if key_name in cache_hit["data"]:
-                return cache_hit["data"][key_name]
+                return str(cache_hit["data"][key_name])
                 
         # Cache Miss or Expired -> Refetch
         self._authenticate()
@@ -149,7 +149,7 @@ class HashiCorpVaultProvider(SecretsManager):
             if key_name not in data:
                 raise VaultMissingSecretError(f"Vault key '{key_name}' missing at KV path '{path}'.")
                 
-            return data[key_name]
+            return str(data[key_name])
             
         except VaultError as e:
             logger.error(f"Vault error reading '{path}': {e}")

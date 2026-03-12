@@ -3,7 +3,7 @@ import time
 from unittest.mock import MagicMock, patch
 import pytest
 
-from hvac.exceptions import VaultError
+from hvac.exceptions import VaultError  # type: ignore[import-untyped]
 
 from app.vault import (
     EnvFallbackProvider,
