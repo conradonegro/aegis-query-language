@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 # SQLite (used in tests) doesn't support schemas. Conditionally strip it.
@@ -35,7 +35,7 @@ class MetadataVersion(Base):
     registry_hash: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Enum("draft", "pending_review", "active", "archived", name="version_status", schema="aegis_meta"), default="draft")
     created_by: Mapped[str] = mapped_column(Text, default="system")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     approved_by: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime)
     change_reason: Mapped[str | None] = mapped_column(Text)
@@ -55,7 +55,7 @@ class MetadataTable(Base):
     description: Mapped[str | None] = mapped_column(Text)
     tenant_id: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("version_id", "alias", name="uq_table_alias"),
@@ -147,7 +147,7 @@ class MetadataAudit(Base):
     actor: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(Enum("create", "update", "approve", "deploy", "revoke", name="audit_action", schema="aegis_meta"))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Cryptographic WORM Chaining
     previous_hash: Mapped[str | None] = mapped_column(Text)
@@ -168,7 +168,7 @@ class CompiledRegistryArtifact(Base):
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("aegis_meta.metadata_versions.version_id"), unique=True)
     artifact_blob: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     artifact_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    compiled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    compiled_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     compiler_version: Mapped[str] = mapped_column(Text)
     
     # Cryptographic HMAC Verification
@@ -187,7 +187,7 @@ class ChatSession(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="default_tenant")
     user_id: Mapped[str] = mapped_column(Text, nullable=False, default="api_user")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.sequence_number")
 
@@ -219,6 +219,6 @@ class ChatMessage(Base):
     provider_id: Mapped[str | None] = mapped_column(Text)  # e.g., 'ollama:llama3', 'openai:gpt-4o'
     prompt_tokens: Mapped[int | None] = mapped_column()
     completion_tokens: Mapped[int | None] = mapped_column()
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     session = relationship("ChatSession", back_populates="messages")
