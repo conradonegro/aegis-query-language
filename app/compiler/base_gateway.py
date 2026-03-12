@@ -85,11 +85,11 @@ class RemoteLLMGateway(ABC):
         except httpx.HTTPError as e:
             raise LLMGenerationError(
                 f"HTTP error communicating with {self._provider_name}: {e}"
-            )
+            ) from e
         except Exception as e:
             raise LLMGenerationError(
                 f"Unexpected error with {self._provider_name}: {e}"
-            )
+            ) from e
 
         latency_ms = (time.perf_counter() - start_time) * 1000.0
         message_content = self._extract_content(data)
@@ -97,12 +97,12 @@ class RemoteLLMGateway(ABC):
         if self.strict_json:
             try:
                 json.loads(message_content)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
                 raise LLMGenerationError(
                     f"{self._provider_name} returned invalid JSON. "
                     f"Raw: {message_content[:100]}...",
                     raw_response=message_content,
-                )
+                ) from e
 
         prompt_tokens, completion_tokens = self._extract_usage(data)
         return LLMResult(

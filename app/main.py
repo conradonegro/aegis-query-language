@@ -1,33 +1,41 @@
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse, urlunparse
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
+import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.models import ErrorResponse
 from app.api.router import api_router
 from app.audit.logger import JSONAuditLogger
-import redis.asyncio as aioredis
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
-from app.compiler.session_store import SessionStore
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
+from app.compiler.interfaces import LLMGatewayProtocol
+from app.compiler.ollama import LLMGenerationError, OllamaLLMGateway
 from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
 from app.compiler.safety import SafetyEngine, SafetyViolationError
+from app.compiler.session_store import SessionStore
 from app.compiler.translator import DeterministicTranslator, TranslationError
-from app.compiler.interfaces import LLMGatewayProtocol
-from app.compiler.ollama import OllamaLLMGateway, LLMGenerationError
 from app.execution.executor import ExecutionEngine
-from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef, RegistrySchema, SafetyClassification
+from app.steward import (
+    AbstractColumnDef,
+    AbstractRelationshipDef,
+    AbstractTableDef,
+    RegistrySchema,
+    SafetyClassification,
+)
 from app.vault import get_secrets_manager
 
 logging.basicConfig(level=logging.INFO)
@@ -35,9 +43,9 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.steward.loader import RegistryLoader
-    
+
     # Initialize Explicit Architectural Roles
     runtime_db_url = os.getenv("DB_URL_RUNTIME", os.getenv("DATABASE_URL"))
     registry_runtime_db_url = os.getenv("DB_URL_REGISTRY_RUNTIME", os.getenv("DATABASE_URL"))
@@ -53,17 +61,17 @@ async def lifespan(app: FastAPI):
         url_obj = make_url(raw_url)
         if url_obj.get_dialect().name in ["sqlite", "sqlite+aiosqlite"]:
             return raw_url # Local test memory URI remains unmodified
-            
+
         # Secure the Postgres URL dynamically without emitting to logs
         password = secrets_mgr.get_database_password(role_name)
         url_obj = url_obj.set(password=password)
-        
+
         # Enforce SSL verification for physical persistence
         if os.getenv("ENVIRONMENT") == "production":
             new_query = dict(url_obj.query)
             new_query["ssl"] = "require"
             url_obj = url_obj.set(query=new_query)
-            
+
         # render_as_string properly URL-encodes passwords protecting against special characters injected via Vault
         return url_obj.render_as_string(hide_password=False)
 
@@ -117,7 +125,7 @@ async def lifespan(app: FastAPI):
             schema = RegistrySchema(version="0.0.0", tables=[], relationships=[])
         else:
             schema = _loaded
-            
+
     app.state.registry = schema
 
     app.state.executor = ExecutionEngine(connection_string=secure_runtime_db_url)
@@ -127,7 +135,11 @@ async def lifespan(app: FastAPI):
     session_store = SessionStore(redis_client=redis_client)
     if redis_url:
         _parsed = urlparse(redis_url)
-        _safe = urlunparse(_parsed._replace(password="***")) if _parsed.password else redis_url
+        if _parsed.password:
+            _masked_netloc = _parsed.netloc.replace(f":{_parsed.password}@", ":***@")
+            _safe = urlunparse(_parsed._replace(netloc=_masked_netloc))
+        else:
+            _safe = redis_url
         logger.info(f"Session store: Redis ({_safe})")
     else:
         logger.info("Session store: in-memory (set REDIS_URL to enable Redis)")
@@ -158,7 +170,7 @@ async def lifespan(app: FastAPI):
     from app.rag.models import CategoricalValue
     from app.rag.store import InMemoryVectorStore
     vector_store = InMemoryVectorStore()
-    
+
     # Pre-warm the RAG with Semantic Schema Descriptions
     for table in schema.tables:
         if table.description:
@@ -166,7 +178,7 @@ async def lifespan(app: FastAPI):
         for col in table.columns:
             if col.description:
                  vector_store.index_value(CategoricalValue(value=col.description, abstract_column=f"{table.alias}.{col.alias}", tenant_id="default_tenant"))
-                 
+
     app.state.vector_store = vector_store
     app.state.compiler.set_vector_store(vector_store)
 
@@ -186,7 +198,7 @@ app = FastAPI(
 
 # Exception Handlers
 @app.exception_handler(SafetyViolationError)
-async def safety_violation_handler(request: Request, exc: SafetyViolationError):
+async def safety_violation_handler(request: Request, exc: SafetyViolationError) -> JSONResponse:
     error_resp = ErrorResponse(
         code=403,
         message=f"Safety Violation: {str(exc)}",
@@ -196,7 +208,7 @@ async def safety_violation_handler(request: Request, exc: SafetyViolationError):
     return JSONResponse(status_code=403, content=error_resp.model_dump())
 
 @app.exception_handler(TranslationError)
-async def translation_error_handler(request: Request, exc: TranslationError):
+async def translation_error_handler(request: Request, exc: TranslationError) -> JSONResponse:
     error_resp = ErrorResponse(
         code=400,
         message=f"Translation Error: {str(exc)}",
@@ -206,7 +218,7 @@ async def translation_error_handler(request: Request, exc: TranslationError):
     return JSONResponse(status_code=400, content=error_resp.model_dump())
 
 @app.exception_handler(RAGUncertaintyError)
-async def rag_error_handler(request: Request, exc: RAGUncertaintyError):
+async def rag_error_handler(request: Request, exc: RAGUncertaintyError) -> JSONResponse:
     error_resp = ErrorResponse(
         code=400,
         message=str(exc),
@@ -216,7 +228,7 @@ async def rag_error_handler(request: Request, exc: RAGUncertaintyError):
     return JSONResponse(status_code=400, content=error_resp.model_dump())
 
 @app.exception_handler(LLMGenerationError)
-async def llm_error_handler(request: Request, exc: LLMGenerationError):
+async def llm_error_handler(request: Request, exc: LLMGenerationError) -> JSONResponse:
     error_resp = ErrorResponse(
         code=502,
         message=f"LLM Gateway Failure: {str(exc)}",
@@ -226,7 +238,7 @@ async def llm_error_handler(request: Request, exc: LLMGenerationError):
     return JSONResponse(status_code=502, content=error_resp.model_dump())
 
 @app.exception_handler(Exception)
-async def standard_error_handler(request: Request, exc: Exception):
+async def standard_error_handler(request: Request, exc: Exception) -> JSONResponse:
     error_resp = ErrorResponse(
         code=500,
         message="Internal Server Error",
@@ -241,7 +253,7 @@ app.include_router(api_router, prefix="/api/v1")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
-async def serve_ui():
+async def serve_ui() -> FileResponse:
     """Serve the single-page application console."""
     return FileResponse("static/index.html")
 

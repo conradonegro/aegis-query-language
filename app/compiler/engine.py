@@ -3,6 +3,8 @@ import time
 import uuid
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.compiler.interfaces import (
     LLMGatewayProtocol,
     PromptBuilderProtocol,
@@ -11,23 +13,23 @@ from app.compiler.interfaces import (
     SQLParserProtocol,
     TranslatorProtocol,
 )
-from pydantic import ValidationError
+from app.compiler.llm_factory import get_llm_gateway
 from app.compiler.models import (
     AbstractQuery,
+    ChatHistoryItem,
     ExecutableQuery,
     LLMQueryResponse,
     PromptHints,
-    UserIntent,
     RAGIncludedColumns,
-    ChatHistoryItem,
     SessionQueryContext,
+    UserIntent,
 )
 from app.compiler.ollama import LLMGenerationError
-from app.compiler.llm_factory import get_llm_gateway
 from app.compiler.session_store import SessionStore
 from app.rag.interfaces import VectorStoreProtocol
 from app.rag.models import RAGOutcome
-from app.steward.models import RegistrySchema
+from app.steward import RegistrySchema
+
 
 class RAGUncertaintyError(Exception):
     """Raised when RAG returns an ambiguous match or no match and strict fallback is disabled."""
@@ -67,7 +69,7 @@ class CompilerEngine:
         Raises TranslationError or SafetyViolationError on failure.
         """
         start = time.perf_counter()
-        
+
         explain_context: dict[str, Any] = {
             "rag": {"outcome": "NOT_EVALUATED", "matches": [], "scores": [], "reason": "No vector store or execution required"},
             "schema_filter": {"included_aliases": [], "excluded_aliases": [], "reasons": []},
@@ -80,13 +82,13 @@ class CompilerEngine:
             # Look up prior session
             prior_context = await self.session_store.get(session_id) if session_id else None
             is_follow_up = False
-            
+
             # Check detector if applicable
             if prior_context and hasattr(self.schema_filter, "is_follow_up"):
                 is_follow_up = self.schema_filter.is_follow_up(intent, prior_context.last_filtered_schema, full_schema=schema)
 
             included_cols = RAGIncludedColumns(columns=[])
-            
+
             if is_follow_up and prior_context:
                 filtered_schema = prior_context.last_filtered_schema
                 explain_context["schema_filter"] = {
@@ -98,7 +100,7 @@ class CompilerEngine:
                 # 1. Evaluate RAG First
                 if self.vector_store:
                     rag_result = self.vector_store.search(intent.natural_language_query, tenant_id="default_tenant", limit=5)
-                    
+
                     if rag_result.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH and rag_result.match:
                         match_val = rag_result.match.categorical_value
                         hints.column_hints.append(f"Always consider value '{match_val.value}' maps to abstract column '{match_val.abstract_column}'")
@@ -130,13 +132,13 @@ class CompilerEngine:
                     "excluded_aliases": list(filtered_schema.omitted_columns.keys()),
                     "reasons": list(filtered_schema.omitted_columns.values())
                 }
-            
+
             # 3. Build Prompt Envelope
             prompt_envelope = self.prompt_builder.build_prompt(intent, filtered_schema, hints, chat_history=chat_history)
             explain_context["prompt"]["raw_system"] = prompt_envelope.system_instruction
             explain_context["prompt"]["raw_user"] = prompt_envelope.user_prompt
             explain_context["prompt"]["system_prompt_redacted"] = False
-            
+
             # 4. Call LLM
             gateway = get_llm_gateway(provider_id) if provider_id else self.llm_gateway
             llm_result = await gateway.generate(prompt_envelope)
@@ -146,12 +148,12 @@ class CompilerEngine:
                 "latency_ms": llm_result.latency_ms,
                 "raw_response": llm_result.raw_text
             }
-            
+
             import json
             import re
-            
+
             raw_text = llm_result.raw_text.strip()
-            
+
             # Robust JSON extraction: Strip potential markdown code blocks
             json_match = re.search(r'```json\s*(.*?)\s*```', raw_text, re.DOTALL)
             if json_match:
@@ -160,7 +162,7 @@ class CompilerEngine:
                 # Handle generic backticks
                 raw_text = re.sub(r'^```(\w+)?\n?', '', raw_text)
                 raw_text = re.sub(r'\n?```$', '', raw_text).strip()
-                
+
             try:
                 payload = json.loads(raw_text)
                 if isinstance(payload, dict):
@@ -184,7 +186,7 @@ class CompilerEngine:
                 abstract_sql = raw_text
                 if ";" in abstract_sql and len([s for s in abstract_sql.split(";") if s.strip()]) > 1:
                     raise LLMGenerationError("Multi-statement SQL detected in fallback path.", raw_response=raw_text)
-                
+
             abstract_query = AbstractQuery(sql=abstract_sql)
             explain_context["translation"]["llm_abstract_query"] = abstract_query.sql
 
@@ -214,7 +216,7 @@ class CompilerEngine:
 
             if explain:
                 executable.explainability = explain_context
-                
+
             # Finalize Session state (only if compilation succeeds entirely without exception)
             if session_id:
                 await self.session_store.set(session_id, SessionQueryContext(
@@ -222,7 +224,7 @@ class CompilerEngine:
                     last_successful_sql=executable.sql,
                     timestamp=time.time(),
                 ))
-            
+
             return executable
 
         except Exception as e:

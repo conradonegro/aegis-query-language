@@ -2,56 +2,55 @@ import asyncio
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from starlette.requests import Request
+
+from app.api.compiler import MetadataCompiler
+from app.api.meta_models import (
+    ChatMessage,
+    ChatSession,
+    MetadataAudit,
+    MetadataColumn,
+    MetadataRelationship,
+    MetadataTable,
+    MetadataVersion,
+)
+from app.api.models import (
+    ColumnUpdateRequest,
+    ExplainabilityContext,
+    MetadataCompileResponse,
+    ProtocolColumn,
+    ProtocolMetadataVersion,
+    ProtocolRelationship,
+    ProtocolSchemaResponse,
+    ProtocolTable,
+    QueryExecuteResponse,
+    QueryGenerateResponse,
+    QueryRequest,
+    TableUpdateRequest,
+    VersionCreateRequest,
+    VersionStatusUpdateRequest,
+)
+from app.audit import QueryAuditEvent
+from app.audit.chaining import compute_audit_row_hash, get_canonical_json
+from app.compiler.engine import CompilerEngine
+from app.compiler.models import ChatHistoryItem, PromptHints, UserIntent
+from app.execution import ExecutionContext
+from app.execution.interfaces import ExecutionLayer
+from app.steward import RegistrySchema
+from app.vault import get_secrets_manager
 
 # Per-session asyncio locks prevent concurrent requests on the same session from
 # reading the same last_seq value and colliding on uq_session_sequence.
 # A plain defaultdict is safe here: asyncio is single-threaded so dict access is
 # non-preemptive, and asyncio.Lock() requires no running event loop since Python 3.10.
 _session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-from app.audit.chaining import compute_audit_row_hash, get_canonical_json
-from app.vault import get_secrets_manager
-
-from app.api.compiler import MetadataCompiler
-from app.api.meta_models import (
-    MetadataVersion,
-    MetadataTable,
-    MetadataColumn,
-    MetadataRelationship,
-    MetadataAudit,
-    ChatSession,
-    ChatMessage,
-)
-from app.api.models import (
-    ExplainabilityContext,
-    MetadataCompileResponse,
-    ProtocolMetadataVersion,
-    ProtocolSchemaResponse,
-    ProtocolTable,
-    ProtocolColumn,
-    ProtocolRelationship,
-    TableUpdateRequest,
-    ColumnUpdateRequest,
-    VersionCreateRequest,
-    VersionStatusUpdateRequest,
-    QueryExecuteResponse,
-    QueryGenerateResponse,
-    QueryRequest,
-)
-from app.audit import QueryAuditEvent
-from app.compiler.engine import CompilerEngine
-from app.compiler.models import ChatHistoryItem, PromptHints, UserIntent
-from app.execution import ExecutionContext
-from app.execution.interfaces import ExecutionLayer
-from app.steward import RegistrySchema
 
 api_router = APIRouter()
 
@@ -155,7 +154,7 @@ async def generate_query(
         provider_id=payload.provider_id,
         session_id=str(session_id),
     )
-    
+
     async with _session_locks[str(session_id)]:
         seq_res = await session.execute(
             select(ChatMessage.sequence_number)
@@ -225,7 +224,7 @@ async def execute_query(
         provider_id=payload.provider_id,
         session_id=str(session_id)
     )
-    
+
     async with _session_locks[str(session_id)]:
         seq_res = await session.execute(
             select(ChatMessage.sequence_number)
@@ -265,14 +264,14 @@ async def execute_query(
             user_id="api_user",
         )
     result = await executor.execute(executable, context=context)
-    
+
     # Background audit log mapping
     event = QueryAuditEvent(
         query_id=executable.query_id or str(uuid.uuid4()),
         tenant_id=context.tenant_id,
         user_id=context.user_id,
         natural_language_query=payload.intent,
-        abstract_query=executable.sql, # Tracking compiled sql 
+        abstract_query=executable.sql, # Tracking compiled sql
         physical_query=executable.sql,
         registry_version=executable.registry_version,
         safety_engine_version=executable.safety_engine_version,
@@ -284,10 +283,10 @@ async def execute_query(
         error_message=None,
         row_limit_applied=executable.row_limit_applied
     )
-    
+
     # Add audit dispatch to non-blocking tasks list
     background_tasks.add_task(auditor.record, event)
-    
+
     return QueryExecuteResponse(
         query_id=executable.query_id or "",
         session_id=str(session_id),
@@ -306,7 +305,7 @@ async def list_metadata_versions(
     """Retrieve all metadata schema versions."""
     res = await session.execute(select(MetadataVersion).order_by(MetadataVersion.created_at.desc()))
     versions = res.scalars().all()
-    
+
     return [
         ProtocolMetadataVersion(
             version_id=str(v.version_id),
@@ -387,7 +386,7 @@ async def update_version_status(
     # Approval timestamps are populated when a version becomes active
     if payload.status == "active":
         version.approved_by = "admin_api"
-        version.approved_at = datetime.now(timezone.utc)
+        version.approved_at = datetime.now(UTC)
 
     # Build the WORM audit chain record — must happen in the same transaction
     last_audit_res = await session.execute(
@@ -398,7 +397,7 @@ async def update_version_status(
     last_row = last_audit_res.scalar_one_or_none()
     previous_hash = last_row.row_hash if last_row else ""
 
-    audit_timestamp = datetime.now(timezone.utc)
+    audit_timestamp = datetime.now(UTC)
     audit_action = _TRANSITION_AUDIT_ACTION[(previous_status, payload.status)]
     audit_payload = {
         "event": "status_transition",
@@ -456,11 +455,11 @@ async def compile_metadata_version(
         version_id=version_id,
         actor="admin_api"
     )
-    
+
     # Dynamically hot-reload the RegistrySchema into the active FastAPI middleware!
-    from app.steward.loader import RegistryLoader
     from app.rag.models import CategoricalValue
     from app.rag.store import InMemoryVectorStore
+    from app.steward.loader import RegistryLoader
 
     async with request.app.state.registry_runtime_session_factory() as rt_session:
         schema = await RegistryLoader.load_active_schema(rt_session)
@@ -474,10 +473,10 @@ async def compile_metadata_version(
             for col in table.columns:
                 if col.description:
                     vector_store.index_value(CategoricalValue(value=col.description, abstract_column=f"{table.alias}.{col.alias}", tenant_id="default_tenant"))
-                    
+
         request.app.state.vector_store = vector_store
         request.app.state.compiler.set_vector_store(vector_store)
-    
+
     return MetadataCompileResponse(
         artifact_id=str(artifact.artifact_id),
         version_id=str(artifact.version_id),
@@ -528,9 +527,9 @@ async def get_metadata_schema(
     version = res.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
-        
+
     tables_out = [_map_table(t) for t in version.tables]
-    
+
     edges_out = []
     for e in version.edges:
         edges_out.append(ProtocolRelationship(
@@ -542,7 +541,7 @@ async def get_metadata_schema(
             relationship_type=e.relationship_type,
             cardinality=e.cardinality
         ))
-        
+
     return ProtocolSchemaResponse(
         version_id=str(version.version_id),
         tables=tables_out,
@@ -561,11 +560,11 @@ async def update_metadata_table(
     table = res.scalar_one_or_none()
     if not table:
          raise HTTPException(status_code=404, detail="Table not found")
-         
+
     if payload.alias is not None: table.alias = payload.alias
     if payload.description is not None: table.description = payload.description
     if payload.active is not None: table.active = payload.active
-    
+
     await session.commit()
     return _map_table(table)
 
@@ -581,13 +580,13 @@ async def update_metadata_column(
     col = res.scalar_one_or_none()
     if not col:
          raise HTTPException(status_code=404, detail="Column not found")
-         
+
     if payload.alias is not None: col.alias = payload.alias
     if payload.description is not None: col.description = payload.description
     if payload.allowed_in_select is not None: col.allowed_in_select = payload.allowed_in_select
     if payload.allowed_in_filter is not None: col.allowed_in_filter = payload.allowed_in_filter
     if payload.allowed_in_join is not None: col.allowed_in_join = payload.allowed_in_join
-    
+
     await session.commit()
     return _map_col(col)
 
@@ -600,7 +599,7 @@ async def create_metadata_version(
     new_version_id = uuid.uuid4()
     new_version = MetadataVersion(version_id=new_version_id, status="draft", change_reason="Steward UI clone")
     session.add(new_version)
-    
+
     if payload.baseline_version_id:
         baseline_id = uuid.UUID(payload.baseline_version_id)
         stmt = select(MetadataVersion).where(MetadataVersion.version_id == baseline_id).options(
@@ -611,10 +610,10 @@ async def create_metadata_version(
         baseline = res.scalar_one_or_none()
         if not baseline:
              raise HTTPException(status_code=404, detail="Baseline not found")
-             
+
         table_id_map = {}
         col_id_map = {}
-        
+
         # Deep clone
         for old_t in baseline.tables:
             new_t_id = uuid.uuid4()
@@ -629,7 +628,7 @@ async def create_metadata_version(
             )
             session.add(new_t)
             table_id_map[old_t.table_id] = new_t_id
-            
+
             for old_c in old_t.columns:
                 new_c_id = uuid.uuid4()
                 new_c = MetadataColumn(
@@ -703,16 +702,16 @@ async def obfuscate_schema(
     version = res.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
-        
+
     t_counter = 1
     c_counter = 1
-    
+
     for table in version.tables:
         table.alias = f"table{t_counter:04d}"
         t_counter += 1
         for col in table.columns:
             col.alias = f"col{c_counter:04d}"
             c_counter += 1
-            
+
     await session.commit()
     return {"status": "success", "tables_obfuscated": t_counter - 1, "columns_obfuscated": c_counter - 1}
