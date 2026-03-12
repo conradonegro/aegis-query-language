@@ -3,7 +3,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.meta_models import CompiledRegistryArtifact
+from app.api.meta_models import CompiledRegistryArtifact, MetadataVersion
 from app.steward.models import (
     AbstractColumnDef,
     AbstractRelationshipDef,
@@ -29,10 +29,16 @@ class RegistryLoader:
 
     @staticmethod
     async def load_active_schema(session: AsyncSession) -> RegistrySchema | None:
-        # Load the most recent artifact natively
-        stmt = select(CompiledRegistryArtifact).order_by(
-            CompiledRegistryArtifact.compiled_at.desc()
-        ).limit(1)
+        # Load the most recent artifact whose parent version is still active.
+        # Without the status filter an artifact compiled for a subsequently
+        # archived version would be silently loaded as the live schema.
+        stmt = (
+            select(CompiledRegistryArtifact)
+            .join(MetadataVersion, CompiledRegistryArtifact.version_id == MetadataVersion.version_id)
+            .where(MetadataVersion.status == "active")
+            .order_by(CompiledRegistryArtifact.compiled_at.desc())
+            .limit(1)
+        )
         
         result = await session.execute(stmt)
         artifact = result.scalar_one_or_none()

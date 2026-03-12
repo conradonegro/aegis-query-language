@@ -1,15 +1,13 @@
-from dataclasses import dataclass
-
 from sqlglot import exp
 
 from app.compiler.models import SQLAst, ValidatedAST
 
 
-@dataclass
 class SafetyViolationError(Exception):
-    message: str
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
-@dataclass
 class UnsafeExpressionError(SafetyViolationError):
     """Raised when an explicitly allowed AST node violates semantic structural rules during translation."""
     pass

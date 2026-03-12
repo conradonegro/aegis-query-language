@@ -22,15 +22,21 @@ class ValueVectorStoreProtocol(Protocol):
         ...
 
 class SchemaFilterProtocol(Protocol):
+    def is_follow_up(
+        self, intent: UserIntent, last_schema: FilteredSchema | None, full_schema: RegistrySchema | None = None
+    ) -> bool:
+        """Returns True if the intent is a follow-up on the previous query context."""
+        ...
+
     def filter_schema(
         self, intent: UserIntent, schema: RegistrySchema, included_columns: RAGIncludedColumns | None = None
     ) -> FilteredSchema:
         """
         Filters the schema based on intent mapping.
-        
-        INVARIANT: `included_columns` MUST ONLY be populated by trusted internal 
-        RAG match resolutions. User hints or external API payloads must NEVER be 
-        allowed to arbitrarily bypass token overlap filtering rules. 
+
+        INVARIANT: `included_columns` MUST ONLY be populated by trusted internal
+        RAG match resolutions. User hints or external API payloads must NEVER be
+        allowed to arbitrarily bypass token overlap filtering rules.
         """
         ...
 

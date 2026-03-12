@@ -121,10 +121,15 @@ async def generate_query(
         hints=hints,
         explain=payload.explain,
         chat_history=chat_history,
-        provider_id=payload.provider_id
+        provider_id=payload.provider_id,
+        session_id=str(session_id),
     )
     
-    # Save the interaction to the session
+    # Lock the session row before reading last_seq to prevent concurrent requests
+    # on the same session from reading the same value and colliding on uq_session_sequence.
+    await session.execute(
+        select(ChatSession).where(ChatSession.session_id == session_id).with_for_update()
+    )
     seq_res = await session.execute(
         select(ChatMessage.sequence_number)
         .where(ChatMessage.session_id == session_id)
@@ -132,7 +137,7 @@ async def generate_query(
         .limit(1)
     )
     last_seq = seq_res.scalar_one_or_none() or 0
-    
+
     user_msg = ChatMessage(
         message_id=uuid.uuid4(),
         session_id=session_id,
@@ -153,7 +158,6 @@ async def generate_query(
     )
     session.add_all([user_msg, assistant_msg])
     await session.commit()
-
 
     return QueryGenerateResponse(
         query_id=executable.query_id or "",
@@ -220,7 +224,11 @@ async def execute_query(
         session_id=str(session_id)
     )
     
-    # Save the interaction to the session
+    # Lock the session row before reading last_seq to prevent concurrent requests
+    # on the same session from reading the same value and colliding on uq_session_sequence.
+    await session.execute(
+        select(ChatSession).where(ChatSession.session_id == session_id).with_for_update()
+    )
     seq_res = await session.execute(
         select(ChatMessage.sequence_number)
         .where(ChatMessage.session_id == session_id)
@@ -228,7 +236,7 @@ async def execute_query(
         .limit(1)
     )
     last_seq = seq_res.scalar_one_or_none() or 0
-    
+
     user_msg = ChatMessage(
         message_id=uuid.uuid4(),
         session_id=session_id,
@@ -252,7 +260,7 @@ async def execute_query(
     )
     session.add_all([user_msg, assistant_msg])
     await session.commit()
-    
+
     # Execute
     context = ExecutionContext(
             tenant_id="default_tenant",

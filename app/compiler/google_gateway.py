@@ -33,8 +33,7 @@ class GoogleLLMGateway(LLMGatewayProtocol):
         if not api_key:
             raise LLMGenerationError("CRITICAL: Google API key is missing. Check Vault/Env configuration.", raw_response="")
 
-        # Google API dynamically builds the URL with the model and key
-        base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={api_key}"
+        base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         
         start_time = time.perf_counter()
         
@@ -69,7 +68,8 @@ class GoogleLLMGateway(LLMGatewayProtocol):
             payload["generationConfig"]["responseMimeType"] = "application/json"
 
         headers = {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
         }
 
         try:

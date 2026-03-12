@@ -166,6 +166,7 @@ async def lifespan(app: FastAPI):
     logger.info("Aegis Semantic Proxy Initialized.")
     yield
     await session_store.close()
+    await app.state.executor.close()
     logger.info("Aegis Semantic Proxy Shutting down.")
 
 
