@@ -1,10 +1,12 @@
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ExecutionContext(BaseModel):
     """Contextual logic for query execution timeouts and roles."""
+    model_config = ConfigDict(extra="forbid")
+
     tenant_id: str
     user_id: str | None = None
     statement_timeout_ms: int = 5000

@@ -265,7 +265,6 @@ async def execute_query(
     context = ExecutionContext(
             tenant_id="default_tenant",
             user_id="api_user",
-            metadata={}
         )
     result = await executor.execute(executable, context=context)
     

@@ -1,13 +1,15 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.api.models import TranslationRepair
 from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef
 
 
 class UserIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     natural_language_query: str
 
 class ChatHistoryItem(BaseModel):
@@ -43,6 +45,8 @@ class PromptHints(BaseModel):
     rag_provenance: dict[str, Any] | None = None
 
 class PromptEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     system_instruction: str
     user_prompt: str
     chat_history: list[ChatHistoryItem] = Field(default_factory=list)
@@ -88,6 +92,7 @@ class ValidatedAST:
 
 class ExecutableQuery(BaseModel):
     """Final, parameterized query ready for execution."""
+    model_config = ConfigDict(extra="forbid")
     sql: str
     parameters: dict[str, Any]
     registry_version: str
