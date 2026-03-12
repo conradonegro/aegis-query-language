@@ -14,7 +14,7 @@ from app.compiler.models import (
     RAGIncludedColumns,
     ChatHistoryItem,
 )
-from app.steward import RegistrySchema
+from app.steward import AbstractRelationshipDef, RegistrySchema
 
 
 class ValueVectorStoreProtocol(Protocol):
@@ -56,7 +56,13 @@ class SQLParserProtocol(Protocol):
 
 class TranslatorProtocol(Protocol):
     def translate(
-        self, ast: ValidatedAST, schema: RegistrySchema
+        self,
+        ast: ValidatedAST,
+        schema: RegistrySchema,
+        abstract_query_hash: str = "default_hash",
+        safety_version: str = "v1.0.0",
+        row_limit: int = 1000,
+        relationships: list[AbstractRelationshipDef] | None = None,
     ) -> ExecutableQuery:
         ...
 
