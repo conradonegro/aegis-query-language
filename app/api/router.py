@@ -1,4 +1,6 @@
+import asyncio
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -6,6 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
+
+# Per-session asyncio locks prevent concurrent requests on the same session from
+# reading the same last_seq value and colliding on uq_session_sequence.
+# A plain defaultdict is safe here: asyncio is single-threaded so dict access is
+# non-preemptive, and asyncio.Lock() requires no running event loop since Python 3.10.
+_session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 from app.audit.chaining import compute_audit_row_hash, get_canonical_json
 from app.vault import get_secrets_manager
@@ -125,39 +133,35 @@ async def generate_query(
         session_id=str(session_id),
     )
     
-    # Lock the session row before reading last_seq to prevent concurrent requests
-    # on the same session from reading the same value and colliding on uq_session_sequence.
-    await session.execute(
-        select(ChatSession).where(ChatSession.session_id == session_id).with_for_update()
-    )
-    seq_res = await session.execute(
-        select(ChatMessage.sequence_number)
-        .where(ChatMessage.session_id == session_id)
-        .order_by(ChatMessage.sequence_number.desc())
-        .limit(1)
-    )
-    last_seq = seq_res.scalar_one_or_none() or 0
+    async with _session_locks[str(session_id)]:
+        seq_res = await session.execute(
+            select(ChatMessage.sequence_number)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.sequence_number.desc())
+            .limit(1)
+        )
+        last_seq = seq_res.scalar_one_or_none() or 0
 
-    user_msg = ChatMessage(
-        message_id=uuid.uuid4(),
-        session_id=session_id,
-        sequence_number=last_seq + 1,
-        role="user",
-        content=intent.natural_language_query,
-        provider_id=payload.provider_id
-    )
-    assistant_msg = ChatMessage(
-        message_id=uuid.uuid4(),
-        session_id=session_id,
-        sequence_number=last_seq + 2,
-        role="assistant",
-        content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
-        provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
-        prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
-        completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
-    )
-    session.add_all([user_msg, assistant_msg])
-    await session.commit()
+        user_msg = ChatMessage(
+            message_id=uuid.uuid4(),
+            session_id=session_id,
+            sequence_number=last_seq + 1,
+            role="user",
+            content=intent.natural_language_query,
+            provider_id=payload.provider_id
+        )
+        assistant_msg = ChatMessage(
+            message_id=uuid.uuid4(),
+            session_id=session_id,
+            sequence_number=last_seq + 2,
+            role="assistant",
+            content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
+            provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
+            prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
+            completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
+        )
+        session.add_all([user_msg, assistant_msg])
+        await session.commit()
 
     return QueryGenerateResponse(
         query_id=executable.query_id or "",
@@ -224,42 +228,38 @@ async def execute_query(
         session_id=str(session_id)
     )
     
-    # Lock the session row before reading last_seq to prevent concurrent requests
-    # on the same session from reading the same value and colliding on uq_session_sequence.
-    await session.execute(
-        select(ChatSession).where(ChatSession.session_id == session_id).with_for_update()
-    )
-    seq_res = await session.execute(
-        select(ChatMessage.sequence_number)
-        .where(ChatMessage.session_id == session_id)
-        .order_by(ChatMessage.sequence_number.desc())
-        .limit(1)
-    )
-    last_seq = seq_res.scalar_one_or_none() or 0
+    async with _session_locks[str(session_id)]:
+        seq_res = await session.execute(
+            select(ChatMessage.sequence_number)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.sequence_number.desc())
+            .limit(1)
+        )
+        last_seq = seq_res.scalar_one_or_none() or 0
 
-    user_msg = ChatMessage(
-        message_id=uuid.uuid4(),
-        session_id=session_id,
-        sequence_number=last_seq + 1,
-        role="user",
-        content=intent.natural_language_query,
-        provider_id=payload.provider_id
-    )
-    assistant_msg = ChatMessage(
-        message_id=uuid.uuid4(),
-        session_id=session_id,
-        sequence_number=last_seq + 2,
-        role="assistant",
-        # Store abstract_sql (obfuscated aliases) rather than the physical SQL so the LLM
-        # cannot learn physical column/table names from its own prior responses.
-        # abstract_sql is always populated by the compiler engine regardless of explain flag.
-        content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
-        provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
-        prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
-        completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
-    )
-    session.add_all([user_msg, assistant_msg])
-    await session.commit()
+        user_msg = ChatMessage(
+            message_id=uuid.uuid4(),
+            session_id=session_id,
+            sequence_number=last_seq + 1,
+            role="user",
+            content=intent.natural_language_query,
+            provider_id=payload.provider_id
+        )
+        assistant_msg = ChatMessage(
+            message_id=uuid.uuid4(),
+            session_id=session_id,
+            sequence_number=last_seq + 2,
+            role="assistant",
+            # Store abstract_sql (obfuscated aliases) rather than the physical SQL so the LLM
+            # cannot learn physical column/table names from its own prior responses.
+            # abstract_sql is always populated by the compiler engine regardless of explain flag.
+            content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
+            provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
+            prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
+            completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
+        )
+        session.add_all([user_msg, assistant_msg])
+        await session.commit()
 
     # Execute
     context = ExecutionContext(
