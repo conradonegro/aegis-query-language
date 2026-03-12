@@ -82,3 +82,32 @@ def test_hmac_signature_timing_resistance():
     assert verify_hmac_signature(signing_key, '{"test":false}', signature) is False
     
     # Note: `compare_digest` is internally called by `verify_hmac_signature`, which guarantees timing resistance.
+
+    # Verify wrong signing key reject
+    assert verify_hmac_signature("different_key", payload, signature) is False
+
+
+def test_audit_row_hash_genesis_accepts_none_previous_hash():
+    """
+    The genesis row (first entry in a chain) passes None as previous_hash.
+    The implementation coerces None to '' via `previous_hash or ''`, so both
+    None and '' must produce the same hash.
+    """
+    payload = '{"event":"init"}'
+    created_at = "2026-03-01T00:00:00Z"
+
+    hash_none = compute_audit_row_hash(None, payload, created_at)  # type: ignore[arg-type]
+    hash_empty = compute_audit_row_hash("", payload, created_at)
+
+    assert hash_none == hash_empty
+
+
+def test_canonical_json_handles_non_ascii():
+    """Non-ASCII characters must survive a round-trip without escaping."""
+    payload = {"name": "héllo wörld", "emoji": "🔐"}
+    canonical = get_canonical_json(payload)
+    # ensure_ascii=False means characters are preserved, not escaped
+    assert "héllo wörld" in canonical
+    assert "🔐" in canonical
+    # Round-trip must be stable
+    assert get_canonical_json(payload) == canonical

@@ -99,6 +99,21 @@ def test_vault_tls_enforcement(monkeypatch):
         HashiCorpVaultProvider(vault_addr="http://unsecured-vault.local:8200", role_id="r", secret_id="s")
 
 
+def test_env_fallback_provider_get_api_key_present(monkeypatch):
+    """EnvFallbackProvider.get_api_key returns the key when the env var is set."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-123")
+    provider = EnvFallbackProvider()
+    assert provider.get_api_key("openai") == "sk-test-123"
+
+
+def test_env_fallback_provider_get_api_key_missing(monkeypatch):
+    """EnvFallbackProvider.get_api_key raises VaultMissingSecretError when absent."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    provider = EnvFallbackProvider()
+    with pytest.raises(VaultMissingSecretError, match="anthropic"):
+        provider.get_api_key("anthropic")
+
+
 def test_get_secrets_manager_factory(monkeypatch):
     """Test initialization routing based on SECRETS_PROVIDER configurations."""
     monkeypatch.setenv("SECRETS_PROVIDER", "env")

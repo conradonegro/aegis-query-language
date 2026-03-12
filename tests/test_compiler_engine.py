@@ -230,3 +230,68 @@ async def test_compiler_engine_llm_refusal_is_raised(compiler_engine: CompilerEn
         await compiler_engine.compile(intent=intent, schema=mock_registry, hints=hints)
 
     assert "refused" in str(exc.value).lower() or "destructive" in str(exc.value).lower()
+
+
+# ─── LLM output format edge cases ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_compiler_engine_strips_json_code_fence(
+    compiler_engine: CompilerEngine, mock_registry: RegistrySchema
+) -> None:
+    """
+    LLMs often wrap their JSON in ```json ... ``` markdown fences.
+    The engine must strip the fence before JSON parsing.
+    """
+    class CodeFencedGateway(MockLLMGateway):
+        async def generate(self, envelope) -> LLMResult:
+            fenced = '```json\n{"sql": "SELECT * FROM users"}\n```'
+            return LLMResult(raw_text=fenced, model_id="mock", latency_ms=1.0, prompt_tokens=5, completion_tokens=5)
+
+    compiler_engine.llm_gateway = CodeFencedGateway()
+    intent = UserIntent(natural_language_query="Show all users")
+    hints = PromptHints(column_hints=[])
+    executable = await compiler_engine.compile(intent=intent, schema=mock_registry, hints=hints)
+    assert executable is not None
+    assert "users" in executable.sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_compiler_engine_handles_plain_sql_fallback(
+    compiler_engine: CompilerEngine, mock_registry: RegistrySchema
+) -> None:
+    """
+    If the LLM ignores instructions and returns plain SQL (no JSON wrapper),
+    the engine should fall back to using the raw text as the abstract SQL.
+    """
+    class PlainSQLGateway(MockLLMGateway):
+        async def generate(self, envelope) -> LLMResult:
+            return LLMResult(raw_text="SELECT * FROM users", model_id="mock", latency_ms=1.0, prompt_tokens=5, completion_tokens=5)
+
+    compiler_engine.llm_gateway = PlainSQLGateway()
+    intent = UserIntent(natural_language_query="Show all users")
+    hints = PromptHints(column_hints=[])
+    executable = await compiler_engine.compile(intent=intent, schema=mock_registry, hints=hints)
+    assert executable is not None
+    assert "users" in executable.sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_compiler_engine_rejects_multi_statement_in_fallback(
+    compiler_engine: CompilerEngine, mock_registry: RegistrySchema
+) -> None:
+    """
+    When the engine falls back to treating raw text as SQL, a multi-statement
+    response must be rejected before reaching the parser.
+    """
+    class MultiStatementGateway(MockLLMGateway):
+        async def generate(self, envelope) -> LLMResult:
+            return LLMResult(
+                raw_text="SELECT * FROM users; DROP TABLE users;",
+                model_id="mock", latency_ms=1.0, prompt_tokens=5, completion_tokens=5
+            )
+
+    compiler_engine.llm_gateway = MultiStatementGateway()
+    intent = UserIntent(natural_language_query="Show all users")
+    hints = PromptHints(column_hints=[])
+    with pytest.raises(LLMGenerationError, match="(?i)multi-statement"):
+        await compiler_engine.compile(intent=intent, schema=mock_registry, hints=hints)

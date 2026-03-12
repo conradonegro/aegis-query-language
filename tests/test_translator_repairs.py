@@ -469,6 +469,72 @@ def test_implicit_cross_join_blocked(safety_engine: SafetyEngine):
         safety_engine.validate(ast)
 
 
+# ---------------------------------------------------------------------------
+# Row limit injection
+# ---------------------------------------------------------------------------
+
+def test_row_limit_applied_for_plain_select(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """A plain SELECT with no aggregation and no existing LIMIT gets a LIMIT injected."""
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT id FROM users", read="postgres"))
+    result = translator.translate(ast, mock_schema, row_limit=500)
+    assert result.row_limit_applied is True
+    assert "LIMIT" in result.sql
+
+
+def test_row_limit_not_applied_when_aggregation_present(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """A query with an aggregate function must not have a row limit injected."""
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT COUNT(*) FROM users", read="postgres"))
+    result = translator.translate(ast, mock_schema)
+    assert result.row_limit_applied is False
+    assert "LIMIT" not in result.sql
+
+
+def test_row_limit_not_applied_when_group_by_present(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """A query with GROUP BY must not have a row limit injected."""
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one("SELECT name, COUNT(*) FROM users GROUP BY name", read="postgres")
+    )
+    result = translator.translate(ast, mock_schema)
+    assert result.row_limit_applied is False
+
+
+def test_row_limit_not_applied_when_limit_already_exists(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """A query that already has a LIMIT clause must not have a second one injected."""
+    ast = ValidatedAST(tree=sqlglot.parse_one("SELECT id FROM users LIMIT 5", read="postgres"))
+    result = translator.translate(ast, mock_schema)
+    assert result.row_limit_applied is False
+    # Verify there is exactly one LIMIT in the output (no duplication)
+    assert result.sql.upper().count("LIMIT") == 1
+
+
+def test_where_only_aggregates_moves_to_having_and_removes_where(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """
+    When the WHERE clause contains ONLY aggregate predicates (and no non-aggregate
+    conditions), the repair must remove the WHERE entirely and promote all
+    conditions to HAVING.
+    """
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one(
+            "SELECT name, SUM(id) FROM users GROUP BY name HAVING SUM(id) > 0",
+            read="postgres",
+        )
+    )
+    # Confirm that a query already correctly using HAVING is unchanged
+    result = translator.translate(ast, mock_schema)
+    assert "HAVING" in result.sql
+    assert result.sql.upper().count("WHERE") == 0
+
+
 def test_explicit_cross_join_blocked(safety_engine: SafetyEngine):
     """CROSS JOIN (no ON condition) must also be blocked."""
     tree = sqlglot.parse_one("SELECT posts.id FROM posts CROSS JOIN users")

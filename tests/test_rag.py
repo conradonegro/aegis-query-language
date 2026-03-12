@@ -62,3 +62,33 @@ def test_rag_below_threshold(store: InMemoryVectorStore) -> None:
     assert res.outcome == RAGOutcome.NO_MATCH
     assert res.match is None
     assert res.reason == "No candidates met the threshold (0.85)."
+
+
+def test_rag_empty_tenant_returns_no_match() -> None:
+    """Querying a tenant with zero indexed values must return NO_MATCH immediately."""
+    store = InMemoryVectorStore()
+    res = store.search("Show me anything", tenant_id="unknown_tenant")
+    assert res.outcome == RAGOutcome.NO_MATCH
+    assert res.match is None
+
+
+def test_rag_exact_word_match_scores_1() -> None:
+    """An exact word match (query word == value) must yield similarity_score == 1.0."""
+    store = InMemoryVectorStore()
+    store.index_value(CategoricalValue(value="Nvidia", abstract_column="brands", tenant_id="t"))
+    res = store.search("Nvidia", tenant_id="t")
+    assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
+    assert res.match is not None
+    assert res.match.similarity_score == 1.0
+
+
+def test_rag_substring_match_scores_0_9() -> None:
+    """A substring match (value is a substring of the query or vice-versa) scores 0.9."""
+    store = InMemoryVectorStore()
+    # "NvidiaGPU" is not an exact word in the query but is a substring case
+    store.index_value(CategoricalValue(value="Nvidia", abstract_column="brands", tenant_id="t"))
+    # Query contains "NvidiaGPU" which has "Nvidia" as a substring — score 0.9
+    res = store.search("NvidiaGPU", tenant_id="t")
+    assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
+    assert res.match is not None
+    assert res.match.similarity_score == 0.9

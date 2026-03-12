@@ -1,8 +1,10 @@
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler import UserIntent
+from app.compiler.models import FilteredSchema
 from app.steward import (
     AbstractTableDef,
     AbstractColumnDef,
+    AbstractRelationshipDef,
     RegistrySchema,
     SafetyClassification,
 )
@@ -42,6 +44,163 @@ def test_deterministic_schema_filter_simple_overlap() -> None:
     assert len(filtered.tables) == 1
     assert filtered.tables[0].alias == "users"
 
-    # orders structure is entirely omitted, 
+    # orders structure is entirely omitted,
     # and users columns are kept because the parent table matched.
     assert "orders" not in [t.alias for t in filtered.tables]
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _col(alias: str, description: str = "") -> AbstractColumnDef:
+    return AbstractColumnDef(
+        alias=alias,
+        description=description,
+        safety=SafetyClassification(allowed_in_select=True),
+        physical_target=f"phys_{alias}",
+    )
+
+
+def _table(alias: str, description: str = "", cols: list | None = None) -> AbstractTableDef:
+    return AbstractTableDef(
+        alias=alias,
+        description=description,
+        physical_target=f"phys_{alias}",
+        columns=cols or [_col("id")],
+    )
+
+
+def _filtered(tables: list[AbstractTableDef]) -> FilteredSchema:
+    return FilteredSchema(
+        version="1",
+        tables=tables,
+        relationships=[],
+        omitted_columns={},
+    )
+
+
+# ─── is_follow_up ─────────────────────────────────────────────────────────────
+
+def test_is_follow_up_no_last_schema_returns_false() -> None:
+    f = DeterministicSchemaFilter()
+    intent = UserIntent(natural_language_query="and active ones")
+    assert f.is_follow_up(intent, last_schema=None) is False
+
+
+def test_is_follow_up_zero_intent_tokens_returns_false() -> None:
+    """After stop-word removal, empty token set → not a follow-up."""
+    f = DeterministicSchemaFilter()
+    # All words are stop words
+    intent = UserIntent(natural_language_query="and or the a")
+    last = _filtered([_table("users", "User accounts")])
+    assert f.is_follow_up(intent, last_schema=last) is False
+
+
+def test_is_follow_up_short_query_no_structural_match_returns_true() -> None:
+    """
+    A short query (< 8 non-stop tokens) with no schema structural tokens
+    is treated as a follow-up continuation.
+    """
+    f = DeterministicSchemaFilter()
+    intent = UserIntent(natural_language_query="filter active 2023")
+    last = _filtered([_table("sales", "Revenue records")])
+    assert f.is_follow_up(intent, last_schema=last) is True
+
+
+def test_is_follow_up_structural_match_in_full_schema_forces_fresh() -> None:
+    """
+    Even if the token does not match the prior schema, if it matches any
+    table in the full registry the query is treated as a fresh one.
+    """
+    f = DeterministicSchemaFilter()
+    # Intent mentions "orders" which is in the full schema but NOT in last_schema
+    intent = UserIntent(natural_language_query="what about orders")
+    last = _filtered([_table("users", "User accounts")])
+    full = RegistrySchema(
+        version="1",
+        tables=[
+            _table("users", "User accounts"),
+            _table("orders", "Purchase records"),
+        ],
+        relationships=[],
+    )
+    assert f.is_follow_up(intent, last_schema=last, full_schema=full) is False
+
+
+def test_is_follow_up_long_query_no_structural_match_returns_false() -> None:
+    """
+    A long query (≥ 8 non-stop tokens) without any structural match is
+    considered a fresh query, not a continuation.
+    """
+    f = DeterministicSchemaFilter()
+    intent = UserIntent(
+        natural_language_query="recent monthly revenue breakdown quarter category region segment channel"
+    )
+    last = _filtered([_table("x", "something completely unrelated")])
+    assert f.is_follow_up(intent, last_schema=last) is False
+
+
+# ─── filter_schema — relationship augmentation ────────────────────────────────
+
+def test_filter_schema_augments_via_relationship() -> None:
+    """
+    A table that does not match the intent tokens must still be included
+    when it is 1-degree related to a matched table.
+    """
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table("users", "User accounts", cols=[_col("id"), _col("email")]),
+            _table("orders", "Purchase history", cols=[_col("id"), _col("user_id")]),
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="users",
+                source_column="id",
+                target_table="orders",
+                target_column="user_id",
+            )
+        ],
+    )
+    # Only "users" token in intent — orders has no direct overlap
+    intent = UserIntent(natural_language_query="Show all users")
+    filtered = f.filter_schema(intent, schema)
+
+    aliases = {t.alias for t in filtered.tables}
+    assert "users" in aliases
+    assert "orders" in aliases  # pulled in via relationship
+
+
+def test_filter_schema_prunes_unrelated_relationships() -> None:
+    """
+    Relationships whose source or target table was dropped must be pruned
+    from the filtered result.
+    """
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table("users", "User accounts"),
+            _table("products", "Product catalogue"),
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="users",
+                source_column="id",
+                target_table="products",
+                target_column="owner_id",
+            )
+        ],
+    )
+    intent = UserIntent(natural_language_query="Show user profile")
+    filtered = f.filter_schema(intent, schema)
+
+    # products doesn't match "user profile" tokens and has no RAG force
+    # BUT it IS augmented via relationship — check that if products gets
+    # dropped (zero overlap + no force), the relationship is also pruned.
+    # Since augmentation adds products, verify relationship is kept when both present.
+    if len(filtered.tables) == 2:
+        assert len(filtered.relationships) == 1
+    else:
+        # If products was dropped, relationship must be absent
+        assert len(filtered.relationships) == 0
