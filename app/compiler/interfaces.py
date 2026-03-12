@@ -2,17 +2,17 @@ from typing import Protocol
 
 from app.compiler.models import (
     AbstractQuery,
+    ChatHistoryItem,
     ExecutableQuery,
     FilteredSchema,
     LLMResult,
     PromptEnvelope,
     PromptHints,
+    RAGIncludedColumns,
     SQLAst,
     UserIntent,
     ValidatedAST,
     ValueMatchResult,
-    RAGIncludedColumns,
-    ChatHistoryItem,
 )
 from app.steward import AbstractRelationshipDef, RegistrySchema
 
@@ -42,7 +42,11 @@ class SchemaFilterProtocol(Protocol):
 
 class PromptBuilderProtocol(Protocol):
     def build_prompt(
-        self, intent: UserIntent, schema: FilteredSchema, hints: PromptHints, chat_history: list[ChatHistoryItem] | None = None
+        self,
+        intent: UserIntent,
+        schema: FilteredSchema,
+        hints: PromptHints,
+        chat_history: list[ChatHistoryItem] | None = None,
     ) -> PromptEnvelope:
         ...
 

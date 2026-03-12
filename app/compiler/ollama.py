@@ -28,15 +28,15 @@ class OllamaLLMGateway:
     """
 
     def __init__(
-        self, 
-        base_url: str = "http://localhost:11434", 
+        self,
+        base_url: str = "http://localhost:11434",
         model: str = "llama3",
         strict_json: bool = True
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.strict_json = strict_json
-        
+
         # The JSON schema we require Ollama to output.
         # Both sql and refused are optional at schema level so the LLM can
         # signal a refusal without being forced to invent a sql value.
@@ -64,18 +64,18 @@ class OllamaLLMGateway:
         Sends the PromptEnvelope to Ollama and enforces strict JSON output parsing.
         """
         start_time = time.perf_counter()
-        
-        # Format the combined prompt 
-        # (Ollama API just takes 'prompt', so we stitch our Envelope for now, 
+
+        # Format the combined prompt
+        # (Ollama API just takes 'prompt', so we stitch our Envelope for now,
         # or use the /api/chat endpoint if we want explicit system/user roles)
-        
+
         messages = [
             {"role": "system", "content": prompt.system_instruction}
         ]
-        
+
         for msg in prompt.chat_history:
             messages.append({"role": msg.role, "content": msg.content})
-            
+
         messages.append({"role": "user", "content": prompt.user_prompt})
 
         payload: dict[str, Any] = {
@@ -83,7 +83,7 @@ class OllamaLLMGateway:
             "messages": messages,
             "stream": False # We must buffer the entire JSON response to validate it, no partial streams
         }
-        
+
         if self.strict_json:
             payload["format"] = self.json_schema
 
@@ -95,23 +95,26 @@ class OllamaLLMGateway:
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as e:
-            raise LLMGenerationError(f"HTTP Error communicating with Ollama: {e}")
+            raise LLMGenerationError(f"HTTP Error communicating with Ollama: {e}") from e
         except Exception as e:
-             raise LLMGenerationError(f"Unexpected connection error with Ollama: {e}")
+            raise LLMGenerationError(f"Unexpected connection error with Ollama: {e}") from e
 
         latency_ms = (time.perf_counter() - start_time) * 1000.0
-        
+
         message_content = data.get("message", {}).get("content", "")
-        
+
         # Validate JSON is well-formed; the engine handles structural validation
         # (including refusal detection and sql/refused contract enforcement).
         if self.strict_json:
             try:
                 json.loads(message_content)
-            except json.JSONDecodeError:
-                raise LLMGenerationError(f"Ollama failed to return valid JSON. Raw output: {message_content[:100]}...", raw_response=message_content)
+            except json.JSONDecodeError as e:
+                raise LLMGenerationError(
+                    f"Ollama failed to return valid JSON. Raw output: {message_content[:100]}...",
+                    raw_response=message_content,
+                ) from e
         final_text = message_content
-            
+
         # Ollama telemetry
         prompt_eval_count = data.get("prompt_eval_count", 0)
         eval_count = data.get("eval_count", 0)

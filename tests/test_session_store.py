@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.compiler.models import FilteredSchema, SessionQueryContext
-from app.compiler.session_store import SessionStore, _LOCAL_MAX
+from app.compiler.session_store import _LOCAL_MAX, SessionStore
 
 
 def _ctx(sql: str = "SELECT 1", ts: float | None = None) -> SessionQueryContext:

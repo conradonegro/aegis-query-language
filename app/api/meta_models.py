@@ -1,24 +1,23 @@
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-# SQLite (used in tests) doesn't support schemas. Conditionally strip it.
-_SCHEMA: str | None = None if os.getenv("TESTING") == "true" else "aegis_meta"
-
-from sqlalchemy import (
+from sqlalchemy import (  # noqa: E402
     Boolean,
-    Column,
     DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
-    String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import JSONB, UUID  # noqa: E402
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship  # noqa: E402
+
+# SQLite (used in tests) doesn't support schemas. Conditionally strip it.
+_SCHEMA: str | None = None if os.getenv("TESTING") == "true" else "aegis_meta"
+
 
 class Base(DeclarativeBase):
     pass
@@ -33,13 +32,16 @@ class MetadataVersion(Base):
 
     version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     registry_hash: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Enum("draft", "pending_review", "active", "archived", name="version_status", schema="aegis_meta"), default="draft")
+    status: Mapped[str] = mapped_column(
+        Enum("draft", "pending_review", "active", "archived", name="version_status", schema="aegis_meta"),
+        default="draft",
+    )
     created_by: Mapped[str] = mapped_column(Text, default="system")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     approved_by: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime)
     change_reason: Mapped[str | None] = mapped_column(Text)
-    
+
     # Relationships
     tables = relationship("MetadataTable", back_populates="version", cascade="all, delete-orphan")
     columns = relationship("MetadataColumn", back_populates="version", cascade="all, delete-orphan")
@@ -55,7 +57,7 @@ class MetadataTable(Base):
     description: Mapped[str | None] = mapped_column(Text)
     tenant_id: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     __table_args__ = (
         UniqueConstraint("version_id", "alias", name="uq_table_alias"),
@@ -77,13 +79,13 @@ class MetadataColumn(Base):
     real_name: Mapped[str] = mapped_column(Text, nullable=False)
     alias: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    
+
     data_type: Mapped[str] = mapped_column(Text, nullable=False)
     is_nullable: Mapped[bool] = mapped_column(Boolean, default=True)
     is_primary_key: Mapped[bool] = mapped_column(Boolean, default=False)
     is_unique: Mapped[bool] = mapped_column(Boolean, default=False)
     is_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
-    
+
     allowed_in_select: Mapped[bool] = mapped_column(Boolean, default=False)
     allowed_in_filter: Mapped[bool] = mapped_column(Boolean, default=False)
     allowed_in_join: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -108,15 +110,19 @@ class MetadataRelationship(Base):
     __tablename__ = "metadata_relationships"
     relationship_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("aegis_meta.metadata_versions.version_id"))
-    
+
     source_table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     source_column_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     target_table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     target_column_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
 
-    relationship_type: Mapped[str] = mapped_column(Enum("fk", "logical", "denormalized", name="rel_type", schema="aegis_meta"))
-    cardinality: Mapped[str] = mapped_column(Enum("1:1", "1:n", "n:1", "n:m", name="cardinality_type", schema="aegis_meta", default="1:n"))
-    
+    relationship_type: Mapped[str] = mapped_column(
+        Enum("fk", "logical", "denormalized", name="rel_type", schema="aegis_meta")
+    )
+    cardinality: Mapped[str] = mapped_column(
+        Enum("1:1", "1:n", "n:1", "n:m", name="cardinality_type", schema="aegis_meta", default="1:n")
+    )
+
     bidirectional: Mapped[bool] = mapped_column(Boolean, default=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -145,10 +151,12 @@ class MetadataAudit(Base):
     audit_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     actor: Mapped[str] = mapped_column(Text, nullable=False)
-    action: Mapped[str] = mapped_column(Enum("create", "update", "approve", "deploy", "revoke", name="audit_action", schema="aegis_meta"))
+    action: Mapped[str] = mapped_column(
+        Enum("create", "update", "approve", "deploy", "revoke", name="audit_action", schema="aegis_meta")
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
     # Cryptographic WORM Chaining
     previous_hash: Mapped[str | None] = mapped_column(Text)
     row_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -168,9 +176,9 @@ class CompiledRegistryArtifact(Base):
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("aegis_meta.metadata_versions.version_id"), unique=True)
     artifact_blob: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     artifact_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    compiled_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    compiled_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     compiler_version: Mapped[str] = mapped_column(Text)
-    
+
     # Cryptographic HMAC Verification
     signature: Mapped[str | None] = mapped_column(Text)
     signature_algo: Mapped[str] = mapped_column(Text, default="hmac-sha256-v1")
@@ -187,9 +195,11 @@ class ChatSession(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="default_tenant")
     user_id: Mapped[str] = mapped_column(Text, nullable=False, default="api_user")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
-    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.sequence_number")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+    messages = relationship(
+        "ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.sequence_number"
+    )
 
 
 class ChatMessage(Base):
@@ -197,7 +207,7 @@ class ChatMessage(Base):
     Atomic ordered log of interaction within a particular session.
     """
     __tablename__ = "chat_messages"
-    
+
     __table_args__ = (
         UniqueConstraint("session_id", "sequence_number", name="uq_session_sequence"),
         {"schema": _SCHEMA} if _SCHEMA else {}
@@ -208,17 +218,17 @@ class ChatMessage(Base):
         ForeignKey(f"{_SCHEMA}.chat_sessions.session_id" if _SCHEMA else "chat_sessions.session_id")
     )
     sequence_number: Mapped[int] = mapped_column(nullable=False)
-    
+
     role: Mapped[str] = mapped_column(
         Enum("user", "assistant", "system", name="chat_role", schema=_SCHEMA),
         nullable=False
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    
+
     # Provider Context
     provider_id: Mapped[str | None] = mapped_column(Text)  # e.g., 'ollama:llama3', 'openai:gpt-4o'
     prompt_tokens: Mapped[int | None] = mapped_column()
     completion_tokens: Mapped[int | None] = mapped_column()
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
 
     session = relationship("ChatSession", back_populates="messages")

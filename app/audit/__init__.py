@@ -1,11 +1,7 @@
 # Public API for app.audit
 
-from .models import (
-    QueryAuditEvent
-)
-from .interfaces import (
-    QueryAuditSink
-)
+from .interfaces import QueryAuditSink
+from .models import QueryAuditEvent
 
 __all__ = [
     "QueryAuditEvent",

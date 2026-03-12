@@ -2,8 +2,8 @@
 import pytest
 
 from app.compiler import ExecutableQuery
-from app.execution.executor import ExecutionEngine
 from app.execution import ExecutionContext
+from app.execution.executor import ExecutionEngine
 
 
 @pytest.mark.asyncio

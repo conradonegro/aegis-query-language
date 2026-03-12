@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: C901
     from app.steward.loader import RegistryLoader
 
     # Initialize Explicit Architectural Roles
@@ -80,10 +80,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     secure_registry_admin_db_url = _secure_url(registry_admin_db_url, "user_aegis_registry_admin")
     secure_runtime_db_url = _secure_url(runtime_db_url, "user_aegis_runtime")
 
-    app.state.registry_runtime_session_factory = async_sessionmaker(create_async_engine(secure_registry_runtime_db_url), expire_on_commit=False)
-    app.state.steward_session_factory = async_sessionmaker(create_async_engine(secure_steward_db_url), expire_on_commit=False)
-    app.state.registry_admin_session_factory = async_sessionmaker(create_async_engine(secure_registry_admin_db_url), expire_on_commit=False)
-    app.state.runtime_session_factory = async_sessionmaker(create_async_engine(secure_runtime_db_url), expire_on_commit=False)
+    app.state.registry_runtime_session_factory = async_sessionmaker(
+        create_async_engine(secure_registry_runtime_db_url), expire_on_commit=False
+    )
+    app.state.steward_session_factory = async_sessionmaker(
+        create_async_engine(secure_steward_db_url), expire_on_commit=False
+    )
+    app.state.registry_admin_session_factory = async_sessionmaker(
+        create_async_engine(secure_registry_admin_db_url), expire_on_commit=False
+    )
+    app.state.runtime_session_factory = async_sessionmaker(
+        create_async_engine(secure_runtime_db_url), expire_on_commit=False
+    )
 
     if os.getenv("TESTING") == "true":
         logger.info("[*] Testing mode detected: Seeding deterministic static RegistrySchema bounds")
@@ -95,10 +103,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     description="User details",
                     physical_target="users",
                     columns=[
-                        AbstractColumnDef(alias="id", description="PK", safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True), physical_target="id"),
-                        AbstractColumnDef(alias="name", description="Name", safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True), physical_target="name"),
-                        AbstractColumnDef(alias="active", description="Active", safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True), physical_target="active"),
-                        AbstractColumnDef(alias="created_at", description="Creation", safety=SafetyClassification(allowed_in_select=True), physical_target="created_at")
+                        AbstractColumnDef(
+                            alias="id", description="PK",
+                            safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
+                            physical_target="id",
+                        ),
+                        AbstractColumnDef(
+                            alias="name", description="Name",
+                            safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
+                            physical_target="name",
+                        ),
+                        AbstractColumnDef(
+                            alias="active", description="Active",
+                            safety=SafetyClassification(allowed_in_where=True, allowed_in_select=True),
+                            physical_target="active",
+                        ),
+                        AbstractColumnDef(
+                            alias="created_at", description="Creation",
+                            safety=SafetyClassification(allowed_in_select=True),
+                            physical_target="created_at",
+                        )
                     ]
                 ),
                 AbstractTableDef(
@@ -106,14 +130,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     description="Customer orders",
                     physical_target="orders",
                     columns=[
-                        AbstractColumnDef(alias="id", description="PK", safety=SafetyClassification(allowed_in_select=True), physical_target="id"),
-                        AbstractColumnDef(alias="user_id", description="FK", safety=SafetyClassification(allowed_in_where=True, join_participation_allowed=True), physical_target="user_id"),
-                        AbstractColumnDef(alias="total_amount", description="Total", safety=SafetyClassification(allowed_in_select=True, aggregation_allowed=True), physical_target="total_amount")
+                        AbstractColumnDef(
+                            alias="id", description="PK",
+                            safety=SafetyClassification(allowed_in_select=True),
+                            physical_target="id",
+                        ),
+                        AbstractColumnDef(
+                            alias="user_id", description="FK",
+                            safety=SafetyClassification(allowed_in_where=True, join_participation_allowed=True),
+                            physical_target="user_id",
+                        ),
+                        AbstractColumnDef(
+                            alias="total_amount", description="Total",
+                            safety=SafetyClassification(allowed_in_select=True, aggregation_allowed=True),
+                            physical_target="total_amount",
+                        )
                     ]
                 )
             ],
             relationships=[
-                AbstractRelationshipDef(source_table="users", source_column="id", target_table="orders", target_column="user_id")
+                AbstractRelationshipDef(
+                    source_table="users", source_column="id", target_table="orders", target_column="user_id"
+                )
             ]
         )
     else:
@@ -174,10 +212,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Pre-warm the RAG with Semantic Schema Descriptions
     for table in schema.tables:
         if table.description:
-             vector_store.index_value(CategoricalValue(value=table.description, abstract_column=f"{table.alias}.{table.alias}", tenant_id="default_tenant"))
+            vector_store.index_value(CategoricalValue(
+                value=table.description,
+                abstract_column=f"{table.alias}.{table.alias}",
+                tenant_id="default_tenant",
+            ))
         for col in table.columns:
             if col.description:
-                 vector_store.index_value(CategoricalValue(value=col.description, abstract_column=f"{table.alias}.{col.alias}", tenant_id="default_tenant"))
+                vector_store.index_value(CategoricalValue(
+                    value=col.description,
+                    abstract_column=f"{table.alias}.{col.alias}",
+                    tenant_id="default_tenant",
+                ))
 
     app.state.vector_store = vector_store
     app.state.compiler.set_vector_store(vector_store)

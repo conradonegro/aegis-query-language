@@ -1,11 +1,6 @@
 # Public API for app.execution
-from .models import (
-    ExecutionContext,
-    QueryResult
-)
-from .interfaces import (
-    ExecutionLayer
-)
+from .interfaces import ExecutionLayer
+from .models import ExecutionContext, QueryResult
 
 __all__ = [
     "ExecutionContext",

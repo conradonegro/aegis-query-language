@@ -3,9 +3,8 @@ from app.compiler.parser import SQLParser
 from app.compiler.safety import SafetyEngine
 from app.compiler.translator import DeterministicTranslator
 from app.steward import (
-    AbstractTableDef,
     AbstractColumnDef,
-    AbstractRelationshipDef,
+    AbstractTableDef,
     RegistrySchema,
     SafetyClassification,
 )

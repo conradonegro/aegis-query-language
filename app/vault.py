@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 import hvac  # type: ignore[import-untyped]
 from hvac.exceptions import VaultError  # type: ignore[import-untyped]
@@ -20,12 +20,12 @@ class SecretsManager(ABC):
     def get_database_password(self, role_name: str) -> str:
         """Fetch the database password for the given PostgreSQL role."""
         pass
-        
+
     @abstractmethod
     def get_signing_key(self, key_id: str) -> str:
         """Fetch the specific HMAC signing key."""
         pass
-        
+
     @abstractmethod
     def get_current_signing_key_id(self) -> str:
         """Fetch the active key ID used for signing new artifacts."""
@@ -58,10 +58,10 @@ class EnvFallbackProvider(SecretsManager):
         if role_name not in mapping:
             raise VaultMissingSecretError(f"No fallback password mapped for role {role_name}")
         return mapping[role_name]
-        
+
     def get_signing_key(self, key_id: str) -> str:
         return os.getenv("SIGNING_KEY_DEV", "aegis_dev_hmac_secret_key_001")
-        
+
     def get_current_signing_key_id(self) -> str:
         return os.getenv("SIGNING_KEY_ID_DEV", "dev-key-1")
 
@@ -85,12 +85,12 @@ class HashiCorpVaultProvider(SecretsManager):
         if not vault_addr.startswith("https://"):
             if os.getenv("TESTING") != "true" and os.getenv("ENVIRONMENT") == "production":
                 raise VaultConfigurationError("TLS required: VAULT_ADDR must strictly use HTTPS in production.")
-                
+
         self.vault_addr = vault_addr
         self.role_id = role_id
         self.secret_id = secret_id
         self.ttl_seconds = ttl_seconds
-        
+
         self.client = hvac.Client(url=self.vault_addr, verify=True) # Always strictly verify=True
 
         # Memory caches to avoid hitting Vault per HTTP request
@@ -122,16 +122,16 @@ class HashiCorpVaultProvider(SecretsManager):
             logger.info("Successfully refreshed Vault AppRole Lease.")
         except VaultError as e:
             logger.error(f"Failed to authenticate with Vault via AppRole: {e}")
-            raise VaultConfigurationError(f"Vault AppRole Auth Failed: {e}")
+            raise VaultConfigurationError(f"Vault AppRole Auth Failed: {e}") from e
 
     def _get_cached_secret(self, path: str, key_name: str) -> str:
         now = time.time()
-        
+
         cache_hit = self._secret_cache.get(path)
         if cache_hit and now < cache_hit["expires_at"]:
             if key_name in cache_hit["data"]:
                 return str(cache_hit["data"][key_name])
-                
+
         # Cache Miss or Expired -> Refetch
         self._authenticate()
         try:
@@ -139,21 +139,21 @@ class HashiCorpVaultProvider(SecretsManager):
             # Customizing mount_point can happen if user provides specialized mounts
             response = self.client.secrets.kv.v2.read_secret_version(path=path)
             data = response.get("data", {}).get("data", {})
-            
+
             # Cache the whole path response map
             self._secret_cache[path] = {
                 "data": data,
                 "expires_at": now + self.ttl_seconds
             }
-            
+
             if key_name not in data:
                 raise VaultMissingSecretError(f"Vault key '{key_name}' missing at KV path '{path}'.")
-                
+
             return str(data[key_name])
-            
+
         except VaultError as e:
             logger.error(f"Vault error reading '{path}': {e}")
-            raise VaultMissingSecretError(f"Failed fetching secret {path} -> {key_name}: {e}")
+            raise VaultMissingSecretError(f"Failed fetching secret {path} -> {key_name}: {e}") from e
 
     def get_database_password(self, role_name: str) -> str:
         """
@@ -161,14 +161,14 @@ class HashiCorpVaultProvider(SecretsManager):
         Expects KV v2 format: 'aegis/database/credentials' where keys are user roles.
         """
         return self._get_cached_secret(path="aegis/database/credentials", key_name=role_name)
-        
+
     def get_signing_key(self, key_id: str) -> str:
         """
         Retrieves specific HMAC keys used for compiled registry signature verification.
         Expects KV v2 format: 'aegis/artifacts/keys'
         """
         return self._get_cached_secret(path="aegis/artifacts/keys", key_name=key_id)
-        
+
     def get_current_signing_key_id(self) -> str:
         """
         Retrieves the globally promoted active key ID.
@@ -192,24 +192,27 @@ def get_secrets_manager() -> SecretsManager:
     Fails safely natively depending on explicit Provider flags.
     """
     provider_type = os.getenv("SECRETS_PROVIDER", "env").lower()
-    
+
     if provider_type == "vault":
         vault_addr = os.environ.get("VAULT_ADDR")
         role_id = os.environ.get("VAULT_APPROLE_ROLE_ID")
         secret_id = os.environ.get("VAULT_APPROLE_SECRET_ID")
-        
+
         if not (vault_addr and role_id and secret_id):
             # Deliberately crash Boot natively if AppRole isn't provided!
-            raise VaultConfigurationError("SECRETS_PROVIDER is 'vault' but VAULT_ADDR, VAULT_APPROLE_ROLE_ID or VAULT_APPROLE_SECRET_ID are missing.")
+            raise VaultConfigurationError(
+                "SECRETS_PROVIDER is 'vault' but VAULT_ADDR, VAULT_APPROLE_ROLE_ID"
+                " or VAULT_APPROLE_SECRET_ID are missing."
+            )
 
         # Do not trap connection errors natively here: allow it to crash the process violently per Security Guidelines
         return HashiCorpVaultProvider(vault_addr=vault_addr, role_id=role_id, secret_id=secret_id)
-        
+
     elif provider_type == "env":
         # Block ENV usage in prod
         if os.getenv("ENVIRONMENT") == "production":
             raise VaultConfigurationError("CRITICAL: Cannot use 'env' secrets provider in 'production' environments.")
         return EnvFallbackProvider()
-        
+
     else:
         raise VaultConfigurationError(f"Unknown SECRETS_PROVIDER '{provider_type}'")

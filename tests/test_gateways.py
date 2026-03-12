@@ -15,11 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from app.compiler.models import LLMResult, PromptEnvelope
-from app.compiler.ollama import LLMGenerationError
-from app.compiler.openai_gateway import OpenAILLMGateway
 from app.compiler.anthropic_gateway import AnthropicLLMGateway
 from app.compiler.google_gateway import GoogleLLMGateway
+from app.compiler.models import PromptEnvelope
+from app.compiler.ollama import LLMGenerationError
+from app.compiler.openai_gateway import OpenAILLMGateway
 from app.compiler.xai_gateway import XAILLMGateway
 
 

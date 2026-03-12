@@ -1,11 +1,12 @@
 import json
-import pytest
 from unittest.mock import AsyncMock, patch
-import httpx
 
-from app.compiler.models import PromptEnvelope
-from app.compiler.ollama import OllamaLLMGateway, LLMGenerationError
+import httpx
+import pytest
+
 from app.compiler.gateway import MockLLMGateway
+from app.compiler.models import PromptEnvelope
+from app.compiler.ollama import LLMGenerationError, OllamaLLMGateway
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def build_mock_response(content_str: str, status_code: int = 200) -> AsyncMock:
         "prompt_eval_count": 10,
         "eval_count": 20
     }
-    
+
     if status_code >= 400:
         mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
             "Error", request=AsyncMock(), response=mock_resp
@@ -39,11 +40,11 @@ def build_mock_response(content_str: str, status_code: int = 200) -> AsyncMock:
 async def test_ollama_gateway_success(mock_post, prompt_envelope):
     """Test valid strict JSON generation succeeds and extracts SQL."""
     gateway = OllamaLLMGateway(strict_json=True)
-    
+
     # Mock Ollama returning exactly what we asked for
     valid_json_response = json.dumps({"sql": "SELECT * FROM users"})
     mock_post.return_value = build_mock_response(valid_json_response)
-    
+
     result = await gateway.generate(prompt_envelope)
 
     assert result.raw_text == json.dumps({"sql": "SELECT * FROM users"})
@@ -51,23 +52,23 @@ async def test_ollama_gateway_success(mock_post, prompt_envelope):
     assert result.prompt_tokens == 10
     assert result.completion_tokens == 20
     assert result.latency_ms > 0
-    
+
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
 async def test_ollama_gateway_invalid_json_fails_strictly(mock_post, prompt_envelope):
     """Test the 'never let JSON-mode failure become silent success' rule."""
     gateway = OllamaLLMGateway(strict_json=True)
-    
+
     # Mock Ollama hallucinating markdown or broken JSON
     broken_json_response = "```json\n { sql: SELECT * FROM users \n```"
     mock_post.return_value = build_mock_response(broken_json_response)
-    
+
     with pytest.raises(LLMGenerationError) as exc:
         await gateway.generate(prompt_envelope)
-        
+
     assert "failed to return valid json" in str(exc.value).lower()
-    
+
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
@@ -86,7 +87,7 @@ async def test_ollama_gateway_passes_through_non_sql_json(mock_post, prompt_enve
 
     # Gateway returns the raw JSON; engine handles structure validation
     assert result.raw_text == wrong_schema_response
-    
+
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
@@ -107,7 +108,7 @@ async def test_ollama_gateway_passes_through_multi_statement_json(mock_post, pro
 
     # Gateway returns raw JSON; SQLParser enforces single-statement rule
     assert result.raw_text == multi_statement_response
-    
+
 
 @pytest.mark.asyncio
 @patch("app.compiler.ollama.OllamaLLMGateway.generate")
@@ -118,7 +119,7 @@ async def test_gateway_side_by_side_interface(mock_generate, ollama_generate, pr
     Both gateways must implement the exact same LLMGatewayProtocol and return LLMResult.
     """
     gateways = [MockLLMGateway(), OllamaLLMGateway()]
-    
+
     for gw in gateways:
         assert hasattr(gw, "generate")
         # In a real integration test, we would hit both and assert parser equivalence

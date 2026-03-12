@@ -1,21 +1,21 @@
 """Init aegis_meta metadata schema
 
 Revision ID: 74afd38ce207
-Revises: 
+Revises:
 Create Date: 2026-03-04 01:14:07.005848
 
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '74afd38ce207'
-down_revision: Union[str, Sequence[str], None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -25,7 +25,9 @@ def upgrade() -> None:
     sa.Column('audit_id', sa.UUID(), nullable=False),
     sa.Column('version_id', sa.UUID(), nullable=True),
     sa.Column('actor', sa.Text(), nullable=False),
-    sa.Column('action', sa.Enum('create', 'update', 'approve', 'deploy', 'revoke', name='audit_action', schema='aegis_meta'), nullable=False),
+    sa.Column('action', sa.Enum(
+        'create', 'update', 'approve', 'deploy', 'revoke', name='audit_action', schema='aegis_meta'
+    ), nullable=False),
     sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('timestamp', sa.DateTime(), nullable=False),
     sa.PrimaryKeyConstraint('audit_id'),
@@ -34,7 +36,9 @@ def upgrade() -> None:
     op.create_table('metadata_versions',
     sa.Column('version_id', sa.UUID(), nullable=False),
     sa.Column('registry_hash', sa.Text(), nullable=True),
-    sa.Column('status', sa.Enum('draft', 'pending_review', 'active', 'archived', name='version_status', schema='aegis_meta'), nullable=False),
+    sa.Column('status', sa.Enum(
+        'draft', 'pending_review', 'active', 'archived', name='version_status', schema='aegis_meta'
+    ), nullable=False),
     sa.Column('created_by', sa.Text(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
     sa.Column('approved_by', sa.Text(), nullable=True),
@@ -88,7 +92,10 @@ def upgrade() -> None:
     sa.Column('allowed_in_filter', sa.Boolean(), nullable=False),
     sa.Column('allowed_in_join', sa.Boolean(), nullable=False),
     sa.Column('safety_classification', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.ForeignKeyConstraint(['version_id', 'table_id'], ['aegis_meta.metadata_tables.version_id', 'aegis_meta.metadata_tables.table_id'], ),
+    sa.ForeignKeyConstraint(
+        ['version_id', 'table_id'],
+        ['aegis_meta.metadata_tables.version_id', 'aegis_meta.metadata_tables.table_id'],
+    ),
     sa.ForeignKeyConstraint(['version_id'], ['aegis_meta.metadata_versions.version_id'], ),
     sa.PrimaryKeyConstraint('column_id'),
     sa.UniqueConstraint('version_id', 'column_id', name='uq_col_composite_id'),
@@ -103,12 +110,22 @@ def upgrade() -> None:
     sa.Column('source_column_id', sa.UUID(), nullable=False),
     sa.Column('target_table_id', sa.UUID(), nullable=False),
     sa.Column('target_column_id', sa.UUID(), nullable=False),
-    sa.Column('relationship_type', sa.Enum('fk', 'logical', 'denormalized', name='rel_type', schema='aegis_meta'), nullable=False),
-    sa.Column('cardinality', sa.Enum('1:1', '1:n', 'n:1', 'n:m', name='cardinality_type', schema='aegis_meta'), nullable=False),
+    sa.Column('relationship_type', sa.Enum(
+        'fk', 'logical', 'denormalized', name='rel_type', schema='aegis_meta'
+    ), nullable=False),
+    sa.Column('cardinality', sa.Enum(
+        '1:1', '1:n', 'n:1', 'n:m', name='cardinality_type', schema='aegis_meta'
+    ), nullable=False),
     sa.Column('bidirectional', sa.Boolean(), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
-    sa.ForeignKeyConstraint(['version_id', 'source_column_id'], ['aegis_meta.metadata_columns.version_id', 'aegis_meta.metadata_columns.column_id'], ),
-    sa.ForeignKeyConstraint(['version_id', 'target_column_id'], ['aegis_meta.metadata_columns.version_id', 'aegis_meta.metadata_columns.column_id'], ),
+    sa.ForeignKeyConstraint(
+        ['version_id', 'source_column_id'],
+        ['aegis_meta.metadata_columns.version_id', 'aegis_meta.metadata_columns.column_id'],
+    ),
+    sa.ForeignKeyConstraint(
+        ['version_id', 'target_column_id'],
+        ['aegis_meta.metadata_columns.version_id', 'aegis_meta.metadata_columns.column_id'],
+    ),
     sa.ForeignKeyConstraint(['version_id'], ['aegis_meta.metadata_versions.version_id'], ),
     sa.PrimaryKeyConstraint('relationship_id'),
     schema='aegis_meta'

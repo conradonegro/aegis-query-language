@@ -178,9 +178,18 @@ async def generate_query(
             sequence_number=last_seq + 2,
             role="assistant",
             content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
-            provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
-            prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
-            completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
+            provider_id=(
+                executable.explainability.get("llm", {}).get("provider")
+                if executable.explainability else payload.provider_id
+            ),
+            prompt_tokens=(
+                executable.explainability.get("llm", {}).get("prompt_tokens")
+                if executable.explainability else None
+            ),
+            completion_tokens=(
+                executable.explainability.get("llm", {}).get("completion_tokens")
+                if executable.explainability else None
+            ),
         )
         session.add_all([user_msg, assistant_msg])
         await session.commit()
@@ -251,9 +260,18 @@ async def execute_query(
             # cannot learn physical column/table names from its own prior responses.
             # abstract_sql is always populated by the compiler engine regardless of explain flag.
             content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
-            provider_id=executable.explainability.get("llm", {}).get("provider") if executable.explainability else payload.provider_id,
-            prompt_tokens=executable.explainability.get("llm", {}).get("prompt_tokens") if executable.explainability else None,
-            completion_tokens=executable.explainability.get("llm", {}).get("completion_tokens") if executable.explainability else None
+            provider_id=(
+                executable.explainability.get("llm", {}).get("provider")
+                if executable.explainability else payload.provider_id
+            ),
+            prompt_tokens=(
+                executable.explainability.get("llm", {}).get("prompt_tokens")
+                if executable.explainability else None
+            ),
+            completion_tokens=(
+                executable.explainability.get("llm", {}).get("completion_tokens")
+                if executable.explainability else None
+            ),
         )
         session.add_all([user_msg, assistant_msg])
         await session.commit()
@@ -469,10 +487,18 @@ async def compile_metadata_version(
         vector_store = InMemoryVectorStore()
         for table in (schema.tables if schema is not None else []):
             if table.description:
-                vector_store.index_value(CategoricalValue(value=table.description, abstract_column=f"{table.alias}.{table.alias}", tenant_id="default_tenant"))
+                vector_store.index_value(CategoricalValue(
+                    value=table.description,
+                    abstract_column=f"{table.alias}.{table.alias}",
+                    tenant_id="default_tenant",
+                ))
             for col in table.columns:
                 if col.description:
-                    vector_store.index_value(CategoricalValue(value=col.description, abstract_column=f"{table.alias}.{col.alias}", tenant_id="default_tenant"))
+                    vector_store.index_value(CategoricalValue(
+                        value=col.description,
+                        abstract_column=f"{table.alias}.{col.alias}",
+                        tenant_id="default_tenant",
+                    ))
 
         request.app.state.vector_store = vector_store
         request.app.state.compiler.set_vector_store(vector_store)
@@ -561,9 +587,12 @@ async def update_metadata_table(
     if not table:
          raise HTTPException(status_code=404, detail="Table not found")
 
-    if payload.alias is not None: table.alias = payload.alias
-    if payload.description is not None: table.description = payload.description
-    if payload.active is not None: table.active = payload.active
+    if payload.alias is not None:
+        table.alias = payload.alias
+    if payload.description is not None:
+        table.description = payload.description
+    if payload.active is not None:
+        table.active = payload.active
 
     await session.commit()
     return _map_table(table)
@@ -581,11 +610,16 @@ async def update_metadata_column(
     if not col:
          raise HTTPException(status_code=404, detail="Column not found")
 
-    if payload.alias is not None: col.alias = payload.alias
-    if payload.description is not None: col.description = payload.description
-    if payload.allowed_in_select is not None: col.allowed_in_select = payload.allowed_in_select
-    if payload.allowed_in_filter is not None: col.allowed_in_filter = payload.allowed_in_filter
-    if payload.allowed_in_join is not None: col.allowed_in_join = payload.allowed_in_join
+    if payload.alias is not None:
+        col.alias = payload.alias
+    if payload.description is not None:
+        col.description = payload.description
+    if payload.allowed_in_select is not None:
+        col.allowed_in_select = payload.allowed_in_select
+    if payload.allowed_in_filter is not None:
+        col.allowed_in_filter = payload.allowed_in_filter
+    if payload.allowed_in_join is not None:
+        col.allowed_in_join = payload.allowed_in_join
 
     await session.commit()
     return _map_col(col)

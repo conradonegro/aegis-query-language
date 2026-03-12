@@ -16,7 +16,7 @@ def test_api_query_request_validation() -> None:
     req = QueryRequest(intent="find users", schema_hints=["use active users"])
     assert req.intent == "find users"
     assert "use active users" in req.schema_hints
-    
+
     # Missing required intent
     with pytest.raises(ValidationError):
         QueryRequest(schema_hints=[])
@@ -30,7 +30,7 @@ def test_api_generate_response_validation() -> None:
         latency_ms=15.5
     )
     assert res.query_id == "123"
-    
+
     # Frozen instances cannot be mutated
     with pytest.raises(ValidationError):
         res.latency_ms = 20.0  # type: ignore
@@ -58,7 +58,7 @@ def test_execution_context_validation() -> None:
     ctx = ExecutionContext(tenant_id="tenant_a", user_id="user_b")
     assert ctx.tenant_id == "tenant_a"
     assert ctx.statement_timeout_ms == 5000  # Default enforce
-    
+
     # Missing required tenant tracking
     with pytest.raises(ValidationError):
         ExecutionContext(user_id="just_user")

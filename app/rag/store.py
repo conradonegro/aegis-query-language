@@ -29,11 +29,11 @@ class InMemoryVectorStore(VectorStoreProtocol):
             )
 
         query_normalized = query.lower().strip()
-        
+
         matches: list[ValueMatch] = []
         for cat_val in tenant_values:
             val_normalized = cat_val.value.lower().strip()
-            
+
             # Substring match is strong confidence
             if val_normalized in query_normalized.split(): # Exact word match gets 1.0
                 score = 1.0
@@ -42,7 +42,7 @@ class InMemoryVectorStore(VectorStoreProtocol):
             else:
                 # Fallback to difflib
                 score = difflib.SequenceMatcher(None, val_normalized, query_normalized).ratio()
-                
+
             if score >= threshold:
                 matches.append(ValueMatch(categorical_value=cat_val, similarity_score=score))
 

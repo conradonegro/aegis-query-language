@@ -25,7 +25,7 @@ class JSONAuditLogger:
             logger.info(json_line)
         except Exception as e:
             # We fall back to standard error logger if extreme serialization
-            # failure happens but NEVER raise exceptions that bubble up to 
+            # failure happens but NEVER raise exceptions that bubble up to
             # disrupt the user API flow.
             # Using repr string fallback to capture what happened
             fallback = (

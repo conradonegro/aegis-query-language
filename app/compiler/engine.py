@@ -61,8 +61,15 @@ class CompilerEngine:
     def set_vector_store(self, store: VectorStoreProtocol) -> None:
         self.vector_store = store
 
-    async def compile(
-        self, intent: UserIntent, schema: RegistrySchema, hints: PromptHints, explain: bool = False, chat_history: list[ChatHistoryItem] | None = None, provider_id: str | None = None, session_id: str | None = None
+    async def compile(  # noqa: C901
+        self,
+        intent: UserIntent,
+        schema: RegistrySchema,
+        hints: PromptHints,
+        explain: bool = False,
+        chat_history: list[ChatHistoryItem] | None = None,
+        provider_id: str | None = None,
+        session_id: str | None = None,
     ) -> ExecutableQuery:
         """
         Executes the full pipeline.
@@ -71,11 +78,19 @@ class CompilerEngine:
         start = time.perf_counter()
 
         explain_context: dict[str, Any] = {
-            "rag": {"outcome": "NOT_EVALUATED", "matches": [], "scores": [], "reason": "No vector store or execution required"},
+            "rag": {
+                "outcome": "NOT_EVALUATED", "matches": [], "scores": [],
+                "reason": "No vector store or execution required",
+            },
             "schema_filter": {"included_aliases": [], "excluded_aliases": [], "reasons": []},
-            "prompt": {"system_prompt_redacted": True, "user_prompt": intent.natural_language_query, "raw_system": "", "raw_user": ""},
+            "prompt": {
+                "system_prompt_redacted": True,
+                "user_prompt": intent.natural_language_query,
+                "raw_system": "",
+                "raw_user": "",
+            },
             "llm": {"provider": "pending", "model": "pending", "latency_ms": 0.0, "raw_response": ""},
-            "translation": {"llm_abstract_query": "", "parameterized_sql": "", "parameters": {}}
+            "translation": {"llm_abstract_query": "", "parameterized_sql": "", "parameters": {}},
         }
 
         try:
@@ -85,7 +100,9 @@ class CompilerEngine:
 
             # Check detector if applicable
             if prior_context and hasattr(self.schema_filter, "is_follow_up"):
-                is_follow_up = self.schema_filter.is_follow_up(intent, prior_context.last_filtered_schema, full_schema=schema)
+                is_follow_up = self.schema_filter.is_follow_up(
+                    intent, prior_context.last_filtered_schema, full_schema=schema
+                )
 
             included_cols = RAGIncludedColumns(columns=[])
 
@@ -99,11 +116,16 @@ class CompilerEngine:
             else:
                 # 1. Evaluate RAG First
                 if self.vector_store:
-                    rag_result = self.vector_store.search(intent.natural_language_query, tenant_id="default_tenant", limit=5)
+                    rag_result = self.vector_store.search(
+                        intent.natural_language_query, tenant_id="default_tenant", limit=5
+                    )
 
                     if rag_result.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH and rag_result.match:
                         match_val = rag_result.match.categorical_value
-                        hints.column_hints.append(f"Always consider value '{match_val.value}' maps to abstract column '{match_val.abstract_column}'")
+                        hints.column_hints.append(
+                            f"Always consider value '{match_val.value}' maps to abstract column"
+                            f" '{match_val.abstract_column}'"
+                        )
                         hints.rag_provenance = {
                             "rag_outcome": rag_result.outcome.value,
                             "rag_matched_value": match_val.value,
@@ -120,8 +142,14 @@ class CompilerEngine:
                     if hints.rag_provenance:
                         explain_context["rag"] = {
                             "outcome": hints.rag_provenance.get("rag_outcome", "UNKNOWN"),
-                            "matches": [hints.rag_provenance["rag_matched_value"]] if "rag_matched_value" in hints.rag_provenance else [],
-                            "scores": [hints.rag_provenance["rag_similarity_score"]] if "rag_similarity_score" in hints.rag_provenance else [],
+                            "matches": (
+                                [hints.rag_provenance["rag_matched_value"]]
+                                if "rag_matched_value" in hints.rag_provenance else []
+                            ),
+                            "scores": (
+                                [hints.rag_provenance["rag_similarity_score"]]
+                                if "rag_similarity_score" in hints.rag_provenance else []
+                            ),
                             "reason": hints.rag_provenance.get("rag_reason", "Single High Confidence Match Injected")
                         }
 
@@ -134,7 +162,9 @@ class CompilerEngine:
                 }
 
             # 3. Build Prompt Envelope
-            prompt_envelope = self.prompt_builder.build_prompt(intent, filtered_schema, hints, chat_history=chat_history)
+            prompt_envelope = self.prompt_builder.build_prompt(
+                intent, filtered_schema, hints, chat_history=chat_history
+            )
             explain_context["prompt"]["raw_system"] = prompt_envelope.system_instruction
             explain_context["prompt"]["raw_user"] = prompt_envelope.user_prompt
             explain_context["prompt"]["system_prompt_redacted"] = False
@@ -172,7 +202,7 @@ class CompilerEngine:
                         raise LLMGenerationError(
                             f"Invalid LLM response structure: {e}",
                             raw_response=raw_text,
-                        )
+                        ) from e
                     if llm_response.refused:
                         raise LLMGenerationError(
                             f"Request refused: {llm_response.reason or 'destructive or modifying intent'}.",
@@ -185,7 +215,9 @@ class CompilerEngine:
                 # Fallback to direct text if JSON parsing fails (e.g. if LLM ignored instructions)
                 abstract_sql = raw_text
                 if ";" in abstract_sql and len([s for s in abstract_sql.split(";") if s.strip()]) > 1:
-                    raise LLMGenerationError("Multi-statement SQL detected in fallback path.", raw_response=raw_text)
+                    raise LLMGenerationError(
+                        "Multi-statement SQL detected in fallback path.", raw_response=raw_text
+                    ) from None
 
             abstract_query = AbstractQuery(sql=abstract_sql)
             explain_context["translation"]["llm_abstract_query"] = abstract_query.sql
@@ -230,5 +262,5 @@ class CompilerEngine:
         except Exception as e:
             if explain:
                 explain_context["llm"]["raw_response"] = getattr(e, "raw_response", "")
-                setattr(e, "explainability", explain_context)
+                e.explainability = explain_context  # type: ignore[attr-defined]
             raise e

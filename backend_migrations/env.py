@@ -2,15 +2,12 @@ import asyncio
 import os
 from logging.config import fileConfig
 
-from sqlalchemy import pool
-import sqlalchemy
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
-
 from alembic import context
 from dotenv import load_dotenv
-
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.api.meta_models import Base
 from app.vault import get_secrets_manager
@@ -34,12 +31,12 @@ url_obj = make_url(db_url)
 if url_obj.get_dialect().name not in ["sqlite", "sqlite+aiosqlite"]:
     pwd = secrets_mgr.get_database_password("user_aegis_meta_owner")
     url_obj = url_obj.set(password=pwd)
-    
+
     if os.getenv("ENVIRONMENT") == "production":
         new_query = dict(url_obj.query)
         new_query["ssl"] = "require"
         url_obj = url_obj.set(query=new_query)
-        
+
 secure_db_url = url_obj.render_as_string(hide_password=False)
 config.set_main_option("sqlalchemy.url", secure_db_url)
 
@@ -87,7 +84,10 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         include_schemas=True,
-        include_name=lambda name, type_, parent_names: (type_ == "schema" and name == "aegis_meta") or (parent_names and parent_names["schema_name"] == "aegis_meta"),
+        include_name=lambda name, type_, parent_names: (
+            (type_ == "schema" and name == "aegis_meta")
+            or (parent_names and parent_names["schema_name"] == "aegis_meta")
+        ),
         version_table_schema="aegis_meta",
     )
     with context.begin_transaction():

@@ -4,7 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.api.models import TranslationRepair
-from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef
+from app.steward import AbstractRelationshipDef, AbstractTableDef
 
 
 class UserIntent(BaseModel):
@@ -22,13 +22,13 @@ class ValueMatchResult(BaseModel):
 
 class RAGIncludedColumns(BaseModel):
     """
-    STRICT INVARIANT PAYLOAD: 
-    This type explicitly wraps columns that were successfully extracted by the RAG 
-    Vector Engine. It enforces the compiler pipeline invariant that the SchemaFilter 
+    STRICT INVARIANT PAYLOAD:
+    This type explicitly wraps columns that were successfully extracted by the RAG
+    Vector Engine. It enforces the compiler pipeline invariant that the SchemaFilter
     will NEVER bypass rules for arbitrary user strings, only for fully validated RAG outcomes.
     """
     columns: list[str] = []
-    
+
 class FilteredSchema(BaseModel):
     version: str
     tables: list[AbstractTableDef]

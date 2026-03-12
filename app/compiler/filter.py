@@ -1,7 +1,7 @@
 import re
 
-from app.compiler.models import FilteredSchema, UserIntent, RAGIncludedColumns
-from app.steward import RegistrySchema, AbstractTableDef, AbstractColumnDef
+from app.compiler.models import FilteredSchema, RAGIncludedColumns, UserIntent
+from app.steward import AbstractTableDef, RegistrySchema
 
 
 class DeterministicSchemaFilter:
@@ -32,7 +32,9 @@ class DeterministicSchemaFilter:
             if a == b or (len(a) > 3 and len(b) > 3 and (a in b or b in a))
         )
 
-    def is_follow_up(self, intent: UserIntent, last_schema: FilteredSchema | None, full_schema: RegistrySchema | None = None) -> bool:
+    def is_follow_up(  # noqa: C901
+        self, intent: UserIntent, last_schema: FilteredSchema | None, full_schema: RegistrySchema | None = None
+    ) -> bool:
         """
         Determines strictly if the intent is a follow-up query relying on prior context.
         Checks intent tokens against BOTH the prior filtered schema AND the full registry
@@ -81,7 +83,9 @@ class DeterministicSchemaFilter:
 
         return False
 
-    def filter_schema(self, intent: UserIntent, schema: RegistrySchema, included_columns: RAGIncludedColumns | None = None) -> FilteredSchema:
+    def filter_schema(  # noqa: C901
+        self, intent: UserIntent, schema: RegistrySchema, included_columns: RAGIncludedColumns | None = None
+    ) -> FilteredSchema:
 
         intent_tokens = self._tokenize(intent.natural_language_query)
         forced_columns = set(included_columns.columns if included_columns else [])
@@ -91,22 +95,22 @@ class DeterministicSchemaFilter:
 
         # 1. First pass to find directly matched tables
         matched_tables = set()
-        
-        # 1a. RAG Matches are unconditionally promoted to root tables 
+
+        # 1a. RAG Matches are unconditionally promoted to root tables
         # (e.g., 'users.name' strictly promotes 'users')
         for fcol in forced_columns:
             if "." in fcol:
                 matched_tables.add(fcol.split(".")[0])
-                
+
         for table in schema.tables:
             table_tokens = self._tokenize(table.alias) | self._tokenize(table.description)
             table_overlap = self.token_match_score(intent_tokens, table_tokens)
-            
+
             col_overlap_total = 0
             for col in table.columns:
                 col_tokens = self._tokenize(col.alias) | self._tokenize(col.description)
                 col_overlap_total += self.token_match_score(intent_tokens, col_tokens)
-            
+
             if table_overlap >= self.cutoff_threshold or col_overlap_total >= self.cutoff_threshold:
                 matched_tables.add(table.alias)
 
@@ -117,7 +121,7 @@ class DeterministicSchemaFilter:
                 augmented_tables.add(rel.target_table)
             if rel.target_table in matched_tables:
                 augmented_tables.add(rel.source_table)
-                
+
         # 3. Determine FK columns for relationships where BOTH endpoints are in scope.
         # Scoping to augmented_tables avoids including FK columns that point to tables
         # the LLM was never shown (which would confuse the prompt and the JOIN validator).
@@ -136,20 +140,26 @@ class DeterministicSchemaFilter:
 
             table_tokens = self._tokenize(table.alias) | self._tokenize(table.description)
             table_overlap = self.token_match_score(intent_tokens, table_tokens)
-            
+
             allowed_columns = []
             for col in table.columns:
                 col_tokens = self._tokenize(col.alias) | self._tokenize(col.description)
                 col_overlap = self.token_match_score(intent_tokens, col_tokens)
-                
+
                 full_col_name = f"{table.alias}.{col.alias}"
-                
-                # We keep the column if the column matches OR if the parent table strongly matches OR if it's a join key OR if explicitly forced by RAG
-                if col_overlap >= self.cutoff_threshold or table_overlap >= self.cutoff_threshold or full_col_name in rel_columns or full_col_name in forced_columns:
+
+                # We keep the column if the column matches OR if the parent table strongly matches
+                # OR if it's a join key OR if explicitly forced by RAG
+                if (
+                    col_overlap >= self.cutoff_threshold
+                    or table_overlap >= self.cutoff_threshold
+                    or full_col_name in rel_columns
+                    or full_col_name in forced_columns
+                ):
                     allowed_columns.append(col)
                 else:
                     rejected_columns[full_col_name] = "Low token overlap and not a join key or RAG match"
-            
+
             if allowed_columns:
                 filtered_table = AbstractTableDef(
                     alias=table.alias,

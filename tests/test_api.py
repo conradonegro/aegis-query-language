@@ -1,11 +1,8 @@
-import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.api.models import ErrorResponse
 from app.api.router import get_compiler, get_executor
-from app.execution.interfaces import ExecutionLayer
-from app.execution.models import ExecutionContext, QueryResult
+from app.execution.models import QueryResult
+from app.main import app
 
 
 class SpyExecutionEngine:
@@ -27,28 +24,28 @@ def test_api_generate_boundary():
     Assert the execution engine is *never* called.
     """
     spy_engine = SpyExecutionEngine()
-    
+
     # Override the get_executor dependency to safely bypass startup overrides
     def override_executor():
         return spy_engine
-        
+
     app.dependency_overrides[get_executor] = override_executor
-    
+
     payload = {
         "intent": "Get Alice in the system",
         "schema_hints": []
     }
-    
+
     try:
         with TestClient(app) as test_client:
             response = test_client.post("/api/v1/query/generate", json=payload)
-            
+
         assert response.status_code == 200
         data = response.json()
-        
+
         assert "sql" in data
         assert "query_id" in data
-        
+
         # BOUNDARY ASSERTION: ExecutionEngine logic was entirely skipped.
         assert spy_engine.call_count == 0
     finally:
@@ -57,37 +54,37 @@ def test_api_generate_boundary():
 
 def test_api_error_shape():
     """
-    Test 2: Assert the Error API payload schema dynamically responds to failures 
+    Test 2: Assert the Error API payload schema dynamically responds to failures
     with a stable JSON interface (code, message, request_id).
     """
     from app.compiler.safety import SafetyViolationError
-    
+
     class MockCompilerRaise:
         async def compile(self, *args, **kwargs):
             raise SafetyViolationError("Mocked unsafe intent string detected.")
-            
+
     def override_compiler():
         return MockCompilerRaise()
-        
+
     app.dependency_overrides[get_compiler] = override_compiler
-    
+
     try:
         payload = {"intent": "DROP TABLE users;", "schema_hints": []}
         with TestClient(app) as test_client:
             response = test_client.post("/api/v1/query/generate", json=payload)
-            
+
         assert response.status_code == 403
         data = response.json()
-        
+
         # Schema Shape Assertions
         assert "code" in data
         assert "message" in data
         assert "request_id" in data
-        
+
         assert data["code"] == 403
         assert "Safety Violation:" in data["message"]
         assert data["request_id"] is None
-        
+
     finally:
         app.dependency_overrides.clear()
 
@@ -98,35 +95,35 @@ def test_api_execute_pipeline():
     Asserts standard ExecuteResponse schema payload is returned.
     """
     spy_engine = SpyExecutionEngine()
-    
+
     def override_executor():
         return spy_engine
-        
+
     app.dependency_overrides[get_executor] = override_executor
-    
+
     payload = {
         "intent": "Get Alice in the system",
         "schema_hints": []
     }
-    
+
     try:
         with TestClient(app) as test_client:
             response = test_client.post("/api/v1/query/execute", json=payload)
-            
+
         assert response.status_code == 200
         data = response.json()
-        
+
         # Schema Shape Assertions for ExecuteResponse
         assert "query_id" in data
         assert "results" in data
         assert "row_count" in data
         assert "execution_latency_ms" in data
-        
+
         # Verify the mock executor returned our mocked shape
         assert data["row_count"] == 1
         assert data["results"] == [{"count": 1}]
         assert "execution_latency_ms" in data
-        
+
         # BOUNDARY ASSERTION: ExecutionEngine WAS explicitly called this time.
         assert spy_engine.call_count == 1
     finally:

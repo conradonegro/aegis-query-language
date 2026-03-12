@@ -1,7 +1,7 @@
 from app.compiler import UserIntent, ValueMatchResult
 from app.steward import (
-    AbstractTableDef,
     AbstractColumnDef,
+    AbstractTableDef,
     RegistrySchema,
     SafetyClassification,
 )

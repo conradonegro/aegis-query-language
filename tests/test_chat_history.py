@@ -6,12 +6,11 @@ Validates that:
 3. The same session_id is honoured across subsequent requests.
 """
 import uuid
-from unittest import mock
-import pytest
+
 from fastapi.testclient import TestClient
 
-from app.main import app
 from app.api.router import get_compiler
+from app.main import app
 
 
 class MockCompilerTurnA:

@@ -1,4 +1,3 @@
-import pytest
 from fastapi.testclient import TestClient
 
 from app.api.router import get_compiler
@@ -19,21 +18,21 @@ def test_standard_exception_handler() -> None:
     class MockCrashCompiler:
         async def compile(self, *args, **kwargs):
             raise ValueError("Something unexpected exploded")
-            
+
     def override_compiler():
         return MockCrashCompiler()
-        
+
     app.dependency_overrides[get_compiler] = override_compiler
-    
+
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             response = client.post("/api/v1/query/generate", json={"intent": "test", "schema_hints": []})
-            
+
         assert response.status_code == 500
         data = response.json()
         assert data["code"] == 500
         assert data["message"] == "Internal Server Error"
-        
+
     finally:
         app.dependency_overrides.clear()
 

@@ -66,7 +66,7 @@ def test_parser_empty_sql_produces_null_tree() -> None:
 
 def test_parser_rejects_multi_statement() -> None:
     parser = SQLParser()
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match=r"."):
         parser.parse(AbstractQuery(sql="SELECT 1; SELECT 2"))
 
 

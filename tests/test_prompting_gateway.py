@@ -4,7 +4,7 @@ import pytest
 from app.compiler import FilteredSchema, PromptEnvelope, PromptHints, UserIntent
 from app.compiler.gateway import MockLLMGateway
 from app.compiler.prompting import PromptBuilder
-from app.steward import AbstractTableDef, AbstractColumnDef, SafetyClassification
+from app.steward import AbstractColumnDef, AbstractTableDef, SafetyClassification
 
 
 def test_prompt_builder() -> None:
@@ -16,7 +16,11 @@ def test_prompt_builder() -> None:
                 description="User accounts",
                 physical_target="auth.users",
                 columns=[
-                    AbstractColumnDef(alias="id", description="ID", safety=SafetyClassification(allowed_in_select=True), physical_target="auth.users.id")
+                    AbstractColumnDef(
+                        alias="id", description="ID",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="auth.users.id",
+                    )
                 ]
             )
         ],

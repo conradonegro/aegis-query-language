@@ -1,7 +1,6 @@
 import asyncio
 import os
 import uuid
-from typing import Any
 
 from dotenv import load_dotenv
 from sqlalchemy import text
@@ -40,24 +39,24 @@ async def discover_and_draft_metadata():
         )
         session.add(new_version)
         await session.commit()
-        
+
         target_version_id = new_version.version_id
         print(f"[*] Bootstrapping Draft Version: {target_version_id}")
 
         # 1. Scraping Core Tables and Columns natively!
         raw_columns_sql = text("""
-            SELECT 
+            SELECT
                 t.table_name,
                 c.column_name,
                 c.data_type,
                 c.is_nullable
             FROM information_schema.tables t
             JOIN information_schema.columns c ON t.table_name = c.table_name
-            WHERE t.table_schema = 'public' 
+            WHERE t.table_schema = 'public'
               AND t.table_type = 'BASE TABLE'
             ORDER BY t.table_name, c.ordinal_position;
         """)
-        
+
         raw_pk_sql = text("""
             SELECT
                 tc.table_name,
@@ -90,7 +89,7 @@ async def discover_and_draft_metadata():
 
         for tbl_name, col_name, dtype, is_null in raw_cols:
             is_pk = col_name in pk_lookup.get(tbl_name, set())
-            
+
             # Map Table Object
             if tbl_name not in table_map:
                 table_map[tbl_name] = MetadataTable(
@@ -100,7 +99,7 @@ async def discover_and_draft_metadata():
                     alias=tbl_name, # By default aliases match physical.
                     description=f"Auto-discovered table {tbl_name}"
                 )
-            
+
             table_obj = table_map[tbl_name]
 
             # Map Column Object
@@ -117,7 +116,7 @@ async def discover_and_draft_metadata():
                 allowed_in_filter=True,
                 allowed_in_join=True # Auto enable all defaults for baseline
             )
-            
+
             column_map[(tbl_name, col_name)] = col_obj
 
         # Dump to Session

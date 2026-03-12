@@ -2,10 +2,10 @@ import hashlib
 import hmac
 import json
 import secrets
-from typing import Any, Dict
+from typing import Any
 
 
-def get_canonical_json(payload: Dict[str, Any]) -> str:
+def get_canonical_json(payload: dict[str, Any]) -> str:
     """
     Deterministically serializes a dictionary into a JSON string.
     Keys are strictly sorted natively preventing identical data representations
@@ -20,7 +20,7 @@ def compute_audit_row_hash(previous_hash: str, canonical_payload: str, created_a
     """
     # previous_hash || '|' || canonical_payload || '|' || created_at
     # genesis row uses empty string for previous_hash natively.
-    
+
     raw_material = f"{previous_hash or ''}|{canonical_payload}|{created_at_iso}"
     return hashlib.sha256(raw_material.encode("utf-8")).hexdigest()
 
@@ -33,7 +33,7 @@ def compute_artifact_hmac_signature(signing_key: str, canonical_payload: str) ->
     # Output must be natively hex or base64. User specified hex via hdigest inside signature structure commonly.
     key_bytes = signing_key.encode("utf-8")
     payload_bytes = canonical_payload.encode("utf-8")
-    
+
     return hmac.new(key_bytes, payload_bytes, hashlib.sha256).hexdigest()
 
 

@@ -1,6 +1,7 @@
 import sys
 
-def scan_bird_sql(filepath):
+
+def scan_bird_sql(filepath):  # noqa: C901
     """
     Phase 1: Script Review Requirements
     - Identify encoding issues (Non-UTF8)
@@ -10,9 +11,9 @@ def scan_bird_sql(filepath):
     table_counts = {}
     current_table = None
     issues = []
-    
+
     print(f"Starting scan of {filepath}...")
-    
+
     try:
         with open(filepath, 'rb') as f:
             for line_no, raw_line in enumerate(f, 1):
@@ -22,7 +23,7 @@ def scan_bird_sql(filepath):
                 except UnicodeDecodeError as e:
                     issues.append(f"Line {line_no}: Non-UTF8 Character Detected - {str(e)}")
                     line = raw_line.decode('utf-8', errors='replace')
-                
+
                 # We are scanning for "COPY public.table_name" to track row insertions
                 # This operates between 2242 to 3900956 per the user constraints
                 if 2242 <= line_no <= 3900956:
@@ -33,15 +34,20 @@ def scan_bird_sql(filepath):
                             if current_table not in table_counts:
                                 table_counts[current_table] = 0
                         continue
-                    
+
                     # If we are inside a COPY block, count the rows
-                    if current_table and line.strip() and not line.startswith("--") and not line.startswith("\\.") and not line.startswith("COPY "):
+                    if (
+                        current_table and line.strip()
+                        and not line.startswith("--")
+                        and not line.startswith("\\.")
+                        and not line.startswith("COPY ")
+                    ):
                         table_counts[current_table] += 1
-                        
+
                     # Reset current_table when COPY block ends
                     if line.startswith("\\."):
                         current_table = None
-                
+
                 # Check for explicit owner references (schema agnostic) in the DDL ranges
                 if line_no < 2242 or line_no > 3900956:
                     if "xiaolongli" in line or "johndoe" in line or "OWNER TO" in line:
@@ -57,7 +63,7 @@ def scan_bird_sql(filepath):
     print("\n--- Row Counts per Table ---")
     for table, count in sorted(table_counts.items()):
         print(f"{table}: {count:,} rows")
-        
+
     print(f"\n--- Issues Detected ({len(issues)} logged) ---")
     for iss in issues[:20]:
         print(iss)

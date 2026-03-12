@@ -3,12 +3,13 @@ from unittest import mock
 
 import pytest
 
+from app.compiler.anthropic_gateway import AnthropicLLMGateway
+from app.compiler.google_gateway import GoogleLLMGateway
 from app.compiler.llm_factory import get_llm_gateway
 from app.compiler.ollama import OllamaLLMGateway
 from app.compiler.openai_gateway import OpenAILLMGateway
-from app.compiler.anthropic_gateway import AnthropicLLMGateway
-from app.compiler.google_gateway import GoogleLLMGateway
 from app.compiler.xai_gateway import XAILLMGateway
+
 
 def test_get_llm_gateway_ollama_default():
     with mock.patch.dict(os.environ, {}, clear=True):

@@ -1,5 +1,4 @@
 import logging
-import time
 from typing import Any
 
 from app.compiler.models import SessionQueryContext

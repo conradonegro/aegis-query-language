@@ -2,7 +2,7 @@ import os
 
 from jinja2 import Environment, FileSystemLoader
 
-from app.compiler.models import FilteredSchema, PromptEnvelope, PromptHints, UserIntent, ChatHistoryItem
+from app.compiler.models import ChatHistoryItem, FilteredSchema, PromptEnvelope, PromptHints, UserIntent
 
 
 class PromptBuilder:
@@ -21,7 +21,11 @@ class PromptBuilder:
         )
 
     def build_prompt(
-        self, intent: UserIntent, schema: FilteredSchema, hints: PromptHints, chat_history: list[ChatHistoryItem] | None = None
+        self,
+        intent: UserIntent,
+        schema: FilteredSchema,
+        hints: PromptHints,
+        chat_history: list[ChatHistoryItem] | None = None,
     ) -> PromptEnvelope:
         """
         Renders the static template into an immutable PromptEnvelope.

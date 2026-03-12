@@ -1,10 +1,10 @@
-from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler import UserIntent
+from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.models import FilteredSchema
 from app.steward import (
-    AbstractTableDef,
     AbstractColumnDef,
     AbstractRelationshipDef,
+    AbstractTableDef,
     RegistrySchema,
     SafetyClassification,
 )
@@ -21,7 +21,11 @@ def test_deterministic_schema_filter_simple_overlap() -> None:
                 description="User accounts and profiles",
                 physical_target="auth.users",
                 columns=[
-                    AbstractColumnDef(alias="id", description="ID", safety=SafetyClassification(allowed_in_select=True), physical_target="auth.users.id")
+                    AbstractColumnDef(
+                        alias="id", description="ID",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="auth.users.id",
+                    )
                 ]
             ),
             AbstractTableDef(
@@ -29,7 +33,11 @@ def test_deterministic_schema_filter_simple_overlap() -> None:
                 description="Purchase history",
                 physical_target="sales.orders",
                 columns=[
-                    AbstractColumnDef(alias="id", description="ID", safety=SafetyClassification(allowed_in_select=True), physical_target="sales.orders.id")
+                    AbstractColumnDef(
+                        alias="id", description="ID",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="sales.orders.id",
+                    )
                 ]
             )
         ],
