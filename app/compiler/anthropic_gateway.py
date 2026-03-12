@@ -1,114 +1,69 @@
-import json
-import logging
-import time
 from typing import Any
 
-import httpx
-
-from app.compiler.interfaces import LLMGatewayProtocol
-from app.compiler.models import LLMResult, PromptEnvelope
+from app.compiler.base_gateway import RemoteLLMGateway
+from app.compiler.models import PromptEnvelope
 from app.compiler.ollama import LLMGenerationError
-from app.vault import get_secrets_manager
 
-logger = logging.getLogger(__name__)
 
-class AnthropicLLMGateway(LLMGatewayProtocol):
+class AnthropicLLMGateway(RemoteLLMGateway):
     """
-    A gateway to remote Anthropic API models (e.g., claude-3-5-sonnet-20241022).
-    Enforces strict JSON schema generation.
-    Fetches the API Key from the SecretsManager dynamically.
+    Gateway for Anthropic models (e.g. claude-3-5-sonnet-20241022).
+
+    Uses the Anthropic messages API with JSON prefilling: when strict_json is
+    enabled, an assistant turn opening with "{" is appended to the messages so
+    the model is forced to continue the JSON object rather than preamble it.
     """
 
     def __init__(
-        self, 
-        model: str = "claude-3-5-sonnet-20241022",
-        strict_json: bool = True
-    ):
-        self.model = model
-        self.strict_json = strict_json
-        self.base_url = "https://api.anthropic.com/v1/messages"
-        self.secrets = get_secrets_manager()
+        self, model: str = "claude-3-5-sonnet-20241022", strict_json: bool = True
+    ) -> None:
+        super().__init__(model, strict_json)
 
-    async def generate(self, prompt: PromptEnvelope) -> LLMResult:
-        api_key = self.secrets.get_api_key("anthropic")
-        if not api_key:
-            raise LLMGenerationError("CRITICAL: Anthropic API key is missing. Check Vault/Env configuration.", raw_response="")
+    @property
+    def _provider_name(self) -> str:
+        return "anthropic"
 
-        start_time = time.perf_counter()
-        
-        # Anthropic extracts the system prompt from the messages array
-        system_content = prompt.system_instruction
+    @property
+    def _endpoint_url(self) -> str:
+        return "https://api.anthropic.com/v1/messages"
 
-        messages = []
+    def _build_headers(self, api_key: str) -> dict[str, str]:
+        return {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+
+    def _build_payload(self, prompt: PromptEnvelope) -> dict[str, Any]:
+        messages: list[dict[str, str]] = []
         for msg in prompt.chat_history:
-            # Anthropic enforces alternating user/assistant roles, mapping system to user if it slips in
+            # Anthropic enforces alternating user/assistant roles; map system → user.
             role = msg.role if msg.role in ["user", "assistant"] else "user"
             messages.append({"role": role, "content": msg.content})
-
         messages.append({"role": "user", "content": prompt.user_prompt})
-        
-        # If strict json is required, we force Claude to start its response with a JSON bracket
-        # using Anthropic's prefilling feature.
         if self.strict_json:
+            # Prefill: force the model to open a JSON object.
             messages.append({"role": "assistant", "content": "{"})
-
-        payload: dict[str, Any] = {
+        return {
             "model": self.model,
-            "system": system_content,
+            "system": prompt.system_instruction,
             "messages": messages,
             "max_tokens": 4096,
             "temperature": 0.0,
         }
 
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    self.base_url,
-                    json=payload,
-                    headers=headers
-                )
-                response.raise_for_status()
-                data = response.json()
-        except httpx.HTTPError as e:
-            raise LLMGenerationError(f"HTTP Error communicating with Anthropic: {e}")
-        except Exception as e:
-             raise LLMGenerationError(f"Unexpected connection error with Anthropic: {e}")
-
-        latency_ms = (time.perf_counter() - start_time) * 1000.0
-        
+    def _extract_content(self, data: dict[str, Any]) -> str:
         content_blocks = data.get("content", [])
         if not content_blocks:
-            raise LLMGenerationError("Anthropic returned no content.", raw_response=str(data))
-            
-        message_content = content_blocks[0].get("text", "")
-        
+            raise LLMGenerationError(
+                "Anthropic returned no content.", raw_response=str(data)
+            )
+        text = str(content_blocks[0].get("text", ""))
         if self.strict_json:
-            # Prepend the opening brace we prefilled via assistant prefilling
-            message_content = "{" + message_content
+            # Prepend the opening brace we prefilled via assistant prefilling.
+            text = "{" + text
+        return text
 
-        # Validate JSON is well-formed; the engine handles structural validation
-        # (including refusal detection and sql/refused contract enforcement).
-        if self.strict_json:
-            try:
-                json.loads(message_content)
-            except json.JSONDecodeError:
-                raise LLMGenerationError(f"Anthropic failed to return valid JSON. Raw output: {message_content[:100]}...", raw_response=message_content)
-        final_text = message_content
-            
+    def _extract_usage(self, data: dict[str, Any]) -> tuple[int, int]:
         usage = data.get("usage", {})
-        prompt_tokens = usage.get("input_tokens", 0)
-        completion_tokens = usage.get("output_tokens", 0)
-
-        return LLMResult(
-            raw_text=final_text,
-            model_id=self.model,
-            latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens
-        )
+        return usage.get("input_tokens", 0), usage.get("output_tokens", 0)

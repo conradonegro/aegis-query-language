@@ -5,7 +5,6 @@ from typing import Any
 
 import httpx
 
-from app.compiler.interfaces import LLMGatewayProtocol
 from app.compiler.models import LLMResult, PromptEnvelope
 
 logger = logging.getLogger(__name__)
@@ -17,7 +16,7 @@ class LLMGenerationError(Exception):
         self.raw_response = raw_response
 
 
-class OllamaLLMGateway(LLMGatewayProtocol):
+class OllamaLLMGateway:
     """
     A gateway to a local Ollama instance (e.g. localhost:11434).
     Enforces strict JSON schema generation.

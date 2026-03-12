@@ -22,25 +22,25 @@ def test_get_llm_gateway_ollama_explicit():
     assert gateway.model == "llama3.1"
 
 def test_get_llm_gateway_openai_explicit():
-    with mock.patch("app.compiler.openai_gateway.get_secrets_manager"):
+    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("openai:gpt-3.5-turbo")
         assert isinstance(gateway, OpenAILLMGateway)
         assert gateway.model == "gpt-3.5-turbo"
 
 def test_get_llm_gateway_anthropic_explicit():
-    with mock.patch("app.compiler.anthropic_gateway.get_secrets_manager"):
+    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("anthropic:claude-3-5-sonnet")
         assert isinstance(gateway, AnthropicLLMGateway)
         assert gateway.model == "claude-3-5-sonnet"
 
 def test_get_llm_gateway_google_explicit():
-    with mock.patch("app.compiler.google_gateway.get_secrets_manager"):
+    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("google:gemini-1.5-pro")
         assert isinstance(gateway, GoogleLLMGateway)
         assert gateway.model == "gemini-1.5-pro"
 
 def test_get_llm_gateway_xai_explicit():
-    with mock.patch("app.compiler.xai_gateway.get_secrets_manager"):
+    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("xai:grok-2")
         assert isinstance(gateway, XAILLMGateway)
         assert gateway.model == "grok-2"

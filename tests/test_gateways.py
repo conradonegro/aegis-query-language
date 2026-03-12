@@ -49,7 +49,7 @@ def _error_response(status: int = 500) -> AsyncMock:
 
 # ─── OpenAI ──────────────────────────────────────────────────────────────────
 
-@patch("app.compiler.openai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_openai_success_returns_raw_json(mock_post, mock_secrets, envelope):
@@ -65,7 +65,7 @@ async def test_openai_success_returns_raw_json(mock_post, mock_secrets, envelope
     assert result.completion_tokens == 5
 
 
-@patch("app.compiler.openai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_openai_refusal_payload_passed_through(mock_post, mock_secrets, envelope):
@@ -79,7 +79,7 @@ async def test_openai_refusal_payload_passed_through(mock_post, mock_secrets, en
     assert result.raw_text == refusal
 
 
-@patch("app.compiler.openai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_openai_invalid_json_raises(mock_post, mock_secrets, envelope):
@@ -92,7 +92,7 @@ async def test_openai_invalid_json_raises(mock_post, mock_secrets, envelope):
         await OpenAILLMGateway().generate(envelope)
 
 
-@patch("app.compiler.openai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_openai_no_choices_raises(mock_post, mock_secrets, envelope):
@@ -102,7 +102,7 @@ async def test_openai_no_choices_raises(mock_post, mock_secrets, envelope):
         await OpenAILLMGateway().generate(envelope)
 
 
-@patch("app.compiler.openai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
 async def test_openai_missing_api_key_raises(mock_secrets, envelope):
     mock_secrets.return_value.get_api_key.return_value = None
@@ -110,7 +110,7 @@ async def test_openai_missing_api_key_raises(mock_secrets, envelope):
         await OpenAILLMGateway().generate(envelope)
 
 
-@patch("app.compiler.openai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_openai_http_error_raises(mock_post, mock_secrets, envelope):
@@ -124,7 +124,7 @@ async def test_openai_http_error_raises(mock_post, mock_secrets, envelope):
 
 # ─── Anthropic ────────────────────────────────────────────────────────────────
 
-@patch("app.compiler.anthropic_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_anthropic_success_prepends_brace(mock_post, mock_secrets, envelope):
@@ -147,7 +147,7 @@ async def test_anthropic_success_prepends_brace(mock_post, mock_secrets, envelop
     assert result.completion_tokens == 4
 
 
-@patch("app.compiler.anthropic_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_anthropic_refusal_passed_through(mock_post, mock_secrets, envelope):
@@ -162,7 +162,7 @@ async def test_anthropic_refusal_passed_through(mock_post, mock_secrets, envelop
     assert parsed["refused"] is True
 
 
-@patch("app.compiler.anthropic_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_anthropic_no_content_blocks_raises(mock_post, mock_secrets, envelope):
@@ -172,7 +172,7 @@ async def test_anthropic_no_content_blocks_raises(mock_post, mock_secrets, envel
         await AnthropicLLMGateway().generate(envelope)
 
 
-@patch("app.compiler.anthropic_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
 async def test_anthropic_missing_api_key_raises(mock_secrets, envelope):
     mock_secrets.return_value.get_api_key.return_value = None
@@ -180,7 +180,7 @@ async def test_anthropic_missing_api_key_raises(mock_secrets, envelope):
         await AnthropicLLMGateway().generate(envelope)
 
 
-@patch("app.compiler.anthropic_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_anthropic_http_error_raises(mock_post, mock_secrets, envelope):
@@ -194,7 +194,7 @@ async def test_anthropic_http_error_raises(mock_post, mock_secrets, envelope):
 
 # ─── Google ───────────────────────────────────────────────────────────────────
 
-@patch("app.compiler.google_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_google_success_returns_raw_json(mock_post, mock_secrets, envelope):
@@ -210,7 +210,7 @@ async def test_google_success_returns_raw_json(mock_post, mock_secrets, envelope
     assert result.completion_tokens == 3
 
 
-@patch("app.compiler.google_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_google_refusal_passed_through(mock_post, mock_secrets, envelope):
@@ -224,7 +224,7 @@ async def test_google_refusal_passed_through(mock_post, mock_secrets, envelope):
     assert json.loads(result.raw_text)["refused"] is True
 
 
-@patch("app.compiler.google_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_google_no_candidates_raises(mock_post, mock_secrets, envelope):
@@ -234,7 +234,7 @@ async def test_google_no_candidates_raises(mock_post, mock_secrets, envelope):
         await GoogleLLMGateway().generate(envelope)
 
 
-@patch("app.compiler.google_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
 async def test_google_missing_api_key_raises(mock_secrets, envelope):
     mock_secrets.return_value.get_api_key.return_value = None
@@ -242,7 +242,7 @@ async def test_google_missing_api_key_raises(mock_secrets, envelope):
         await GoogleLLMGateway().generate(envelope)
 
 
-@patch("app.compiler.google_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_google_invalid_json_raises(mock_post, mock_secrets, envelope):
@@ -254,7 +254,7 @@ async def test_google_invalid_json_raises(mock_post, mock_secrets, envelope):
         await GoogleLLMGateway().generate(envelope)
 
 
-@patch("app.compiler.google_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_google_http_error_raises(mock_post, mock_secrets, envelope):
@@ -268,7 +268,7 @@ async def test_google_http_error_raises(mock_post, mock_secrets, envelope):
 
 # ─── xAI ──────────────────────────────────────────────────────────────────────
 
-@patch("app.compiler.xai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_xai_success_returns_raw_json(mock_post, mock_secrets, envelope):
@@ -283,7 +283,7 @@ async def test_xai_success_returns_raw_json(mock_post, mock_secrets, envelope):
     assert result.prompt_tokens == 7
 
 
-@patch("app.compiler.xai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_xai_refusal_passed_through(mock_post, mock_secrets, envelope):
@@ -297,7 +297,7 @@ async def test_xai_refusal_passed_through(mock_post, mock_secrets, envelope):
     assert json.loads(result.raw_text)["refused"] is True
 
 
-@patch("app.compiler.xai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_xai_no_choices_raises(mock_post, mock_secrets, envelope):
@@ -307,7 +307,7 @@ async def test_xai_no_choices_raises(mock_post, mock_secrets, envelope):
         await XAILLMGateway().generate(envelope)
 
 
-@patch("app.compiler.xai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
 async def test_xai_missing_api_key_raises(mock_secrets, envelope):
     mock_secrets.return_value.get_api_key.return_value = None
@@ -315,7 +315,7 @@ async def test_xai_missing_api_key_raises(mock_secrets, envelope):
         await XAILLMGateway().generate(envelope)
 
 
-@patch("app.compiler.xai_gateway.get_secrets_manager")
+@patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
 async def test_xai_http_error_raises(mock_post, mock_secrets, envelope):
