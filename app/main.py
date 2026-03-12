@@ -14,7 +14,9 @@ from sqlalchemy.engine.url import make_url
 from app.api.models import ErrorResponse
 from app.api.router import api_router
 from app.audit.logger import JSONAuditLogger
+import redis.asyncio as aioredis
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
+from app.compiler.session_store import SessionStore
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
 from app.compiler.parser import SQLParser
@@ -116,6 +118,14 @@ async def lifespan(app: FastAPI):
 
     app.state.executor = ExecutionEngine(connection_string=secure_runtime_db_url)
 
+    redis_url = os.getenv("REDIS_URL")
+    redis_client = aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
+    session_store = SessionStore(redis_client=redis_client)
+    if redis_url:
+        logger.info(f"Session store: Redis ({redis_url})")
+    else:
+        logger.info("Session store: in-memory (set REDIS_URL to enable Redis)")
+
     # Initialize Audit Engine
     app.state.auditor = JSONAuditLogger() # Writes natively to console output
 
@@ -133,8 +143,9 @@ async def lifespan(app: FastAPI):
         llm_gateway=llm_gateway,
         parser=SQLParser(),
         safety_engine=SafetyEngine(),
-        translator=DeterministicTranslator()
+        translator=DeterministicTranslator(),
     )
+    app.state.compiler.session_store = session_store
 
     # Initialize RAG Store
     from app.rag.models import CategoricalValue
@@ -154,6 +165,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Aegis Semantic Proxy Initialized.")
     yield
+    await session_store.close()
     logger.info("Aegis Semantic Proxy Shutting down.")
 
 

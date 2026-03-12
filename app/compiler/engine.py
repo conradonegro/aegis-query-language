@@ -10,16 +10,20 @@ from app.compiler.interfaces import (
     SQLParserProtocol,
     TranslatorProtocol,
 )
+from pydantic import ValidationError
 from app.compiler.models import (
     AbstractQuery,
     ExecutableQuery,
+    LLMQueryResponse,
     PromptHints,
     UserIntent,
     RAGIncludedColumns,
     ChatHistoryItem,
-    SessionQueryContext
+    SessionQueryContext,
 )
+from app.compiler.ollama import LLMGenerationError
 from app.compiler.llm_factory import get_llm_gateway
+from app.compiler.session_store import SessionStore
 from app.rag.interfaces import VectorStoreProtocol
 from app.rag.models import RAGOutcome
 from app.steward.models import RegistrySchema
@@ -49,7 +53,7 @@ class CompilerEngine:
         self.safety_engine = safety_engine
         self.translator = translator
         self.vector_store: VectorStoreProtocol | None = None
-        self._session_store: dict[str, SessionQueryContext] = {}
+        self.session_store: SessionStore = SessionStore()
 
     def set_vector_store(self, store: VectorStoreProtocol) -> None:
         self.vector_store = store
@@ -73,7 +77,7 @@ class CompilerEngine:
 
         try:
             # Look up prior session
-            prior_context = self._session_store.get(session_id) if session_id else None
+            prior_context = await self.session_store.get(session_id) if session_id else None
             is_follow_up = False
             
             # Check detector if applicable
@@ -158,10 +162,27 @@ class CompilerEngine:
                 
             try:
                 payload = json.loads(raw_text)
-                abstract_sql = payload.get("sql", "").strip() if isinstance(payload, dict) else str(payload)
+                if isinstance(payload, dict):
+                    try:
+                        llm_response = LLMQueryResponse.model_validate(payload)
+                    except ValidationError as e:
+                        raise LLMGenerationError(
+                            f"Invalid LLM response structure: {e}",
+                            raw_response=raw_text,
+                        )
+                    if llm_response.refused:
+                        raise LLMGenerationError(
+                            f"Request refused: {llm_response.reason or 'destructive or modifying intent'}.",
+                            raw_response=raw_text,
+                        )
+                    abstract_sql = (llm_response.sql or "").strip()
+                else:
+                    abstract_sql = str(payload)
             except json.JSONDecodeError:
                 # Fallback to direct text if JSON parsing fails (e.g. if LLM ignored instructions)
                 abstract_sql = raw_text
+                if ";" in abstract_sql and len([s for s in abstract_sql.split(";") if s.strip()]) > 1:
+                    raise LLMGenerationError("Multi-statement SQL detected in fallback path.", raw_response=raw_text)
                 
             abstract_query = AbstractQuery(sql=abstract_sql)
             explain_context["translation"]["llm_abstract_query"] = abstract_query.sql
@@ -195,11 +216,11 @@ class CompilerEngine:
                 
             # Finalize Session state (only if compilation succeeds entirely without exception)
             if session_id:
-                self._session_store[session_id] = SessionQueryContext(
+                await self.session_store.set(session_id, SessionQueryContext(
                     last_filtered_schema=filtered_schema,
                     last_successful_sql=executable.sql,
-                    timestamp=time.time()
-                )
+                    timestamp=time.time(),
+                ))
             
             return executable
 

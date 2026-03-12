@@ -13,6 +13,10 @@ export const API = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ baseline_version_id: baselineId })
         });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Failed to create draft.');
+        }
         return res.json();
     },
     async updateTable(tableId, data) {
@@ -35,6 +39,28 @@ export const API = {
         const res = await fetch(`/api/v1/metadata/versions/${versionId}/obfuscate`, {
             method: 'POST'
         });
+        return res.json();
+    },
+    async transitionStatus(versionId, status, reason = null) {
+        const res = await fetch(`/api/v1/metadata/versions/${versionId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status, reason })
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || `Transition to '${status}' failed.`);
+        }
+        return res.json();
+    },
+    async compileVersion(versionId) {
+        const res = await fetch(`/api/v1/metadata/compile/${versionId}`, {
+            method: 'POST'
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Compilation failed.');
+        }
         return res.json();
     }
 };

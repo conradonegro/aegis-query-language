@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.models import TranslationRepair
 from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef
@@ -55,6 +55,25 @@ class LLMResult(BaseModel):
     latency_ms: float
     prompt_tokens: int
     completion_tokens: int
+
+class LLMQueryResponse(BaseModel):
+    """Validated structure of the JSON object returned by any LLM gateway."""
+    sql: str | None = None
+    refused: bool = False
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_refusal_contract(self) -> "LLMQueryResponse":
+        if self.refused and self.sql is not None:
+            raise ValueError(
+                "Ambiguous LLM response: 'refused' is true but 'sql' is present. "
+                "A refusal must not contain SQL."
+            )
+        if not self.refused and not self.sql:
+            raise ValueError(
+                "Invalid LLM response: 'refused' is false but 'sql' is absent or empty."
+            )
+        return self
 
 class AbstractQuery(BaseModel):
     sql: str

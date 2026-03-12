@@ -332,7 +332,7 @@ _TRANSITION_AUDIT_ACTION: dict[tuple[str, str], str] = {
 async def update_version_status(
     version_id: uuid.UUID,
     payload: VersionStatusUpdateRequest,
-    session: AsyncSession = Depends(get_steward_db_session),
+    session: AsyncSession = Depends(get_registry_admin_db_session),
 ) -> ProtocolMetadataVersion:
     """
     Advance or retract a MetadataVersion through its review lifecycle.
@@ -647,14 +647,25 @@ async def create_metadata_version(
                 session.add(new_c)
                 col_id_map[old_c.column_id] = new_c_id
 
+        # Flush tables and columns to the DB before inserting relationships so
+        # the FK constraint (version_id, source/target_column_id) → metadata_columns
+        # is satisfied when the relationship rows are written.
+        await session.flush()
+
         for old_e in baseline.edges:
+            src_col_id = col_id_map.get(old_e.source_column_id)
+            tgt_col_id = col_id_map.get(old_e.target_column_id)
+            if not src_col_id or not tgt_col_id:
+                # Edge references a column that wasn't cloned — skip rather than
+                # inserting an old column UUID under the new version_id (FK violation).
+                continue
             new_e = MetadataRelationship(
                 relationship_id=uuid.uuid4(),
                 version_id=new_version.version_id,
                 source_table_id=table_id_map[old_e.source_table_id],
-                source_column_id=col_id_map.get(old_e.source_column_id, old_e.source_column_id),
+                source_column_id=src_col_id,
                 target_table_id=table_id_map[old_e.target_table_id],
-                target_column_id=col_id_map.get(old_e.target_column_id, old_e.target_column_id),
+                target_column_id=tgt_col_id,
                 relationship_type=old_e.relationship_type,
                 cardinality=old_e.cardinality,
                 bidirectional=old_e.bidirectional,
@@ -663,6 +674,7 @@ async def create_metadata_version(
             session.add(new_e)
 
     await session.commit()
+    await session.refresh(new_version)
     return ProtocolMetadataVersion(
         version_id=str(new_version.version_id),
         status=new_version.status,
