@@ -525,14 +525,19 @@ def test_where_only_aggregates_moves_to_having_and_removes_where(
     """
     ast = ValidatedAST(
         tree=sqlglot.parse_one(
-            "SELECT name, SUM(id) FROM users GROUP BY name HAVING SUM(id) > 0",
+            "SELECT name, SUM(id) FROM users GROUP BY name WHERE SUM(id) > 0",
             read="postgres",
         )
     )
-    # Confirm that a query already correctly using HAVING is unchanged
     result = translator.translate(ast, mock_schema)
-    assert "HAVING" in result.sql
-    assert result.sql.upper().count("WHERE") == 0
+    sql_upper = result.sql.upper()
+    # WHERE must be completely removed
+    assert "WHERE" not in sql_upper
+    # The aggregate condition must be in HAVING
+    assert "HAVING" in sql_upper
+    # Exactly one repair recorded
+    assert len(result.translation_repairs) == 1
+    assert result.translation_repairs[0].type == "where_aggregation_relocation"
 
 
 def test_explicit_cross_join_blocked(safety_engine: SafetyEngine):
