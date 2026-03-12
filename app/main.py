@@ -23,6 +23,7 @@ from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
 from app.compiler.safety import SafetyEngine, SafetyViolationError
 from app.compiler.translator import DeterministicTranslator, TranslationError
+from app.compiler.interfaces import LLMGatewayProtocol
 from app.compiler.ollama import OllamaLLMGateway, LLMGenerationError
 from app.execution.executor import ExecutionEngine
 from app.steward import AbstractColumnDef, AbstractRelationshipDef, AbstractTableDef, RegistrySchema, SafetyClassification
@@ -42,7 +43,7 @@ async def lifespan(app: FastAPI):
     steward_db_url = os.getenv("DB_URL_STEWARD", os.getenv("DATABASE_URL"))
     registry_admin_db_url = os.getenv("DB_URL_REGISTRY_ADMIN", os.getenv("DATABASE_URL"))
 
-    if not all([runtime_db_url, registry_runtime_db_url, steward_db_url, registry_admin_db_url]):
+    if not (runtime_db_url and registry_runtime_db_url and steward_db_url and registry_admin_db_url):
         raise RuntimeError("Least Privilege PostgreSQL connection URLs are not fully configured.")
 
     secrets_mgr = get_secrets_manager()
@@ -109,10 +110,12 @@ async def lifespan(app: FastAPI):
     else:
         # Automatically fetch and inflate the latest Active metadata payload!
         async with app.state.registry_runtime_session_factory() as session:
-            schema = await RegistryLoader.load_active_schema(session)
-            if not schema:
-                logger.warning("[!] No Active Metadata version found. Serving empty schema fallback.")
-                schema = RegistrySchema(version="0.0.0", tables=[], relationships=[])
+            _loaded = await RegistryLoader.load_active_schema(session)
+        if _loaded is None:
+            logger.warning("[!] No Active Metadata version found. Serving empty schema fallback.")
+            schema = RegistrySchema(version="0.0.0", tables=[], relationships=[])
+        else:
+            schema = _loaded
             
     app.state.registry = schema
 
@@ -131,6 +134,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize LLM Gateway based on environment
     provider = os.getenv("LLM_PROVIDER", "mock").lower()
+    llm_gateway: LLMGatewayProtocol
     if provider == "ollama":
         llm_gateway = OllamaLLMGateway()
     else:

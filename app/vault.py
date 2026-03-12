@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Any, Optional
 
 import hvac
 from hvac.exceptions import VaultError
@@ -92,17 +92,18 @@ class HashiCorpVaultProvider(SecretsManager):
         self.ttl_seconds = ttl_seconds
         
         self.client = hvac.Client(url=self.vault_addr, verify=True) # Always strictly verify=True
-        
+
         # Memory caches to avoid hitting Vault per HTTP request
-        self._auth_cache = {"token": None, "expires_at": 0}
-        self._secret_cache: Dict[str, Dict] = {} # Path -> {"data": val, "expires_at": timestamp}
-        
-    def _authenticate(self):
+        self._auth_token: str = ""
+        self._auth_expires_at: float = 0.0
+        self._secret_cache: dict[str, dict[str, Any]] = {} # Path -> {"data": val, "expires_at": timestamp}
+
+    def _authenticate(self) -> None:
         """Authenticates via AppRole and caches the auth token."""
         now = time.time()
-        if self._auth_cache["token"] and now < self._auth_cache["expires_at"]:
+        if self._auth_token and now < self._auth_expires_at:
             return # Still authentically valid
-            
+
         try:
             response = self.client.auth.approle.login(
                 role_id=self.role_id,
@@ -111,15 +112,13 @@ class HashiCorpVaultProvider(SecretsManager):
             # Typically Vault tokens have leases, applying a flat conservative TTL cache client-side
             client_token = response['auth']['client_token']
             lease_duration = response['auth'].get('lease_duration', self.ttl_seconds)
-            
+
             # Subtracted a buffer of 10 seconds to preempt expiration mid-flight
             cache_duration = min(self.ttl_seconds, max(1, lease_duration - 10))
-            
+
             self.client.token = client_token
-            self._auth_cache = {
-                "token": client_token,
-                "expires_at": now + cache_duration
-            }
+            self._auth_token = client_token
+            self._auth_expires_at = now + cache_duration
             logger.info("Successfully refreshed Vault AppRole Lease.")
         except VaultError as e:
             logger.error(f"Failed to authenticate with Vault via AppRole: {e}")
@@ -199,10 +198,10 @@ def get_secrets_manager() -> SecretsManager:
         role_id = os.environ.get("VAULT_APPROLE_ROLE_ID")
         secret_id = os.environ.get("VAULT_APPROLE_SECRET_ID")
         
-        if not all([vault_addr, role_id, secret_id]):
+        if not (vault_addr and role_id and secret_id):
             # Deliberately crash Boot natively if AppRole isn't provided!
             raise VaultConfigurationError("SECRETS_PROVIDER is 'vault' but VAULT_ADDR, VAULT_APPROLE_ROLE_ID or VAULT_APPROLE_SECRET_ID are missing.")
-            
+
         # Do not trap connection errors natively here: allow it to crash the process violently per Security Guidelines
         return HashiCorpVaultProvider(vault_addr=vault_addr, role_id=role_id, secret_id=secret_id)
         
