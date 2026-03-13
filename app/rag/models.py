@@ -12,6 +12,7 @@ class RAGOutcome(StrEnum):
 
 class CategoricalValue(BaseModel):
     """A distinct categorical value indexed in the vector store."""
+
     model_config = ConfigDict(frozen=True)
 
     value: str = Field(..., description="The distinct string value, e.g. 'Nvidia'")
@@ -20,6 +21,10 @@ class CategoricalValue(BaseModel):
     )
     tenant_id: str = Field(
         ..., description="The tenant ID this value is isolated to."
+    )
+    artifact_version: str = Field(
+        default="",
+        description="The artifact version this value was indexed from.",
     )
 
 

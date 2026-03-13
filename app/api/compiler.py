@@ -1,4 +1,5 @@
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -10,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.api.meta_models import (
     CompiledRegistryArtifact,
     MetadataAudit,
+    MetadataColumn,
     MetadataTable,
     MetadataVersion,
 )
@@ -19,6 +21,15 @@ from app.audit.chaining import (
     get_canonical_json,
 )
 from app.vault import get_secrets_manager
+
+
+def _compute_rag_values_hash(values: list[str]) -> str:
+    """SHA256 of sorted JSON-encoded normalized values."""
+    sorted_vals = sorted(values)
+    canonical = json.dumps(
+        sorted_vals, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class MetadataCompiler:
@@ -32,11 +43,15 @@ class MetadataCompiler:
         cls, session: AsyncSession, version_id: uuid.UUID, actor: str
     ) -> CompiledRegistryArtifact:
         # Load the complete object graph for the target version
-        stmt = select(MetadataVersion).where(
-            MetadataVersion.version_id == version_id
-        ).options(
-            selectinload(MetadataVersion.tables).selectinload(MetadataTable.columns),
-            selectinload(MetadataVersion.edges)
+        stmt = (
+            select(MetadataVersion)
+            .where(MetadataVersion.version_id == version_id)
+            .options(
+                selectinload(MetadataVersion.tables)
+                .selectinload(MetadataTable.columns)
+                .selectinload(MetadataColumn.values),
+                selectinload(MetadataVersion.edges),
+            )
         )
 
         result = await session.execute(stmt)
@@ -55,7 +70,7 @@ class MetadataCompiler:
             "meta_version": str(version.version_id),
             "compiled_at": datetime.now(UTC).isoformat(),
             "tables": [],
-            "roles": {"system": "admin"} # Mock roles injection for future
+            "roles": {"system": "admin"},  # Mock roles injection for future
         }
 
         table_idx_map: dict[uuid.UUID, dict[str, Any]] = {}
@@ -65,16 +80,18 @@ class MetadataCompiler:
             if not tbl.active:
                 continue
 
-            tbl_dict = {
+            tbl_dict: dict[str, Any] = {
                 "id": str(tbl.table_id),
                 "name": tbl.real_name,
                 "alias": tbl.alias,
                 "description": tbl.description,
+                "tenant_id": tbl.tenant_id or "default_tenant",
                 "columns": [],
-                "relationships": []
+                "relationships": [],
             }
 
             for col in tbl.columns:
+                active_values = [v.value for v in col.values if v.active]
                 tbl_dict["columns"].append({
                     "id": str(col.column_id),
                     "name": col.real_name,
@@ -88,6 +105,10 @@ class MetadataCompiler:
                     "allowed_in_join": col.allowed_in_join,
                     "is_sensitive": col.is_sensitive,
                     "safety_classification": col.safety_classification or {},
+                    "rag_enabled": col.rag_enabled,
+                    "rag_cardinality_hint": col.rag_cardinality_hint,
+                    "rag_limit": col.rag_limit,
+                    "rag_values_hash": _compute_rag_values_hash(active_values),
                 })
 
             table_idx_map[tbl.table_id] = tbl_dict
@@ -111,11 +132,11 @@ class MetadataCompiler:
                 "source_column_id": str(edge.source_column_id),
                 "target_column_id": str(edge.target_column_id),
                 "type": edge.relationship_type,
-                "cardinality": edge.cardinality
+                "cardinality": edge.cardinality,
             })
 
             if edge.bidirectional:
-                 tgt_tbl["relationships"].append({
+                tgt_tbl["relationships"].append({
                     "target_table": src_tbl["alias"],
                     "source_column_id": str(edge.target_column_id),
                     "target_column_id": str(edge.source_column_id),
@@ -123,6 +144,18 @@ class MetadataCompiler:
                     # Flips cardinality dynamically! 1:n -> n:1
                     "cardinality": edge.cardinality[::-1]
                 })
+
+        # 3b. Add RAG manifest
+        payload["rag_manifest"] = {
+            "default_rag_limit": 100,
+            "rag_enabled_count": sum(
+                1
+                for tbl in version.tables
+                if tbl.active
+                for col in tbl.columns
+                if col.rag_enabled and not col.is_sensitive
+            ),
+        }
 
         # 4. Sign and Compute Hash Payload
         canonical_payload = get_canonical_json(payload)
@@ -141,7 +174,7 @@ class MetadataCompiler:
             artifact_hash=final_hash,
             compiler_version="1.0.0",
             signature=signature,
-            signature_key_id=current_key_id
+            signature_key_id=current_key_id,
         )
         session.add(artifact)
 
@@ -161,7 +194,7 @@ class MetadataCompiler:
             "version_id": str(version.version_id),
             "artifact_hash": final_hash,
             "signature_key_id": current_key_id,
-            "status": "SUCCESS"
+            "status": "SUCCESS",
         }
 
         audit_canonical = get_canonical_json(audit_payload)
@@ -177,7 +210,7 @@ class MetadataCompiler:
             timestamp=audit_timestamp_native,
             previous_hash=previous_hash,
             row_hash=new_row_hash,
-            key_id=current_key_id
+            key_id=current_key_id,
         )
         session.add(audit_event)
 

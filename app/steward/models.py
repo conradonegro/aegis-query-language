@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -14,6 +16,8 @@ class AbstractColumnDef(BaseModel):
     data_type: str = "text"
     safety: SafetyClassification
     physical_target: str
+    rag_enabled: bool = False
+    rag_cardinality_hint: Literal["low", "medium", "high"] | None = None
 
 class AbstractTableDef(BaseModel):
     alias: str

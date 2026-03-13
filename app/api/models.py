@@ -172,6 +172,30 @@ class ProtocolColumn(BaseModel):
     allowed_in_filter: bool
     allowed_in_join: bool
     safety_classification: dict[str, Any] | None
+    rag_enabled: bool = False
+    rag_cardinality_hint: Literal["low", "medium", "high"] | None = None
+    rag_limit: int | None = None
+
+
+class ProtocolColumnValue(BaseModel):
+    value_id: str
+    value: str
+    active: bool
+    created_at: str
+
+
+class ColumnValueCreateRequest(BaseModel):
+    value: str
+
+
+class ColumnValueBulkImportRequest(BaseModel):
+    values: list[str]
+
+
+class ColumnValueBulkImportResponse(BaseModel):
+    imported: int
+    skipped_duplicate: int
+    skipped_invalid: int
 
 class ProtocolTable(BaseModel):
     table_id: str
@@ -206,6 +230,9 @@ class ColumnUpdateRequest(BaseModel):
     allowed_in_select: bool | None = None
     allowed_in_filter: bool | None = None
     allowed_in_join: bool | None = None
+    rag_enabled: bool | None = None
+    rag_cardinality_hint: Literal["low", "medium", "high"] | None = None
+    rag_limit: int | None = None
 
 class VersionCreateRequest(BaseModel):
     baseline_version_id: str | None = None

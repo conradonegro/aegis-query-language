@@ -9,6 +9,7 @@ from sqlalchemy import (  # noqa: E402
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Integer,
     Text,
     UniqueConstraint,
 )
@@ -22,6 +23,7 @@ from sqlalchemy.orm import (  # noqa: E402
 
 # SQLite (used in tests) doesn't support schemas. Conditionally strip it.
 _SCHEMA: str | None = None if os.getenv("TESTING") == "true" else "aegis_meta"
+
 
 
 class Base(DeclarativeBase):
@@ -93,7 +95,7 @@ class MetadataTable(Base):
         UniqueConstraint("version_id", "alias", name="uq_table_alias"),
         UniqueConstraint("version_id", "real_name", name="uq_table_real_name"),
         UniqueConstraint("version_id", "table_id", name="uq_table_composite_id"),
-        {"schema": "aegis_meta"}
+        {"schema": "aegis_meta"},
     )
 
     version = relationship("MetadataVersion", back_populates="tables")
@@ -130,6 +132,20 @@ class MetadataColumn(Base):
     allowed_in_join: Mapped[bool] = mapped_column(Boolean, default=False)
     safety_classification: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
+    # RAG indexing fields
+    rag_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    rag_cardinality_hint: Mapped[str | None] = mapped_column(
+        Enum(
+            "low",
+            "medium",
+            "high",
+            name="rag_cardinality",
+            schema="aegis_meta",
+        ),
+        nullable=True,
+    )
+    rag_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     __table_args__ = (
         UniqueConstraint("version_id", "table_id", "alias", name="uq_col_alias"),
         UniqueConstraint(
@@ -143,7 +159,7 @@ class MetadataColumn(Base):
                 "aegis_meta.metadata_tables.table_id",
             ]
         ),
-        {"schema": "aegis_meta"}
+        {"schema": "aegis_meta"},
     )
 
     version = relationship(
@@ -151,6 +167,53 @@ class MetadataColumn(Base):
     )
     table = relationship(
         "MetadataTable", back_populates="columns", overlaps="columns,version"
+    )
+    values = relationship(
+        "MetadataColumnValue",
+        back_populates="column",
+        cascade="all, delete-orphan",
+    )
+
+
+class MetadataColumnValue(Base):
+    """Curated categorical values that get indexed into the RAG store."""
+
+    __tablename__ = "metadata_column_values"
+    __table_args__ = (
+        UniqueConstraint(
+            "version_id", "column_id", "value", name="uq_col_value"
+        ),
+        ForeignKeyConstraint(
+            ["version_id"],
+            ["aegis_meta.metadata_versions.version_id"],
+        ),
+        ForeignKeyConstraint(
+            ["version_id", "column_id"],
+            [
+                "aegis_meta.metadata_columns.version_id",
+                "aegis_meta.metadata_columns.column_id",
+            ],
+        ),
+        {"schema": "aegis_meta"},
+    )
+
+    value_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    column_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+    column = relationship(
+        "MetadataColumn",
+        back_populates="values",
+        foreign_keys="[MetadataColumnValue.version_id, MetadataColumnValue.column_id]",
     )
 
 

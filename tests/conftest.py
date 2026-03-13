@@ -32,6 +32,7 @@ def override_database_url_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test_key_sandbox")
     monkeypatch.setenv("TESTING", "true")
 
+
 @pytest.fixture(autouse=True, scope="function")
 def seed_memory_db_for_tests() -> Generator[None, None, None]:
     """
@@ -94,6 +95,18 @@ def seed_memory_db_for_tests() -> Generator[None, None, None]:
         """))
         conn.execute(text("DELETE FROM chat_messages"))
         conn.execute(text("DELETE FROM chat_sessions"))
+
+        # RAG curated-values table
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS metadata_column_values (
+                value_id TEXT PRIMARY KEY,
+                column_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
 
         conn.execute(text("INSERT INTO users VALUES (1, 'Alice', 1, '2025-01-01')"))
         conn.execute(text("INSERT INTO users VALUES (2, 'Bob', 1, '2025-01-02')"))

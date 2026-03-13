@@ -78,3 +78,18 @@ source_modules =
 forbidden_modules =
     app.compiler
     app.execution
+
+
+# ------------------------------------------------------------------
+# RAG boundaries
+# ------------------------------------------------------------------
+
+[importlinter:contract:rag_no_upstream]
+name = RAG layer must not import Compiler, Execution, or API
+type = forbidden
+source_modules =
+    app.rag
+forbidden_modules =
+    app.compiler
+    app.execution
+    app.api

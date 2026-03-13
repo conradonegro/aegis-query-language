@@ -1,9 +1,10 @@
 import asyncio
+import logging
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
@@ -17,15 +18,20 @@ from app.api.meta_models import (
     ChatSession,
     MetadataAudit,
     MetadataColumn,
+    MetadataColumnValue,
     MetadataRelationship,
     MetadataTable,
     MetadataVersion,
 )
 from app.api.models import (
     ColumnUpdateRequest,
+    ColumnValueBulkImportRequest,
+    ColumnValueBulkImportResponse,
+    ColumnValueCreateRequest,
     ExplainabilityContext,
     MetadataCompileResponse,
     ProtocolColumn,
+    ProtocolColumnValue,
     ProtocolMetadataVersion,
     ProtocolRelationship,
     ProtocolSchemaResponse,
@@ -43,8 +49,11 @@ from app.compiler.engine import CompilerEngine
 from app.compiler.models import ChatHistoryItem, PromptHints, UserIntent
 from app.execution import ExecutionContext
 from app.execution.interfaces import ExecutionLayer
+from app.rag.normalizer import normalize as normalize_rag_value
 from app.steward import RegistrySchema
 from app.vault import get_secrets_manager
+
+logger = logging.getLogger(__name__)
 
 # Per-session asyncio locks prevent concurrent requests on the same session from
 # reading the same last_seq value and colliding on uq_session_sequence.
@@ -143,9 +152,9 @@ async def get_steward_db_session(
 @api_router.post("/query/generate", response_model=QueryGenerateResponse)
 async def generate_query(
     payload: QueryRequest,
-    compiler: CompilerEngine = Depends(get_compiler),
-    registry: RegistrySchema = Depends(get_registry),
-    session: AsyncSession = Depends(get_runtime_db_session)
+    compiler: Annotated[CompilerEngine, Depends(get_compiler)],
+    registry: Annotated[RegistrySchema, Depends(get_registry)],
+    session: Annotated[AsyncSession, Depends(get_runtime_db_session)]
 ) -> QueryGenerateResponse:
     """
     Compiles natural language into an ExecutableQuery, strictly omitting
@@ -183,6 +192,11 @@ async def generate_query(
             content=intent.natural_language_query,
             provider_id=payload.provider_id
         )
+        _llm_expl = (
+            executable.explainability.get("llm", {})
+            if executable.explainability
+            else {}
+        )
         assistant_msg = ChatMessage(
             message_id=uuid.uuid4(),
             session_id=session_id,
@@ -194,28 +208,28 @@ async def generate_query(
                 else executable.sql
             ),
             provider_id=(
-                executable.explainability.get("llm", {}).get("provider")
-                if executable.explainability else payload.provider_id
+                _llm_expl.get("provider")
+                if executable.explainability
+                else payload.provider_id
             ),
-            prompt_tokens=(
-                executable.explainability.get("llm", {}).get("prompt_tokens")
-                if executable.explainability else None
-            ),
-            completion_tokens=(
-                executable.explainability.get("llm", {}).get("completion_tokens")
-                if executable.explainability else None
-            ),
+            prompt_tokens=_llm_expl.get("prompt_tokens"),
+            completion_tokens=_llm_expl.get("completion_tokens"),
         )
         session.add_all([user_msg, assistant_msg])
         await session.commit()
 
+    explain_ctx = (
+        ExplainabilityContext.model_validate(executable.explainability)
+        if executable.explainability is not None
+        else None
+    )
     return QueryGenerateResponse(
         query_id=executable.query_id or "",
         session_id=str(session_id),
         sql=executable.sql,
         parameters=executable.parameters,
         latency_ms=executable.compilation_latency_ms or 0.0,
-        explainability=cast(ExplainabilityContext | None, executable.explainability),
+        explainability=explain_ctx,
     )
 
 
@@ -223,11 +237,11 @@ async def generate_query(
 async def execute_query(
     payload: QueryRequest,
     background_tasks: BackgroundTasks,
-    compiler: CompilerEngine = Depends(get_compiler),
-    executor: ExecutionLayer = Depends(get_executor),
-    auditor: Any = Depends(get_auditor),
-    registry: RegistrySchema = Depends(get_registry),
-    session: AsyncSession = Depends(get_runtime_db_session)
+    compiler: Annotated[CompilerEngine, Depends(get_compiler)],
+    executor: Annotated[ExecutionLayer, Depends(get_executor)],
+    auditor: Annotated[Any, Depends(get_auditor)],
+    registry: Annotated[RegistrySchema, Depends(get_registry)],
+    session: Annotated[AsyncSession, Depends(get_runtime_db_session)]
 ) -> QueryExecuteResponse:
     """
     Compiles and executes the query against the physical database.
@@ -266,6 +280,11 @@ async def execute_query(
             content=intent.natural_language_query,
             provider_id=payload.provider_id
         )
+        _exec_llm_expl = (
+            executable.explainability.get("llm", {})
+            if executable.explainability
+            else {}
+        )
         assistant_msg = ChatMessage(
             message_id=uuid.uuid4(),
             session_id=session_id,
@@ -281,17 +300,12 @@ async def execute_query(
                 else executable.sql
             ),
             provider_id=(
-                executable.explainability.get("llm", {}).get("provider")
-                if executable.explainability else payload.provider_id
+                _exec_llm_expl.get("provider")
+                if executable.explainability
+                else payload.provider_id
             ),
-            prompt_tokens=(
-                executable.explainability.get("llm", {}).get("prompt_tokens")
-                if executable.explainability else None
-            ),
-            completion_tokens=(
-                executable.explainability.get("llm", {}).get("completion_tokens")
-                if executable.explainability else None
-            ),
+            prompt_tokens=_exec_llm_expl.get("prompt_tokens"),
+            completion_tokens=_exec_llm_expl.get("completion_tokens"),
         )
         session.add_all([user_msg, assistant_msg])
         await session.commit()
@@ -325,6 +339,11 @@ async def execute_query(
     # Add audit dispatch to non-blocking tasks list
     background_tasks.add_task(auditor.record, event)
 
+    exec_explain_ctx = (
+        ExplainabilityContext.model_validate(executable.explainability)
+        if executable.explainability is not None
+        else None
+    )
     return QueryExecuteResponse(
         query_id=executable.query_id or "",
         session_id=str(session_id),
@@ -332,13 +351,13 @@ async def execute_query(
         results=result.rows,
         row_count=len(result.rows),
         execution_latency_ms=0.0,
-        explainability=cast(ExplainabilityContext | None, executable.explainability),
+        explainability=exec_explain_ctx,
     )
 
 
 @api_router.get("/metadata/versions", response_model=list[ProtocolMetadataVersion])
 async def list_metadata_versions(
-    session: AsyncSession = Depends(get_registry_runtime_db_session)
+    session: Annotated[AsyncSession, Depends(get_registry_runtime_db_session)]
 ) -> list[ProtocolMetadataVersion]:
     """Retrieve all metadata schema versions."""
     res = await session.execute(
@@ -379,7 +398,7 @@ _TRANSITION_AUDIT_ACTION: dict[tuple[str, str], str] = {
 async def update_version_status(
     version_id: uuid.UUID,
     payload: VersionStatusUpdateRequest,
-    session: AsyncSession = Depends(get_registry_admin_db_session),
+    session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
 ) -> ProtocolMetadataVersion:
     """
     Advance or retract a MetadataVersion through its review lifecycle.
@@ -483,12 +502,33 @@ async def update_version_status(
 
 @api_router.get("/metadata/active")
 async def get_active_metadata(
-    registry: RegistrySchema = Depends(get_registry)
+    registry: Annotated[RegistrySchema, Depends(get_registry)]
 ) -> dict[str, str | None]:
     """Retrieve the ID of the actively loaded registry schema."""
     return {
         "version_id": str(registry.version) if hasattr(registry, "version") else None
     }
+
+
+async def _fetch_rag_column_values(
+    version_id: uuid.UUID,
+    session: AsyncSession,
+) -> dict[str, list[str]]:
+    """Fetch all active RAG values for a version, grouped by column_id string."""
+    stmt = (
+        select(MetadataColumnValue.column_id, MetadataColumnValue.value)
+        .where(
+            MetadataColumnValue.active.is_(True),
+            MetadataColumnValue.version_id == version_id,
+        )
+        .order_by(MetadataColumnValue.column_id, MetadataColumnValue.value)
+    )
+    result = await session.execute(stmt)
+    groups: dict[str, list[str]] = {}
+    for col_id, value in result.all():
+        key = str(col_id)
+        groups.setdefault(key, []).append(value)
+    return groups
 
 
 @api_router.post(
@@ -497,51 +537,229 @@ async def get_active_metadata(
 async def compile_metadata_version(
     version_id: uuid.UUID,
     request: Request,
-    session: AsyncSession = Depends(get_registry_admin_db_session)
+    session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
+    wait_for_index: bool = False,
 ) -> MetadataCompileResponse:
     """Compile an active metadata version into a runtime Aegis Registry artifact."""
+    from app.rag.builder import RagDivergenceError, build_from_artifact
+    from app.steward.loader import RegistryLoader
+
     artifact = await MetadataCompiler.compile_version(
         session=session,
         version_id=version_id,
-        actor="admin_api"
+        actor="admin_api",
     )
 
-    # Dynamically hot-reload the RegistrySchema into the active FastAPI middleware!
-    from app.rag.models import CategoricalValue
-    from app.rag.store import InMemoryVectorStore
-    from app.steward.loader import RegistryLoader
-
+    # Hot-reload schema
     async with request.app.state.registry_runtime_session_factory() as rt_session:
         schema = await RegistryLoader.load_active_schema(rt_session)
-        request.app.state.registry = schema
+    request.app.state.registry = schema
 
-        # Dynamically re-warm the RAG Vector Store with the new Obfuscated Schema
-        # Baseline
-        vector_store = InMemoryVectorStore()
-        for table in (schema.tables if schema is not None else []):
-            if table.description:
-                vector_store.index_value(CategoricalValue(
-                    value=table.description,
-                    abstract_column=f"{table.alias}.{table.alias}",
-                    tenant_id="default_tenant",
-                ))
-            for col in table.columns:
-                if col.description:
-                    vector_store.index_value(CategoricalValue(
-                        value=col.description,
-                        abstract_column=f"{table.alias}.{col.alias}",
-                        tenant_id="default_tenant",
-                    ))
+    # Fetch column values for RAG builder
+    async with request.app.state.registry_admin_session_factory() as val_session:
+        column_values = await _fetch_rag_column_values(version_id, val_session)
 
-        request.app.state.vector_store = vector_store
-        request.app.state.compiler.set_vector_store(vector_store)
+    async def _rebuild_index() -> None:
+        try:
+            new_store = await build_from_artifact(
+                artifact_blob=artifact.artifact_blob,
+                version_id=str(version_id),
+                tenant_id="default_tenant",
+                artifact_version=artifact.artifact_hash,
+                column_values=column_values,
+            )
+            request.app.state.vector_store = new_store
+            request.app.state.compiler.set_vector_store(new_store)
+        except RagDivergenceError:
+            logger.warning(
+                "RAG divergence detected for version %s — "
+                "index not updated; re-compile after fixing values.",
+                version_id,
+            )
+        except Exception:
+            logger.exception(
+                "RAG index rebuild failed for version %s", version_id
+            )
+
+    if wait_for_index:
+        await _rebuild_index()
+    else:
+        _ = asyncio.create_task(_rebuild_index())
 
     return MetadataCompileResponse(
         artifact_id=str(artifact.artifact_id),
         version_id=str(artifact.version_id),
         artifact_hash=artifact.artifact_hash,
-        compiled_at=artifact.compiled_at.isoformat()
+        compiled_at=artifact.compiled_at.isoformat(),
     )
+
+
+@api_router.get(
+    "/metadata/columns/{column_id}/values",
+    response_model=list[ProtocolColumnValue],
+)
+async def list_column_values(
+    column_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+) -> list[ProtocolColumnValue]:
+    """List curated RAG values for a column."""
+    stmt = (
+        select(MetadataColumnValue)
+        .where(MetadataColumnValue.column_id == column_id)
+        .order_by(MetadataColumnValue.value)
+    )
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    return [
+        ProtocolColumnValue(
+            value_id=str(r.value_id),
+            value=r.value,
+            active=r.active,
+            created_at=r.created_at.isoformat(),
+        )
+        for r in rows
+    ]
+
+
+@api_router.post(
+    "/metadata/columns/{column_id}/values",
+    response_model=ProtocolColumnValue,
+    status_code=201,
+)
+async def create_column_value(
+    column_id: uuid.UUID,
+    payload: ColumnValueCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+) -> ProtocolColumnValue:
+    """Add a curated RAG value to a column."""
+    col_res = await session.execute(
+        select(MetadataColumn).where(MetadataColumn.column_id == column_id)
+    )
+    col = col_res.scalar_one_or_none()
+    if col is None:
+        raise HTTPException(status_code=404, detail="Column not found.")
+
+    try:
+        norm = normalize_rag_value(payload.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if norm is None:
+        raise HTTPException(
+            status_code=422, detail="Value is empty after normalization."
+        )
+
+    val = MetadataColumnValue(
+        column_id=column_id,
+        version_id=col.version_id,
+        value=payload.value.strip(),
+    )
+    session.add(val)
+    try:
+        await session.commit()
+        await session.refresh(val)
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Value already exists for this column."
+        ) from exc
+    return ProtocolColumnValue(
+        value_id=str(val.value_id),
+        value=val.value,
+        active=val.active,
+        created_at=val.created_at.isoformat(),
+    )
+
+
+@api_router.post(
+    "/metadata/columns/{column_id}/values/bulk",
+    response_model=ColumnValueBulkImportResponse,
+    status_code=201,
+)
+async def bulk_import_column_values(
+    column_id: uuid.UUID,
+    payload: ColumnValueBulkImportRequest,
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+) -> ColumnValueBulkImportResponse:
+    """Bulk-import curated RAG values (e.g. from a CSV upload via client)."""
+    col_res = await session.execute(
+        select(MetadataColumn).where(MetadataColumn.column_id == column_id)
+    )
+    col = col_res.scalar_one_or_none()
+    if col is None:
+        raise HTTPException(status_code=404, detail="Column not found.")
+
+    existing_res = await session.execute(
+        select(MetadataColumnValue.value).where(
+            MetadataColumnValue.column_id == column_id
+        )
+    )
+    existing_raw: set[str] = set(existing_res.scalars().all())
+    existing_normalized: set[str] = set()
+    for ev in existing_raw:
+        try:
+            en = normalize_rag_value(ev)
+            if en:
+                existing_normalized.add(en.lower())
+        except ValueError:
+            pass
+
+    imported = 0
+    skipped_duplicate = 0
+    skipped_invalid = 0
+    seen_in_batch: set[str] = set()
+
+    for raw_val in payload.values:
+        try:
+            norm = normalize_rag_value(raw_val)
+        except ValueError:
+            skipped_invalid += 1
+            continue
+        if norm is None:
+            skipped_invalid += 1
+            continue
+        norm_lower = norm.lower()
+        if norm_lower in existing_normalized or norm_lower in seen_in_batch:
+            skipped_duplicate += 1
+            continue
+        seen_in_batch.add(norm_lower)
+        session.add(
+            MetadataColumnValue(
+                column_id=column_id,
+                version_id=col.version_id,
+                value=raw_val.strip(),
+            )
+        )
+        imported += 1
+
+    await session.commit()
+    return ColumnValueBulkImportResponse(
+        imported=imported,
+        skipped_duplicate=skipped_duplicate,
+        skipped_invalid=skipped_invalid,
+    )
+
+
+@api_router.delete(
+    "/metadata/columns/{column_id}/values/{value_id}",
+    status_code=204,
+)
+async def deactivate_column_value(
+    column_id: uuid.UUID,
+    value_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+) -> None:
+    """Soft-delete (deactivate) a curated RAG value."""
+    res = await session.execute(
+        select(MetadataColumnValue).where(
+            MetadataColumnValue.value_id == value_id,
+            MetadataColumnValue.column_id == column_id,
+        )
+    )
+    val = res.scalar_one_or_none()
+    if val is None:
+        raise HTTPException(status_code=404, detail="Value not found.")
+    val.active = False
+    await session.commit()
 
 
 def _map_col(c: MetadataColumn) -> ProtocolColumn:
@@ -555,7 +773,13 @@ def _map_col(c: MetadataColumn) -> ProtocolColumn:
         allowed_in_select=c.allowed_in_select,
         allowed_in_filter=c.allowed_in_filter,
         allowed_in_join=c.allowed_in_join,
-        safety_classification=c.safety_classification
+        safety_classification=c.safety_classification,
+        rag_enabled=c.rag_enabled,
+        rag_cardinality_hint=cast(
+            Literal["low", "medium", "high"] | None,
+            c.rag_cardinality_hint,
+        ),
+        rag_limit=c.rag_limit,
     )
 
 def _map_table(t: MetadataTable) -> ProtocolTable:
@@ -575,7 +799,7 @@ def _map_table(t: MetadataTable) -> ProtocolTable:
 )
 async def get_metadata_schema(
     version_id: uuid.UUID,
-    session: AsyncSession = Depends(get_steward_db_session)
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
 ) -> ProtocolSchemaResponse:
     stmt = (
         select(MetadataVersion)
@@ -615,7 +839,7 @@ async def get_metadata_schema(
 async def update_metadata_table(
     table_id: uuid.UUID,
     payload: TableUpdateRequest,
-    session: AsyncSession = Depends(get_steward_db_session)
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
 ) -> ProtocolTable:
     stmt = (
         select(MetadataTable)
@@ -642,7 +866,7 @@ async def update_metadata_table(
 async def update_metadata_column(
     column_id: uuid.UUID,
     payload: ColumnUpdateRequest,
-    session: AsyncSession = Depends(get_steward_db_session)
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
 ) -> ProtocolColumn:
     stmt = select(MetadataColumn).where(MetadataColumn.column_id == column_id)
     res = await session.execute(stmt)
@@ -660,6 +884,12 @@ async def update_metadata_column(
         col.allowed_in_filter = payload.allowed_in_filter
     if payload.allowed_in_join is not None:
         col.allowed_in_join = payload.allowed_in_join
+    if payload.rag_enabled is not None:
+        col.rag_enabled = payload.rag_enabled
+    if payload.rag_cardinality_hint is not None:
+        col.rag_cardinality_hint = payload.rag_cardinality_hint
+    if payload.rag_limit is not None:
+        col.rag_limit = payload.rag_limit
 
     await session.commit()
     return _map_col(col)
@@ -668,7 +898,7 @@ async def update_metadata_column(
 @api_router.post("/metadata/versions", response_model=ProtocolMetadataVersion)
 async def create_metadata_version(
     payload: VersionCreateRequest,
-    session: AsyncSession = Depends(get_steward_db_session)
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
 ) -> ProtocolMetadataVersion:
     new_version_id = uuid.uuid4()
     new_version = MetadataVersion(
@@ -773,7 +1003,7 @@ async def create_metadata_version(
 @api_router.post("/metadata/versions/{version_id}/obfuscate")
 async def obfuscate_schema(
     version_id: uuid.UUID,
-    session: AsyncSession = Depends(get_steward_db_session)
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
 ) -> dict[str, int | str]:
     stmt = (
         select(MetadataVersion)

@@ -79,6 +79,7 @@ class CompilerEngine:
         chat_history: list[ChatHistoryItem] | None = None,
         provider_id: str | None = None,
         session_id: str | None = None,
+        tenant_id: str = "default_tenant",
     ) -> ExecutableQuery:
         """
         Executes the full pipeline.
@@ -100,6 +101,7 @@ class CompilerEngine:
                     full_schema=schema,
                 )
             )
+
             included_cols = RAGIncludedColumns(columns=[])
 
             if is_follow_up and prior_context:
@@ -119,8 +121,9 @@ class CompilerEngine:
                 }
             else:
                 self._apply_rag_hints(
-                    intent, hints, included_cols, explain_context
+                    intent, hints, included_cols, explain_context, tenant_id
                 )
+
                 filtered_schema = self.schema_filter.filter_schema(
                     intent, schema, included_columns=included_cols
                 )
@@ -263,13 +266,14 @@ class CompilerEngine:
         hints: PromptHints,
         included_cols: RAGIncludedColumns,
         explain_context: dict[str, Any],
+        tenant_id: str = "default_tenant",
     ) -> None:
         """Runs RAG lookup and injects matching column hints into PromptHints."""
         if not self.vector_store:
             return
 
         rag_result = self.vector_store.search(
-            intent.natural_language_query, tenant_id="default_tenant", limit=5
+            intent.natural_language_query, tenant_id=tenant_id, limit=5
         )
 
         if (

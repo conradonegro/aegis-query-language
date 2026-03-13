@@ -1,20 +1,25 @@
+import asyncio
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse, urlunparse
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 import redis.asyncio as aioredis
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select as sa_select
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.api.meta_models import (
+    CompiledRegistryArtifact,
+    MetadataColumnValue,
+    MetadataVersion,
+)
 from app.api.models import ErrorResponse
 from app.api.router import api_router
 from app.audit.logger import JSONAuditLogger
@@ -29,7 +34,7 @@ from app.compiler.safety import SafetyEngine, SafetyViolationError
 from app.compiler.session_store import SessionStore
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.execution.executor import ExecutionEngine
-from app.rag.models import CategoricalValue
+from app.rag.builder import RagDivergenceError, build_from_artifact, build_test_store
 from app.rag.store import InMemoryVectorStore
 from app.steward import (
     AbstractColumnDef,
@@ -39,6 +44,79 @@ from app.steward import (
     SafetyClassification,
 )
 from app.vault import get_secrets_manager
+
+load_dotenv()
+
+
+def _mask_redis_url(redis_url: str) -> str:
+    """Return a log-safe version of a Redis URL with the password redacted."""
+    parsed = urlparse(redis_url)
+    if parsed.password:
+        masked = parsed.netloc.replace(f":{parsed.password}@", ":***@")
+        return urlunparse(parsed._replace(netloc=masked))
+    return redis_url
+
+
+async def _boot_rag_index(app: FastAPI) -> None:
+    """Background task: build the RAG index from the active compiled artifact."""
+    try:
+        async with app.state.registry_runtime_session_factory() as val_session:
+            stmt = (
+                sa_select(CompiledRegistryArtifact)
+                .join(
+                    MetadataVersion,
+                    CompiledRegistryArtifact.version_id
+                    == MetadataVersion.version_id,
+                )
+                .where(MetadataVersion.status == "active")
+                .order_by(CompiledRegistryArtifact.compiled_at.desc())
+                .limit(1)
+            )
+            result = await val_session.execute(stmt)
+            artifact = result.scalar_one_or_none()
+            if artifact is None:
+                logger.info("RAG: no active artifact — index stays empty")
+                return
+
+            col_values = await _fetch_rag_column_values_for_version(
+                artifact.version_id, val_session
+            )
+
+        new_store = await build_from_artifact(
+            artifact_blob=artifact.artifact_blob,
+            version_id=str(artifact.version_id),
+            tenant_id="default_tenant",
+            artifact_version=artifact.artifact_hash,
+            column_values=col_values,
+        )
+        app.state.vector_store = new_store
+        app.state.compiler.set_vector_store(new_store)
+        logger.info("RAG: index ready — %s", artifact.artifact_hash[:12])
+    except RagDivergenceError:
+        logger.warning("RAG: divergence at boot — index stays empty")
+    except Exception:
+        logger.exception("RAG: boot build failed — index stays empty")
+
+
+async def _fetch_rag_column_values_for_version(
+    version_id: uuid.UUID,
+    session: AsyncSession,
+) -> dict[str, list[str]]:
+    """Fetch all active RAG values for a version, grouped by column_id string."""
+    stmt = (
+        sa_select(MetadataColumnValue.column_id, MetadataColumnValue.value)
+        .where(
+            MetadataColumnValue.active.is_(True),
+            MetadataColumnValue.version_id == version_id,
+        )
+        .order_by(MetadataColumnValue.column_id, MetadataColumnValue.value)
+    )
+    result = await session.execute(stmt)
+    groups: dict[str, list[str]] = {}
+    for col_id, value in result.all():
+        key = str(col_id)
+        groups.setdefault(key, []).append(value)
+    return groups
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -128,30 +206,6 @@ def _build_test_registry_schema() -> RegistrySchema:
     )
 
 
-def _warm_rag_store(schema: RegistrySchema) -> InMemoryVectorStore:
-    """Pre-warms an InMemoryVectorStore with all table and column descriptions."""
-    vector_store = InMemoryVectorStore()
-    for table in schema.tables:
-        if table.description:
-            vector_store.index_value(
-                CategoricalValue(
-                    value=table.description,
-                    abstract_column=f"{table.alias}.{table.alias}",
-                    tenant_id="default_tenant",
-                )
-            )
-        for col in table.columns:
-            if col.description:
-                vector_store.index_value(
-                    CategoricalValue(
-                        value=col.description,
-                        abstract_column=f"{table.alias}.{col.alias}",
-                        tenant_id="default_tenant",
-                    )
-                )
-    return vector_store
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from app.steward.loader import RegistryLoader
@@ -237,15 +291,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     session_store = SessionStore(redis_client=redis_client)
     if redis_url:
-        _parsed = urlparse(redis_url)
-        if _parsed.password:
-            _masked_netloc = _parsed.netloc.replace(
-                f":{_parsed.password}@", ":***@"
-            )
-            _safe = urlunparse(_parsed._replace(netloc=_masked_netloc))
-        else:
-            _safe = redis_url
-        logger.info(f"Session store: Redis ({_safe})")
+        logger.info("Session store: Redis (%s)", _mask_redis_url(redis_url))
     else:
         logger.info(
             "Session store: in-memory (set REDIS_URL to enable Redis)"
@@ -272,9 +318,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.compiler.session_store = session_store
 
-    vector_store = _warm_rag_store(schema)
-    app.state.vector_store = vector_store
-    app.state.compiler.set_vector_store(vector_store)
+    # Initialize RAG Store
+    if os.getenv("TESTING") == "true":
+        vector_store = build_test_store()
+        app.state.vector_store = vector_store
+        app.state.compiler.set_vector_store(vector_store)
+    else:
+        # Start with empty store; background task will swap when ready
+        empty_store = InMemoryVectorStore()
+        app.state.vector_store = empty_store
+        app.state.compiler.set_vector_store(empty_store)
+        _ = asyncio.create_task(_boot_rag_index(app))
 
     logger.info("Aegis Semantic Proxy Initialized.")
     yield
@@ -368,5 +422,7 @@ async def serve_ui() -> FileResponse:
 
 
 @app.get("/health")
-async def health_check() -> dict[str, str]:
-    return {"status": "ok"}
+async def health_check(request: Request) -> dict[str, str | bool]:
+    store = getattr(request.app.state, "vector_store", None)
+    index_ready: bool = store.index_ready if store is not None else False
+    return {"status": "ok", "index_ready": index_ready}

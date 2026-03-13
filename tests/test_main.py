@@ -13,7 +13,7 @@ def test_health_check() -> None:
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        assert response.json()["status"] == "ok"
 
 def test_standard_exception_handler() -> None:
     """Verify that unhandled exceptions are caught and formatted as 500s."""
