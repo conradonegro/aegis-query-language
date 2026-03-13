@@ -8,7 +8,7 @@ from app.audit.chaining import (
 )
 
 
-def test_canonical_json_drift():
+def test_canonical_json_drift() -> None:
     """Serialize -> deserialize -> serialize -> must produce identical bytes."""
     payload = {
         "zulu": 100,
@@ -24,7 +24,9 @@ def test_canonical_json_drift():
     canonical_1 = get_canonical_json(payload)
 
     # Output must strictly sort keys and omit whitespace padding
-    assert canonical_1 == '{"alpha":"hello","nested":{"a":[3,1,2],"b":null,"c":true},"zulu":100}'
+    assert canonical_1 == (
+        '{"alpha":"hello","nested":{"a":[3,1,2],"b":null,"c":true},"zulu":100}'
+    )
 
     # Pass 2: Deserialize
     reloaded = json.loads(canonical_1)
@@ -35,7 +37,7 @@ def test_canonical_json_drift():
     assert canonical_1 == canonical_2
     assert canonical_1.encode("utf-8") == canonical_2.encode("utf-8") # Identical bytes
 
-def test_audit_row_hash_chaining():
+def test_audit_row_hash_chaining() -> None:
     """Ensure determinism and previous hash binding is strictly enforced."""
     payload_a = '{"user":"admin"}'
     created_at = "2026-03-04T12:00:00Z"
@@ -65,7 +67,7 @@ def test_audit_row_hash_chaining():
     assert hash_3 != hash_3_broken
 
 
-def test_hmac_signature_timing_resistance():
+def test_hmac_signature_timing_resistance() -> None:
     """Verify standard logic matches natively with constant time `compare_digest`."""
     signing_key = "secret_key_007"
     payload = '{"test":true}'
@@ -81,13 +83,14 @@ def test_hmac_signature_timing_resistance():
     # Verify wrong payload reject
     assert verify_hmac_signature(signing_key, '{"test":false}', signature) is False
 
-    # Note: `compare_digest` is internally called by `verify_hmac_signature`, which guarantees timing resistance.
+    # Note: `compare_digest` is internally called by `verify_hmac_signature`,
+    # which guarantees timing resistance.
 
     # Verify wrong signing key reject
     assert verify_hmac_signature("different_key", payload, signature) is False
 
 
-def test_audit_row_hash_genesis_accepts_none_previous_hash():
+def test_audit_row_hash_genesis_accepts_none_previous_hash() -> None:
     """
     The genesis row (first entry in a chain) passes None as previous_hash.
     The implementation coerces None to '' via `previous_hash or ''`, so both
@@ -102,7 +105,7 @@ def test_audit_row_hash_genesis_accepts_none_previous_hash():
     assert hash_none == hash_empty
 
 
-def test_canonical_json_handles_non_ascii():
+def test_canonical_json_handles_non_ascii() -> None:
     """Non-ASCII characters must survive a round-trip without escaping."""
     payload = {"name": "héllo wörld", "emoji": "🔐"}
     canonical = get_canonical_json(payload)

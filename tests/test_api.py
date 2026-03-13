@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi.testclient import TestClient
 
 from app.api.router import get_compiler, get_executor
@@ -6,10 +8,10 @@ from app.main import app
 
 
 class SpyExecutionEngine:
-    def __init__(self):
+    def __init__(self) -> None:
         self.call_count = 0
 
-    async def execute(self, query, *, context):
+    async def execute(self, query: Any, *, context: Any) -> QueryResult:
         self.call_count += 1
         return QueryResult(
             columns=["count"],
@@ -18,7 +20,7 @@ class SpyExecutionEngine:
         )
 
 
-def test_api_generate_boundary():
+def test_api_generate_boundary() -> None:
     """
     Test 1: Verify /generate strictly isolates DB interactions.
     Assert the execution engine is *never* called.
@@ -26,7 +28,7 @@ def test_api_generate_boundary():
     spy_engine = SpyExecutionEngine()
 
     # Override the get_executor dependency to safely bypass startup overrides
-    def override_executor():
+    def override_executor() -> SpyExecutionEngine:
         return spy_engine
 
     app.dependency_overrides[get_executor] = override_executor
@@ -52,7 +54,7 @@ def test_api_generate_boundary():
         app.dependency_overrides.clear()
 
 
-def test_api_error_shape():
+def test_api_error_shape() -> None:
     """
     Test 2: Assert the Error API payload schema dynamically responds to failures
     with a stable JSON interface (code, message, request_id).
@@ -60,10 +62,10 @@ def test_api_error_shape():
     from app.compiler.safety import SafetyViolationError
 
     class MockCompilerRaise:
-        async def compile(self, *args, **kwargs):
+        async def compile(self, *args: Any, **kwargs: Any) -> None:
             raise SafetyViolationError("Mocked unsafe intent string detected.")
 
-    def override_compiler():
+    def override_compiler() -> MockCompilerRaise:
         return MockCompilerRaise()
 
     app.dependency_overrides[get_compiler] = override_compiler
@@ -89,14 +91,14 @@ def test_api_error_shape():
         app.dependency_overrides.clear()
 
 
-def test_api_execute_pipeline():
+def test_api_execute_pipeline() -> None:
     """
     Test 3: Verify /execute correctly passes through Compilation and Execution.
     Asserts standard ExecuteResponse schema payload is returned.
     """
     spy_engine = SpyExecutionEngine()
 
-    def override_executor():
+    def override_executor() -> SpyExecutionEngine:
         return spy_engine
 
     app.dependency_overrides[get_executor] = override_executor

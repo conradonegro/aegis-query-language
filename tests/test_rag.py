@@ -7,9 +7,15 @@ from app.rag.store import InMemoryVectorStore
 @pytest.fixture
 def store() -> InMemoryVectorStore:
     s = InMemoryVectorStore()
-    s.index_value(CategoricalValue(value="Nvidia", abstract_column="companies", tenant_id="t1"))
-    s.index_value(CategoricalValue(value="AMD", abstract_column="companies", tenant_id="t1"))
-    s.index_value(CategoricalValue(value="Apple", abstract_column="companies", tenant_id="t2"))
+    s.index_value(
+        CategoricalValue(value="Nvidia", abstract_column="companies", tenant_id="t1")
+    )
+    s.index_value(
+        CategoricalValue(value="AMD", abstract_column="companies", tenant_id="t1")
+    )
+    s.index_value(
+        CategoricalValue(value="Apple", abstract_column="companies", tenant_id="t2")
+    )
     return s
 
 
@@ -43,7 +49,13 @@ def test_rag_tenant_isolation(store: InMemoryVectorStore) -> None:
 def test_rag_ambiguous_match(store: InMemoryVectorStore) -> None:
     # Add another value that is extremely similar "Nvidia Corporation",
     # such that querying "Nvidia" matches both strongly.
-    store.index_value(CategoricalValue(value="Nvidia Corporation", abstract_column="companies", tenant_id="t1"))
+    store.index_value(
+        CategoricalValue(
+            value="Nvidia Corporation",
+            abstract_column="companies",
+            tenant_id="t1",
+        )
+    )
 
     res = store.search("Show me Nvidia or Nvidia Corporation", tenant_id="t1")
     # Because both have substring match in the query, both score high
@@ -58,7 +70,8 @@ def test_rag_ambiguous_match(store: InMemoryVectorStore) -> None:
 
 
 def test_rag_below_threshold(store: InMemoryVectorStore) -> None:
-    # Query has a typo that is close, but fuzzy matches under the strict 0.85 threshold limit.
+    # Query has a typo that is close, but fuzzy matches under the strict 0.85
+    # threshold limit.
     res = store.search("Show me Nvdia", tenant_id="t1")
     assert res.outcome == RAGOutcome.NO_MATCH
     assert res.match is None
@@ -76,7 +89,9 @@ def test_rag_empty_tenant_returns_no_match() -> None:
 def test_rag_exact_word_match_scores_1() -> None:
     """An exact word match (query word == value) must yield similarity_score == 1.0."""
     store = InMemoryVectorStore()
-    store.index_value(CategoricalValue(value="Nvidia", abstract_column="brands", tenant_id="t"))
+    store.index_value(
+        CategoricalValue(value="Nvidia", abstract_column="brands", tenant_id="t")
+    )
     res = store.search("Nvidia", tenant_id="t")
     assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
     assert res.match is not None
@@ -84,10 +99,13 @@ def test_rag_exact_word_match_scores_1() -> None:
 
 
 def test_rag_substring_match_scores_0_9() -> None:
-    """A substring match (value is a substring of the query or vice-versa) scores 0.9."""
+    """A substring match (value is a substring of the query or vice-versa)
+    scores 0.9."""
     store = InMemoryVectorStore()
     # "NvidiaGPU" is not an exact word in the query but is a substring case
-    store.index_value(CategoricalValue(value="Nvidia", abstract_column="brands", tenant_id="t"))
+    store.index_value(
+        CategoricalValue(value="Nvidia", abstract_column="brands", tenant_id="t")
+    )
     # Query contains "NvidiaGPU" which has "Nvidia" as a substring — score 0.9
     res = store.search("NvidiaGPU", tenant_id="t")
     assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH

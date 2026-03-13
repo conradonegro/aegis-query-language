@@ -25,7 +25,8 @@ class RAGIncludedColumns(BaseModel):
     STRICT INVARIANT PAYLOAD:
     This type explicitly wraps columns that were successfully extracted by the RAG
     Vector Engine. It enforces the compiler pipeline invariant that the SchemaFilter
-    will NEVER bypass rules for arbitrary user strings, only for fully validated RAG outcomes.
+    will NEVER bypass rules for arbitrary user strings, only for fully validated
+    RAG outcomes.
     """
     columns: list[str] = []
 

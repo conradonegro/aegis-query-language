@@ -32,15 +32,23 @@ def upgrade() -> None:
     sa.Column('message_id', sa.UUID(), nullable=False),
     sa.Column('session_id', sa.UUID(), nullable=False),
     sa.Column('sequence_number', sa.Integer(), nullable=False),
-    sa.Column('role', sa.Enum('user', 'assistant', 'system', name='chat_role', schema='aegis_meta'), nullable=False),
+    sa.Column(
+        'role',
+        sa.Enum('user', 'assistant', 'system', name='chat_role', schema='aegis_meta'),
+        nullable=False,
+    ),
     sa.Column('content', sa.Text(), nullable=False),
     sa.Column('provider_id', sa.Text(), nullable=True),
     sa.Column('prompt_tokens', sa.Integer(), nullable=True),
     sa.Column('completion_tokens', sa.Integer(), nullable=True),
     sa.Column('timestamp', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['session_id'], ['aegis_meta.chat_sessions.session_id'], ),
+    sa.ForeignKeyConstraint(
+        ['session_id'], ['aegis_meta.chat_sessions.session_id'],
+    ),
     sa.PrimaryKeyConstraint('message_id'),
-    sa.UniqueConstraint('session_id', 'sequence_number', name='uq_session_sequence'),
+    sa.UniqueConstraint(
+        'session_id', 'sequence_number', name='uq_session_sequence'
+    ),
     schema='aegis_meta'
     )
     # ### end Alembic commands ###

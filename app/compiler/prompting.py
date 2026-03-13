@@ -2,7 +2,13 @@ import os
 
 from jinja2 import Environment, FileSystemLoader
 
-from app.compiler.models import ChatHistoryItem, FilteredSchema, PromptEnvelope, PromptHints, UserIntent
+from app.compiler.models import (
+    ChatHistoryItem,
+    FilteredSchema,
+    PromptEnvelope,
+    PromptHints,
+    UserIntent,
+)
 
 
 class PromptBuilder:

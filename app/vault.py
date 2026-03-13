@@ -49,14 +49,24 @@ class EnvFallbackProvider(SecretsManager):
     def get_database_password(self, role_name: str) -> str:
         mapping = {
             "user_aegis_runtime": os.getenv("DB_PASS_RUNTIME", "runtime_pass"),
-            "user_aegis_registry_runtime": os.getenv("DB_PASS_REGISTRY_RUNTIME", "registry_pass"),
+            "user_aegis_registry_runtime": os.getenv(
+                "DB_PASS_REGISTRY_RUNTIME", "registry_pass"
+            ),
             "user_aegis_steward": os.getenv("DB_PASS_STEWARD", "steward_pass"),
-            "user_aegis_registry_admin": os.getenv("DB_PASS_REGISTRY_ADMIN", "admin_pass"),
-            "user_aegis_data_owner": os.getenv("DB_PASS_DATA_OWNER", "data_owner_pass"),
-            "user_aegis_meta_owner": os.getenv("DB_PASS_META_OWNER", "meta_owner_pass")
+            "user_aegis_registry_admin": os.getenv(
+                "DB_PASS_REGISTRY_ADMIN", "admin_pass"
+            ),
+            "user_aegis_data_owner": os.getenv(
+                "DB_PASS_DATA_OWNER", "data_owner_pass"
+            ),
+            "user_aegis_meta_owner": os.getenv(
+                "DB_PASS_META_OWNER", "meta_owner_pass"
+            )
         }
         if role_name not in mapping:
-            raise VaultMissingSecretError(f"No fallback password mapped for role {role_name}")
+            raise VaultMissingSecretError(
+                f"No fallback password mapped for role {role_name}"
+            )
         return mapping[role_name]
 
     def get_signing_key(self, key_id: str) -> str:
@@ -81,22 +91,35 @@ class HashiCorpVaultProvider(SecretsManager):
     Production-Grade Vault Integration utilizing AppRole authentication.
     Enforces TLS strict verification and implements memory TTL caching.
     """
-    def __init__(self, vault_addr: str, role_id: str, secret_id: str, ttl_seconds: int = 300):
+    def __init__(
+        self,
+        vault_addr: str,
+        role_id: str,
+        secret_id: str,
+        ttl_seconds: int = 300,
+    ):
         if not vault_addr.startswith("https://"):
-            if os.getenv("TESTING") != "true" and os.getenv("ENVIRONMENT") == "production":
-                raise VaultConfigurationError("TLS required: VAULT_ADDR must strictly use HTTPS in production.")
+            if (
+                os.getenv("TESTING") != "true"
+                and os.getenv("ENVIRONMENT") == "production"
+            ):
+                raise VaultConfigurationError(
+                    "TLS required: VAULT_ADDR must strictly use HTTPS in production."
+                )
 
         self.vault_addr = vault_addr
         self.role_id = role_id
         self.secret_id = secret_id
         self.ttl_seconds = ttl_seconds
 
-        self.client = hvac.Client(url=self.vault_addr, verify=True) # Always strictly verify=True
+        # Always strictly verify=True
+        self.client = hvac.Client(url=self.vault_addr, verify=True)
 
         # Memory caches to avoid hitting Vault per HTTP request
         self._auth_token: str = ""
         self._auth_expires_at: float = 0.0
-        self._secret_cache: dict[str, dict[str, Any]] = {} # Path -> {"data": val, "expires_at": timestamp}
+        # Path -> {"data": val, "expires_at": timestamp}
+        self._secret_cache: dict[str, dict[str, Any]] = {}
 
     def _authenticate(self) -> None:
         """Authenticates via AppRole and caches the auth token."""
@@ -109,9 +132,12 @@ class HashiCorpVaultProvider(SecretsManager):
                 role_id=self.role_id,
                 secret_id=self.secret_id,
             )
-            # Typically Vault tokens have leases, applying a flat conservative TTL cache client-side
+            # Typically Vault tokens have leases, applying a flat conservative
+            # TTL cache client-side
             client_token = response['auth']['client_token']
-            lease_duration = response['auth'].get('lease_duration', self.ttl_seconds)
+            lease_duration = response['auth'].get(
+                'lease_duration', self.ttl_seconds
+            )
 
             # Subtracted a buffer of 10 seconds to preempt expiration mid-flight
             cache_duration = min(self.ttl_seconds, max(1, lease_duration - 10))
@@ -122,7 +148,9 @@ class HashiCorpVaultProvider(SecretsManager):
             logger.info("Successfully refreshed Vault AppRole Lease.")
         except VaultError as e:
             logger.error(f"Failed to authenticate with Vault via AppRole: {e}")
-            raise VaultConfigurationError(f"Vault AppRole Auth Failed: {e}") from e
+            raise VaultConfigurationError(
+                f"Vault AppRole Auth Failed: {e}"
+            ) from e
 
     def _get_cached_secret(self, path: str, key_name: str) -> str:
         now = time.time()
@@ -147,34 +175,45 @@ class HashiCorpVaultProvider(SecretsManager):
             }
 
             if key_name not in data:
-                raise VaultMissingSecretError(f"Vault key '{key_name}' missing at KV path '{path}'.")
+                raise VaultMissingSecretError(
+                    f"Vault key '{key_name}' missing at KV path '{path}'."
+                )
 
             return str(data[key_name])
 
         except VaultError as e:
             logger.error(f"Vault error reading '{path}': {e}")
-            raise VaultMissingSecretError(f"Failed fetching secret {path} -> {key_name}: {e}") from e
+            raise VaultMissingSecretError(
+                f"Failed fetching secret {path} -> {key_name}: {e}"
+            ) from e
 
     def get_database_password(self, role_name: str) -> str:
         """
         Extracts native credentials per architectural role.
-        Expects KV v2 format: 'aegis/database/credentials' where keys are user roles.
+        Expects KV v2 format: 'aegis/database/credentials' where keys are user
+        roles.
         """
-        return self._get_cached_secret(path="aegis/database/credentials", key_name=role_name)
+        return self._get_cached_secret(
+            path="aegis/database/credentials", key_name=role_name
+        )
 
     def get_signing_key(self, key_id: str) -> str:
         """
-        Retrieves specific HMAC keys used for compiled registry signature verification.
-        Expects KV v2 format: 'aegis/artifacts/keys'
+        Retrieves specific HMAC keys used for compiled registry signature
+        verification. Expects KV v2 format: 'aegis/artifacts/keys'
         """
-        return self._get_cached_secret(path="aegis/artifacts/keys", key_name=key_id)
+        return self._get_cached_secret(
+            path="aegis/artifacts/keys", key_name=key_id
+        )
 
     def get_current_signing_key_id(self) -> str:
         """
         Retrieves the globally promoted active key ID.
         Expects KV v2 format: 'aegis/artifacts/config'
         """
-        return self._get_cached_secret(path="aegis/artifacts/config", key_name="current_key_id")
+        return self._get_cached_secret(
+            path="aegis/artifacts/config", key_name="current_key_id"
+        )
 
     def get_api_key(self, provider_name: str) -> str:
         """
@@ -183,7 +222,9 @@ class HashiCorpVaultProvider(SecretsManager):
         Keys stored as: OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
         """
         key_name = f"{provider_name.upper()}_API_KEY"
-        return self._get_cached_secret(path="aegis/llm/credentials", key_name=key_name)
+        return self._get_cached_secret(
+            path="aegis/llm/credentials", key_name=key_name
+        )
 
 
 def get_secrets_manager() -> SecretsManager:
@@ -205,14 +246,22 @@ def get_secrets_manager() -> SecretsManager:
                 " or VAULT_APPROLE_SECRET_ID are missing."
             )
 
-        # Do not trap connection errors natively here: allow it to crash the process violently per Security Guidelines
-        return HashiCorpVaultProvider(vault_addr=vault_addr, role_id=role_id, secret_id=secret_id)
+        # Do not trap connection errors natively here: allow it to crash the
+        # process violently per Security Guidelines
+        return HashiCorpVaultProvider(
+            vault_addr=vault_addr, role_id=role_id, secret_id=secret_id
+        )
 
     elif provider_type == "env":
         # Block ENV usage in prod
         if os.getenv("ENVIRONMENT") == "production":
-            raise VaultConfigurationError("CRITICAL: Cannot use 'env' secrets provider in 'production' environments.")
+            raise VaultConfigurationError(
+                "CRITICAL: Cannot use 'env' secrets provider in 'production' "
+                "environments."
+            )
         return EnvFallbackProvider()
 
     else:
-        raise VaultConfigurationError(f"Unknown SECRETS_PROVIDER '{provider_type}'")
+        raise VaultConfigurationError(
+            f"Unknown SECRETS_PROVIDER '{provider_type}'"
+        )

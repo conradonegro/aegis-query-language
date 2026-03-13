@@ -1,4 +1,5 @@
 import os
+from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,7 +8,9 @@ from app.main import app
 
 
 @pytest.fixture(params=["mock", "ollama"])
-def override_llm_provider(request):
+def override_llm_provider(
+    request: pytest.FixtureRequest,
+) -> Generator[TestClient, None, None]:
     """
     Parametrized fixture that runs tests against both gateways.
     For local testing, ensures Ollama must be running if param is 'ollama'.
@@ -25,7 +28,7 @@ def override_llm_provider(request):
     else:
         del os.environ["LLM_PROVIDER"]
 
-def test_golden_execute_integration(override_llm_provider):
+def test_golden_execute_integration(override_llm_provider: TestClient) -> None:
     """
     Golden Path Integration Test
     Asserts:
@@ -44,13 +47,18 @@ def test_golden_execute_integration(override_llm_provider):
     }
 
     if provider == "mock":
-        app.state.compiler.llm_gateway.mock_response_sql = "SELECT * FROM users WHERE name = 'Alice'"
+        app.state.compiler.llm_gateway.mock_response_sql = (
+            "SELECT * FROM users WHERE name = 'Alice'"
+        )
 
     response = client.post("/api/v1/query/execute", json=payload)
 
-    # If Ollama is not actually running locally, skip gracefully instead of failing CI
+    # If Ollama is not actually running locally, skip gracefully instead of
+    # failing CI
     if provider == "ollama" and response.status_code == 502:
-        pytest.skip(f"Gateway {provider} unreachable. Ensure Ollama is running locally.")
+        pytest.skip(
+            f"Gateway {provider} unreachable. Ensure Ollama is running locally."
+        )
 
     assert response.status_code == 200, f"Gateway {provider} failed: {response.text}"
     data = response.json()

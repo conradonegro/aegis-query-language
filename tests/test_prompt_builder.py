@@ -2,18 +2,23 @@ from app.compiler.models import ChatHistoryItem, FilteredSchema, PromptHints, Us
 from app.compiler.prompting import PromptBuilder
 
 
-def test_prompt_builder_history_truncation():
+def test_prompt_builder_history_truncation() -> None:
     builder = PromptBuilder()
 
     intent = UserIntent(natural_language_query="Current intent")
-    schema = FilteredSchema(version="1.0", tables=[], relationships=[], omitted_columns={})
+    schema = FilteredSchema(
+        version="1.0", tables=[], relationships=[], omitted_columns={}
+    )
     hints = PromptHints(column_hints=[])
 
     # Create 15 messages (more than the 10 message limit)
     history = []
     for i in range(15):
         history.append(
-            ChatHistoryItem(role="user" if i % 2 == 0 else "assistant", content=f"Message {i}")
+            ChatHistoryItem(
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"Message {i}",
+            )
         )
 
     envelope = builder.build_prompt(intent, schema, hints, chat_history=history)

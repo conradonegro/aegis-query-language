@@ -4,7 +4,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
-async def validate_database_rows():
+async def validate_database_rows() -> None:
     print("=== Phase 4: Validating BIRD-SQL Import ===")
 
     # Connect directly to the aegis_data_warehouse instance

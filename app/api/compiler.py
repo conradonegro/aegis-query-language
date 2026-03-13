@@ -23,8 +23,8 @@ from app.vault import get_secrets_manager
 
 class MetadataCompiler:
     """
-    Freezes a human-reviewed MetadataVersion into a highly optimized, immutable JSON blob
-    that the Aegis AST engine natively boots from.
+    Freezes a human-reviewed MetadataVersion into a highly optimized,
+    immutable JSON blob that the Aegis AST engine natively boots from.
     """
 
     @classmethod
@@ -46,7 +46,9 @@ class MetadataCompiler:
             raise ValueError(f"Version {version_id} not found.")
 
         if version.status != "active":
-            raise ValueError(f"Cannot compile artifact. Version {version_id} must be 'active'.")
+            raise ValueError(
+                f"Cannot compile artifact. Version {version_id} must be 'active'."
+            )
 
         # 1. Build the physical runtime Dictionary Payload mapping
         payload: dict[str, Any] = {
@@ -100,7 +102,8 @@ class MetadataCompiler:
             tgt_tbl = table_idx_map.get(edge.target_table_id)
 
             if not src_tbl or not tgt_tbl:
-                # Should structurally never happen due to Postgres FKs, but defensive checks
+                # Should structurally never happen due to Postgres FKs, but
+                # defensive checks
                 continue
 
             src_tbl["relationships"].append({
@@ -117,7 +120,8 @@ class MetadataCompiler:
                     "source_column_id": str(edge.target_column_id),
                     "target_column_id": str(edge.source_column_id),
                     "type": edge.relationship_type,
-                    "cardinality": edge.cardinality[::-1] # Flips cardinality dynamically! 1:n -> n:1
+                    # Flips cardinality dynamically! 1:n -> n:1
+                    "cardinality": edge.cardinality[::-1]
                 })
 
         # 4. Sign and Compute Hash Payload
@@ -143,7 +147,10 @@ class MetadataCompiler:
 
         # 5. Native Deterministic WORM Audit Write
         last_audit_res = await session.execute(
-            select(MetadataAudit).order_by(MetadataAudit.timestamp.desc(), MetadataAudit.audit_id.desc()).limit(1)
+            select(MetadataAudit).order_by(
+                MetadataAudit.timestamp.desc(),
+                MetadataAudit.audit_id.desc()
+            ).limit(1)
         )
         last_row = last_audit_res.scalar_one_or_none()
         previous_hash = last_row.row_hash if last_row else ""
@@ -158,7 +165,9 @@ class MetadataCompiler:
         }
 
         audit_canonical = get_canonical_json(audit_payload)
-        new_row_hash = compute_audit_row_hash(previous_hash, audit_canonical, audit_timestamp_native.isoformat())
+        new_row_hash = compute_audit_row_hash(
+            previous_hash, audit_canonical, audit_timestamp_native.isoformat()
+        )
 
         audit_event = MetadataAudit(
             version_id=version.version_id,

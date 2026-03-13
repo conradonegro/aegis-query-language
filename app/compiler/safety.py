@@ -9,11 +9,13 @@ class SafetyViolationError(Exception):
         self.message = message
 
 class UnsafeExpressionError(SafetyViolationError):
-    """Raised when an explicitly allowed AST node violates semantic structural rules during translation."""
+    """Raised when an explicitly allowed AST node violates semantic structural
+    rules during translation."""
     pass
 
 class SafetyPolicyViolationError(SafetyViolationError):
-    """Raised when a column is referenced in a SQL clause its SafetyClassification prohibits."""
+    """Raised when a column is referenced in a SQL clause its SafetyClassification
+    prohibits."""
 
     def __init__(self, message: str) -> None:
         # Call Exception.__init__ directly to set args so str(exc) == message.
@@ -125,15 +127,17 @@ class SafetyEngine:
                      f"Node type not in strict allow-list: {node_type.__name__}"
                  )
 
-        # Implicit cross-join detection: any JOIN without an explicit ON or USING condition
-        # is a cross-product (either `FROM a, b` parsed as a comma join, or `... CROSS JOIN b`).
-        # These are blocked categorically because they bypass relationship graph validation.
+        # Implicit cross-join detection: any JOIN without an explicit ON or USING
+        # condition is a cross-product (either `FROM a, b` parsed as a comma join,
+        # or `... CROSS JOIN b`). These are blocked categorically because they
+        # bypass relationship graph validation.
         for join_node in tree.find_all(exp.Join):
             has_on = join_node.args.get("on") is not None
             has_using = join_node.args.get("using") is not None
             if not has_on and not has_using:
                 raise SafetyViolationError(
-                    "Implicit or cross JOIN detected: every JOIN must have an explicit ON or USING condition."
+                    "Implicit or cross JOIN detected: every JOIN must have an "
+                    "explicit ON or USING condition."
                 )
 
         return ValidatedAST(tree=tree)

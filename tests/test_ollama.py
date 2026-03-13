@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -10,7 +10,7 @@ from app.compiler.ollama import LLMGenerationError, OllamaLLMGateway
 
 
 @pytest.fixture
-def prompt_envelope():
+def prompt_envelope() -> PromptEnvelope:
     return PromptEnvelope(
         system_instruction="You are a SQL generator.",
         user_prompt="Get all users",
@@ -37,7 +37,9 @@ def build_mock_response(content_str: str, status_code: int = 200) -> AsyncMock:
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
-async def test_ollama_gateway_success(mock_post, prompt_envelope):
+async def test_ollama_gateway_success(
+    mock_post: MagicMock, prompt_envelope: PromptEnvelope
+) -> None:
     """Test valid strict JSON generation succeeds and extracts SQL."""
     gateway = OllamaLLMGateway(strict_json=True)
 
@@ -56,7 +58,9 @@ async def test_ollama_gateway_success(mock_post, prompt_envelope):
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
-async def test_ollama_gateway_invalid_json_fails_strictly(mock_post, prompt_envelope):
+async def test_ollama_gateway_invalid_json_fails_strictly(
+    mock_post: MagicMock, prompt_envelope: PromptEnvelope
+) -> None:
     """Test the 'never let JSON-mode failure become silent success' rule."""
     gateway = OllamaLLMGateway(strict_json=True)
 
@@ -72,7 +76,9 @@ async def test_ollama_gateway_invalid_json_fails_strictly(mock_post, prompt_enve
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
-async def test_ollama_gateway_passes_through_non_sql_json(mock_post, prompt_envelope):
+async def test_ollama_gateway_passes_through_non_sql_json(
+    mock_post: MagicMock, prompt_envelope: PromptEnvelope
+) -> None:
     """
     The gateway must pass valid JSON through unchanged even when the 'sql' key
     is absent.  Structural contract enforcement (sql vs refused) belongs in the
@@ -91,7 +97,9 @@ async def test_ollama_gateway_passes_through_non_sql_json(mock_post, prompt_enve
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.post")
-async def test_ollama_gateway_passes_through_multi_statement_json(mock_post, prompt_envelope):
+async def test_ollama_gateway_passes_through_multi_statement_json(
+    mock_post: MagicMock, prompt_envelope: PromptEnvelope
+) -> None:
     """
     The gateway must pass multi-statement SQL through as raw JSON.
     Multi-statement detection is enforced by the SQLParser downstream,
@@ -113,14 +121,20 @@ async def test_ollama_gateway_passes_through_multi_statement_json(mock_post, pro
 @pytest.mark.asyncio
 @patch("app.compiler.ollama.OllamaLLMGateway.generate")
 @patch("app.compiler.gateway.MockLLMGateway.generate")
-async def test_gateway_side_by_side_interface(mock_generate, ollama_generate, prompt_envelope):
+async def test_gateway_side_by_side_interface(
+    mock_generate: MagicMock,
+    ollama_generate: MagicMock,
+    prompt_envelope: PromptEnvelope,
+) -> None:
     """
     Parametrized test representing side-by-side validation.
-    Both gateways must implement the exact same LLMGatewayProtocol and return LLMResult.
+    Both gateways must implement the exact same LLMGatewayProtocol and return
+    LLMResult.
     """
     gateways = [MockLLMGateway(), OllamaLLMGateway()]
 
     for gw in gateways:
         assert hasattr(gw, "generate")
-        # In a real integration test, we would hit both and assert parser equivalence
-        # For now, we assert they share the same structural contract boundary.
+        # In a real integration test, we would hit both and assert parser
+        # equivalence. For now, we assert they share the same structural
+        # contract boundary.

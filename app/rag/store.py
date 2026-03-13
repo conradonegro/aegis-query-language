@@ -41,10 +41,14 @@ class InMemoryVectorStore(VectorStoreProtocol):
                 score = 0.9
             else:
                 # Fallback to difflib
-                score = difflib.SequenceMatcher(None, val_normalized, query_normalized).ratio()
+                score = difflib.SequenceMatcher(
+                    None, val_normalized, query_normalized
+                ).ratio()
 
             if score >= threshold:
-                matches.append(ValueMatch(categorical_value=cat_val, similarity_score=score))
+                matches.append(
+                    ValueMatch(categorical_value=cat_val, similarity_score=score)
+                )
 
         # Sort by best score descending
         matches.sort(key=lambda x: x.similarity_score, reverse=True)
@@ -65,5 +69,8 @@ class InMemoryVectorStore(VectorStoreProtocol):
             return RAGResult(
                 outcome=RAGOutcome.AMBIGUOUS_MATCH,
                 candidates=matches,
-                reason=f"Ambiguous: {len(matches)} competing matches breached the threshold."
+                reason=(
+                    f"Ambiguous: {len(matches)} competing matches breached "
+                    f"the threshold."
+                )
             )

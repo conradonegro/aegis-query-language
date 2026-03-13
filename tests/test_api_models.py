@@ -19,7 +19,7 @@ def test_api_query_request_validation() -> None:
 
     # Missing required intent
     with pytest.raises(ValidationError):
-        QueryRequest(schema_hints=[])
+        QueryRequest(schema_hints=[])  # type: ignore[call-arg]
 
 def test_api_generate_response_validation() -> None:
     """Test QueryGenerateResponse constraints."""
@@ -33,7 +33,7 @@ def test_api_generate_response_validation() -> None:
 
     # Frozen instances cannot be mutated
     with pytest.raises(ValidationError):
-        res.latency_ms = 20.0  # type: ignore
+        res.latency_ms = 20.0
 
 def test_api_execute_response_validation() -> None:
     """Test QueryExecuteResponse fields."""
@@ -61,7 +61,7 @@ def test_execution_context_validation() -> None:
 
     # Missing required tenant tracking
     with pytest.raises(ValidationError):
-        ExecutionContext(user_id="just_user")
+        ExecutionContext(user_id="just_user")  # type: ignore[call-arg]
 
 def test_execution_query_result_validation() -> None:
     """Verify strict execution result interface."""

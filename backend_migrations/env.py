@@ -19,10 +19,14 @@ load_dotenv()
 # access to the values within the .ini file in use.
 config = context.config
 
-# Dynamically override the alembic.ini url with our securely fetched application context!
+# Dynamically override the alembic.ini url with our securely fetched
+# application context!
 db_url = os.getenv("DATABASE_URL")
 if not db_url:
-    db_url = "postgresql+asyncpg://user_aegis_meta_owner:meta_owner_pass@localhost:5432/aegis_data_warehouse"
+    db_url = (
+        "postgresql+asyncpg://user_aegis_meta_owner:meta_owner_pass"
+        "@localhost:5432/aegis_data_warehouse"
+    )
     os.environ["DATABASE_URL"] = db_url
 
 secrets_mgr = get_secrets_manager()
@@ -84,7 +88,7 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         include_schemas=True,
-        include_name=lambda name, type_, parent_names: (
+        include_name=lambda name, type_, parent_names: bool(
             (type_ == "schema" and name == "aegis_meta")
             or (parent_names and parent_names["schema_name"] == "aegis_meta")
         ),

@@ -85,7 +85,9 @@ async def _resolve_session(
                 )
                 for msg in msgs_res.scalars().all():
                     chat_history.append(ChatHistoryItem(
-                        role=cast(Literal["user", "assistant", "system"], msg.role),
+                        role=cast(
+                            Literal["user", "assistant", "system"], msg.role
+                        ),
                         content=msg.content,
                     ))
         except ValueError:
@@ -113,19 +115,27 @@ def get_auditor(request: Request) -> Any:
 def get_registry(request: Request) -> RegistrySchema:
     return cast(RegistrySchema, request.app.state.registry)
 
-async def get_registry_runtime_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_registry_runtime_db_session(
+    request: Request,
+) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.registry_runtime_session_factory() as session:
         yield session
 
-async def get_registry_admin_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_registry_admin_db_session(
+    request: Request,
+) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.registry_admin_session_factory() as session:
         yield session
 
-async def get_runtime_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_runtime_db_session(
+    request: Request,
+) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.runtime_session_factory() as session:
         yield session
 
-async def get_steward_db_session(request: Request) -> AsyncGenerator[AsyncSession, None]:
+async def get_steward_db_session(
+    request: Request,
+) -> AsyncGenerator[AsyncSession, None]:
     async with request.app.state.steward_session_factory() as session:
         yield session
 
@@ -138,7 +148,8 @@ async def generate_query(
     session: AsyncSession = Depends(get_runtime_db_session)
 ) -> QueryGenerateResponse:
     """
-    Compiles natural language into an ExecutableQuery, strictly omitting physical DB execution.
+    Compiles natural language into an ExecutableQuery, strictly omitting
+    physical DB execution.
     """
     intent = UserIntent(natural_language_query=payload.intent)
     hints = PromptHints(column_hints=payload.schema_hints)
@@ -177,7 +188,11 @@ async def generate_query(
             session_id=session_id,
             sequence_number=last_seq + 2,
             role="assistant",
-            content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
+            content=(
+                executable.abstract_sql
+                if executable.abstract_sql is not None
+                else executable.sql
+            ),
             provider_id=(
                 executable.explainability.get("llm", {}).get("provider")
                 if executable.explainability else payload.provider_id
@@ -256,10 +271,15 @@ async def execute_query(
             session_id=session_id,
             sequence_number=last_seq + 2,
             role="assistant",
-            # Store abstract_sql (obfuscated aliases) rather than the physical SQL so the LLM
-            # cannot learn physical column/table names from its own prior responses.
-            # abstract_sql is always populated by the compiler engine regardless of explain flag.
-            content=executable.abstract_sql if executable.abstract_sql is not None else executable.sql,
+            # Store abstract_sql (obfuscated aliases) rather than the physical SQL
+            # so the LLM cannot learn physical column/table names from its own
+            # prior responses. abstract_sql is always populated by the compiler
+            # engine regardless of explain flag.
+            content=(
+                executable.abstract_sql
+                if executable.abstract_sql is not None
+                else executable.sql
+            ),
             provider_id=(
                 executable.explainability.get("llm", {}).get("provider")
                 if executable.explainability else payload.provider_id
@@ -321,7 +341,9 @@ async def list_metadata_versions(
     session: AsyncSession = Depends(get_registry_runtime_db_session)
 ) -> list[ProtocolMetadataVersion]:
     """Retrieve all metadata schema versions."""
-    res = await session.execute(select(MetadataVersion).order_by(MetadataVersion.created_at.desc()))
+    res = await session.execute(
+        select(MetadataVersion).order_by(MetadataVersion.created_at.desc())
+    )
     versions = res.scalars().all()
 
     return [
@@ -350,7 +372,10 @@ _TRANSITION_AUDIT_ACTION: dict[tuple[str, str], str] = {
 }
 
 
-@api_router.patch("/metadata/versions/{version_id}/status", response_model=ProtocolMetadataVersion)
+@api_router.patch(
+    "/metadata/versions/{version_id}/status",
+    response_model=ProtocolMetadataVersion,
+)
 async def update_version_status(
     version_id: uuid.UUID,
     payload: VersionStatusUpdateRequest,
@@ -389,8 +414,9 @@ async def update_version_status(
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Transition from '{version.status}' to '{payload.status}' is not permitted. "
-                f"Allowed targets: {sorted(allowed) if allowed else 'none — this is a terminal state'}."
+                f"Transition from '{version.status}' to '{payload.status}' is not "
+                f"permitted. Allowed targets: "
+                f"{sorted(allowed) if allowed else 'none — this is a terminal state'}."
             ),
         )
 
@@ -427,7 +453,9 @@ async def update_version_status(
     }
 
     audit_canonical = get_canonical_json(audit_payload)
-    new_row_hash = compute_audit_row_hash(previous_hash, audit_canonical, audit_timestamp.isoformat())
+    new_row_hash = compute_audit_row_hash(
+        previous_hash, audit_canonical, audit_timestamp.isoformat()
+    )
 
     secrets_mgr = get_secrets_manager()
     audit_event = MetadataAudit(
@@ -458,10 +486,14 @@ async def get_active_metadata(
     registry: RegistrySchema = Depends(get_registry)
 ) -> dict[str, str | None]:
     """Retrieve the ID of the actively loaded registry schema."""
-    return {"version_id": str(registry.version) if hasattr(registry, "version") else None}
+    return {
+        "version_id": str(registry.version) if hasattr(registry, "version") else None
+    }
 
 
-@api_router.post("/metadata/compile/{version_id}", response_model=MetadataCompileResponse)
+@api_router.post(
+    "/metadata/compile/{version_id}", response_model=MetadataCompileResponse
+)
 async def compile_metadata_version(
     version_id: uuid.UUID,
     request: Request,
@@ -483,7 +515,8 @@ async def compile_metadata_version(
         schema = await RegistryLoader.load_active_schema(rt_session)
         request.app.state.registry = schema
 
-        # Dynamically re-warm the RAG Vector Store with the new Obfuscated Schema Baseline
+        # Dynamically re-warm the RAG Vector Store with the new Obfuscated Schema
+        # Baseline
         vector_store = InMemoryVectorStore()
         for table in (schema.tables if schema is not None else []):
             if table.description:
@@ -536,7 +569,10 @@ def _map_table(t: MetadataTable) -> ProtocolTable:
     )
 
 
-@api_router.get("/metadata/versions/{version_id}/schema", response_model=ProtocolSchemaResponse)
+@api_router.get(
+    "/metadata/versions/{version_id}/schema",
+    response_model=ProtocolSchemaResponse,
+)
 async def get_metadata_schema(
     version_id: uuid.UUID,
     session: AsyncSession = Depends(get_steward_db_session)
@@ -581,7 +617,11 @@ async def update_metadata_table(
     payload: TableUpdateRequest,
     session: AsyncSession = Depends(get_steward_db_session)
 ) -> ProtocolTable:
-    stmt = select(MetadataTable).where(MetadataTable.table_id == table_id).options(selectinload(MetadataTable.columns))
+    stmt = (
+        select(MetadataTable)
+        .where(MetadataTable.table_id == table_id)
+        .options(selectinload(MetadataTable.columns))
+    )
     res = await session.execute(stmt)
     table = res.scalar_one_or_none()
     if not table:
@@ -631,14 +671,24 @@ async def create_metadata_version(
     session: AsyncSession = Depends(get_steward_db_session)
 ) -> ProtocolMetadataVersion:
     new_version_id = uuid.uuid4()
-    new_version = MetadataVersion(version_id=new_version_id, status="draft", change_reason="Steward UI clone")
+    new_version = MetadataVersion(
+        version_id=new_version_id,
+        status="draft",
+        change_reason="Steward UI clone",
+    )
     session.add(new_version)
 
     if payload.baseline_version_id:
         baseline_id = uuid.UUID(payload.baseline_version_id)
-        stmt = select(MetadataVersion).where(MetadataVersion.version_id == baseline_id).options(
-            selectinload(MetadataVersion.tables).selectinload(MetadataTable.columns),
-            selectinload(MetadataVersion.edges)
+        stmt = (
+            select(MetadataVersion)
+            .where(MetadataVersion.version_id == baseline_id)
+            .options(
+                selectinload(MetadataVersion.tables).selectinload(
+                    MetadataTable.columns
+                ),
+                selectinload(MetadataVersion.edges)
+            )
         )
         res = await session.execute(stmt)
         baseline = res.scalar_one_or_none()
@@ -748,4 +798,8 @@ async def obfuscate_schema(
             c_counter += 1
 
     await session.commit()
-    return {"status": "success", "tables_obfuscated": t_counter - 1, "columns_obfuscated": c_counter - 1}
+    return {
+        "status": "success",
+        "tables_obfuscated": t_counter - 1,
+        "columns_obfuscated": c_counter - 1,
+    }

@@ -20,7 +20,7 @@ if not steward_db_url:
 engine = create_async_engine(steward_db_url)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
-def find_all_csvs(root_dir) -> dict[str, str]:
+def find_all_csvs(root_dir: str) -> dict[str, str]:
     # Returns mapping of physical_table_name (lowercase) to filepath
     csv_map = {}
     for path in Path(root_dir).rglob("*.csv"):
@@ -28,7 +28,7 @@ def find_all_csvs(root_dir) -> dict[str, str]:
         csv_map[tbl_name] = str(path)
     return csv_map
 
-async def populate_metadata():
+async def populate_metadata() -> None:
     csv_map = find_all_csvs("./data/minidev/MINIDEV/dev_databases")
 
     async with async_session() as session:
@@ -50,7 +50,10 @@ async def populate_metadata():
             print("No metadata versions found. Please load initial metadata first.")
             return
 
-        print(f"Updating Registry Artifact {version.version_id} with Description Text...")
+        print(
+            f"Updating Registry Artifact {version.version_id}"
+            f" with Description Text..."
+        )
 
         result = await session.execute(
             select(MetadataTable)
@@ -63,23 +66,28 @@ async def populate_metadata():
         columns_updated_count = 0
 
         for table in tables:
-            physical_table_name = table.real_name.lower()
+            physical_table_name = table.real_name.lower()  # type: ignore[attr-defined]
 
             # Default table description to physical name
-            table.description = physical_table_name
+            table.description = physical_table_name  # type: ignore[attr-defined]
             tables_updated_count += 1
 
             # Prepare column descriptions map from CSV
             col_desc_map = {}
             if physical_table_name in csv_map:
                 try:
-                    # utf-8-sig to automatically handle any stray Byte Order Marks (BOM) in the flat files
-                    with open(csv_map[physical_table_name], encoding='utf-8-sig') as f:
+                    # utf-8-sig to automatically handle any stray Byte Order
+                    # Marks (BOM) in the flat files
+                    with open(
+                        csv_map[physical_table_name], encoding='utf-8-sig'
+                    ) as f:
                         reader = csv.DictReader(f)
                         for row in reader:
                             # Strip all keys and values to ensure clean lookup
                             row = {
-                                k.strip() if k else k: v.strip() if isinstance(v, str) else v
+                                k.strip() if k else k: (
+                                    v.strip() if isinstance(v, str) else v
+                                )
                                 for k, v in row.items()
                             }
 
@@ -93,12 +101,16 @@ async def populate_metadata():
                             if col_desc:
                                 col_desc_map[col_name] = col_desc
                 except Exception as e:
-                    print(f"Warning: Error parsing CSV {csv_map[physical_table_name]}: {e}")
+                    print(
+                        f"Warning: Error parsing CSV"
+                        f" {csv_map[physical_table_name]}: {e}"
+                    )
 
             for col in table.columns:
                 physical_col_name = col.real_name.lower()
 
-                if physical_col_name in col_desc_map and col_desc_map[physical_col_name]:
+                col_desc = col_desc_map.get(physical_col_name)
+                if col_desc:
                     col.description = col_desc_map[physical_col_name]
                 else:
                     col.description = physical_col_name

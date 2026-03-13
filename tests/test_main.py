@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi.testclient import TestClient
 
 from app.api.router import get_compiler
@@ -16,17 +18,20 @@ def test_health_check() -> None:
 def test_standard_exception_handler() -> None:
     """Verify that unhandled exceptions are caught and formatted as 500s."""
     class MockCrashCompiler:
-        async def compile(self, *args, **kwargs):
+        async def compile(self, *args: Any, **kwargs: Any) -> None:
             raise ValueError("Something unexpected exploded")
 
-    def override_compiler():
+    def override_compiler() -> MockCrashCompiler:
         return MockCrashCompiler()
 
     app.dependency_overrides[get_compiler] = override_compiler
 
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
-            response = client.post("/api/v1/query/generate", json={"intent": "test", "schema_hints": []})
+            response = client.post(
+                "/api/v1/query/generate",
+                json={"intent": "test", "schema_hints": []},
+            )
 
         assert response.status_code == 500
         data = response.json()
@@ -49,8 +54,10 @@ def test_lifespan_initialization() -> None:
 def test_translation_error_returns_400() -> None:
     """TranslationError (hallucinated JOIN, etc.) must map to HTTP 400."""
     class TranslationCrashCompiler:
-        async def compile(self, *args, **kwargs):
-            raise TranslationError("JOIN condition does not match any declared relationship")
+        async def compile(self, *args: Any, **kwargs: Any) -> None:
+            raise TranslationError(
+                "JOIN condition does not match any declared relationship"
+            )
 
     app.dependency_overrides[get_compiler] = lambda: TranslationCrashCompiler()
     try:
@@ -69,7 +76,7 @@ def test_translation_error_returns_400() -> None:
 def test_llm_generation_error_returns_502() -> None:
     """LLMGenerationError (provider unavailable, bad JSON) must map to HTTP 502."""
     class LLMCrashCompiler:
-        async def compile(self, *args, **kwargs):
+        async def compile(self, *args: Any, **kwargs: Any) -> None:
             raise LLMGenerationError("OpenAI returned no choices.", raw_response="")
 
     app.dependency_overrides[get_compiler] = lambda: LLMCrashCompiler()
@@ -89,7 +96,7 @@ def test_llm_generation_error_returns_502() -> None:
 def test_rag_uncertainty_error_returns_400() -> None:
     """RAGUncertaintyError (ambiguous match with strict mode) must map to HTTP 400."""
     class RAGCrashCompiler:
-        async def compile(self, *args, **kwargs):
+        async def compile(self, *args: Any, **kwargs: Any) -> None:
             raise RAGUncertaintyError("Ambiguous RAG match; cannot proceed")
 
     app.dependency_overrides[get_compiler] = lambda: RAGCrashCompiler()

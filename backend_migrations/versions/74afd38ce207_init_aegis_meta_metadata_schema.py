@@ -26,7 +26,8 @@ def upgrade() -> None:
     sa.Column('version_id', sa.UUID(), nullable=True),
     sa.Column('actor', sa.Text(), nullable=False),
     sa.Column('action', sa.Enum(
-        'create', 'update', 'approve', 'deploy', 'revoke', name='audit_action', schema='aegis_meta'
+        'create', 'update', 'approve', 'deploy', 'revoke',
+        name='audit_action', schema='aegis_meta'
     ), nullable=False),
     sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('timestamp', sa.DateTime(), nullable=False),
@@ -37,7 +38,8 @@ def upgrade() -> None:
     sa.Column('version_id', sa.UUID(), nullable=False),
     sa.Column('registry_hash', sa.Text(), nullable=True),
     sa.Column('status', sa.Enum(
-        'draft', 'pending_review', 'active', 'archived', name='version_status', schema='aegis_meta'
+        'draft', 'pending_review', 'active', 'archived',
+        name='version_status', schema='aegis_meta'
     ), nullable=False),
     sa.Column('created_by', sa.Text(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
@@ -50,12 +52,18 @@ def upgrade() -> None:
     op.create_table('compiled_registry_artifacts',
     sa.Column('artifact_id', sa.UUID(), nullable=False),
     sa.Column('version_id', sa.UUID(), nullable=False),
-    sa.Column('artifact_blob', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column(
+        'artifact_blob',
+        postgresql.JSONB(astext_type=sa.Text()),
+        nullable=False,
+    ),
     sa.Column('artifact_hash', sa.Text(), nullable=False),
     sa.Column('compiled_at', sa.DateTime(), nullable=False),
     sa.Column('compiler_version', sa.Text(), nullable=False),
     sa.Column('signature', sa.Text(), nullable=True),
-    sa.ForeignKeyConstraint(['version_id'], ['aegis_meta.metadata_versions.version_id'], ),
+    sa.ForeignKeyConstraint(
+        ['version_id'], ['aegis_meta.metadata_versions.version_id'],
+    ),
     sa.PrimaryKeyConstraint('artifact_id'),
     sa.UniqueConstraint('version_id'),
     schema='aegis_meta'
@@ -69,7 +77,9 @@ def upgrade() -> None:
     sa.Column('tenant_id', sa.Text(), nullable=True),
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['version_id'], ['aegis_meta.metadata_versions.version_id'], ),
+    sa.ForeignKeyConstraint(
+        ['version_id'], ['aegis_meta.metadata_versions.version_id'],
+    ),
     sa.PrimaryKeyConstraint('table_id'),
     sa.UniqueConstraint('version_id', 'alias', name='uq_table_alias'),
     sa.UniqueConstraint('version_id', 'real_name', name='uq_table_real_name'),
@@ -91,16 +101,27 @@ def upgrade() -> None:
     sa.Column('allowed_in_select', sa.Boolean(), nullable=False),
     sa.Column('allowed_in_filter', sa.Boolean(), nullable=False),
     sa.Column('allowed_in_join', sa.Boolean(), nullable=False),
-    sa.Column('safety_classification', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column(
+        'safety_classification',
+        postgresql.JSONB(astext_type=sa.Text()),
+        nullable=True,
+    ),
     sa.ForeignKeyConstraint(
         ['version_id', 'table_id'],
-        ['aegis_meta.metadata_tables.version_id', 'aegis_meta.metadata_tables.table_id'],
+        [
+            'aegis_meta.metadata_tables.version_id',
+            'aegis_meta.metadata_tables.table_id',
+        ],
     ),
-    sa.ForeignKeyConstraint(['version_id'], ['aegis_meta.metadata_versions.version_id'], ),
+    sa.ForeignKeyConstraint(
+        ['version_id'], ['aegis_meta.metadata_versions.version_id'],
+    ),
     sa.PrimaryKeyConstraint('column_id'),
     sa.UniqueConstraint('version_id', 'column_id', name='uq_col_composite_id'),
     sa.UniqueConstraint('version_id', 'table_id', 'alias', name='uq_col_alias'),
-    sa.UniqueConstraint('version_id', 'table_id', 'real_name', name='uq_col_real_name'),
+    sa.UniqueConstraint(
+        'version_id', 'table_id', 'real_name', name='uq_col_real_name'
+    ),
     schema='aegis_meta'
     )
     op.create_table('metadata_relationships',
@@ -120,13 +141,21 @@ def upgrade() -> None:
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.ForeignKeyConstraint(
         ['version_id', 'source_column_id'],
-        ['aegis_meta.metadata_columns.version_id', 'aegis_meta.metadata_columns.column_id'],
+        [
+            'aegis_meta.metadata_columns.version_id',
+            'aegis_meta.metadata_columns.column_id',
+        ],
     ),
     sa.ForeignKeyConstraint(
         ['version_id', 'target_column_id'],
-        ['aegis_meta.metadata_columns.version_id', 'aegis_meta.metadata_columns.column_id'],
+        [
+            'aegis_meta.metadata_columns.version_id',
+            'aegis_meta.metadata_columns.column_id',
+        ],
     ),
-    sa.ForeignKeyConstraint(['version_id'], ['aegis_meta.metadata_versions.version_id'], ),
+    sa.ForeignKeyConstraint(
+        ['version_id'], ['aegis_meta.metadata_versions.version_id'],
+    ),
     sa.PrimaryKeyConstraint('relationship_id'),
     schema='aegis_meta'
     )

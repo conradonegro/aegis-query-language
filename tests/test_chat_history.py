@@ -6,6 +6,7 @@ Validates that:
 3. The same session_id is honoured across subsequent requests.
 """
 import uuid
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -16,7 +17,16 @@ from app.main import app
 class MockCompilerTurnA:
     """Returns a fixed SELECT for turn 1."""
 
-    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
+    async def compile(
+        self,
+        intent: Any,
+        schema: Any,
+        hints: Any,
+        explain: bool = False,
+        chat_history: Any = None,
+        provider_id: Any = None,
+        **kwargs: Any,
+    ) -> Any:
         from app.compiler.models import ExecutableQuery
         return ExecutableQuery(
             sql="SELECT * FROM users",
@@ -32,7 +42,16 @@ class MockCompilerTurnA:
 class MockCompilerTurnB:
     """Returns a filtered SELECT for turn 2, reflecting history."""
 
-    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
+    async def compile(
+        self,
+        intent: Any,
+        schema: Any,
+        hints: Any,
+        explain: bool = False,
+        chat_history: Any = None,
+        provider_id: Any = None,
+        **kwargs: Any,
+    ) -> Any:
         from app.compiler.models import ExecutableQuery
         # Verify that the history from turn 1 was injected
         assert chat_history is not None and len(chat_history) >= 2
@@ -47,7 +66,7 @@ class MockCompilerTurnB:
         )
 
 
-def test_chat_session_created_on_first_request():
+def test_chat_session_created_on_first_request() -> None:
     """
     /query/generate must return a session_id even when none was sent.
     """
@@ -56,7 +75,11 @@ def test_chat_session_created_on_first_request():
         with TestClient(app) as client:
             resp = client.post(
                 "/api/v1/query/generate",
-                json={"intent": "Show all users", "schema_hints": [], "provider_id": "ollama:llama3"},
+                json={
+                    "intent": "Show all users",
+                    "schema_hints": [],
+                    "provider_id": "ollama:llama3",
+                },
             )
         assert resp.status_code == 200, resp.text
         data = resp.json()
@@ -74,7 +97,16 @@ _ABSTRACT_SQL = "SELECT col0001 FROM table0001"
 class MockCompilerAbstractTurn1:
     """Returns an ExecutableQuery with both abstract and physical SQL set."""
 
-    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
+    async def compile(
+        self,
+        intent: Any,
+        schema: Any,
+        hints: Any,
+        explain: bool = False,
+        chat_history: Any = None,
+        provider_id: Any = None,
+        **kwargs: Any,
+    ) -> Any:
         from app.compiler.models import ExecutableQuery
         return ExecutableQuery(
             sql=_PHYSICAL_SQL,
@@ -94,18 +126,37 @@ class MockCompilerAbstractTurn2:
     not the physical SQL.
     """
 
-    async def compile(self, intent, schema, hints, explain=False, chat_history=None, provider_id=None, **kwargs):
+    async def compile(
+        self,
+        intent: Any,
+        schema: Any,
+        hints: Any,
+        explain: bool = False,
+        chat_history: Any = None,
+        provider_id: Any = None,
+        **kwargs: Any,
+    ) -> Any:
         from app.compiler.models import ExecutableQuery
         assert chat_history is not None
         assistant_messages = [m for m in chat_history if m.role == "assistant"]
-        assert len(assistant_messages) >= 1, "Expected at least one assistant message in history"
+        assert len(assistant_messages) >= 1, (
+            "Expected at least one assistant message in history"
+        )
         stored_content = assistant_messages[0].content
         # Must contain the obfuscated aliases
-        assert "col0001" in stored_content, f"Expected obfuscated alias in history, got: {stored_content!r}"
-        assert "table0001" in stored_content, f"Expected obfuscated alias in history, got: {stored_content!r}"
+        assert "col0001" in stored_content, (
+            f"Expected obfuscated alias in history, got: {stored_content!r}"
+        )
+        assert "table0001" in stored_content, (
+            f"Expected obfuscated alias in history, got: {stored_content!r}"
+        )
         # Must NOT contain the physical schema names
-        assert "real_column" not in stored_content, f"Physical column leaked into history: {stored_content!r}"
-        assert "real_table" not in stored_content, f"Physical table leaked into history: {stored_content!r}"
+        assert "real_column" not in stored_content, (
+            f"Physical column leaked into history: {stored_content!r}"
+        )
+        assert "real_table" not in stored_content, (
+            f"Physical table leaked into history: {stored_content!r}"
+        )
         return ExecutableQuery(
             sql="SELECT 1",
             parameters={},
@@ -117,7 +168,7 @@ class MockCompilerAbstractTurn2:
         )
 
 
-def test_chat_history_stores_abstract_sql_not_physical():
+def test_chat_history_stores_abstract_sql_not_physical() -> None:
     """
     The assistant message persisted to chat history must use abstract_sql
     (obfuscated aliases) and must not contain physical schema names.
@@ -138,14 +189,18 @@ def test_chat_history_stores_abstract_sql_not_physical():
         app.dependency_overrides[get_compiler] = lambda: MockCompilerAbstractTurn2()
         resp2 = client.post(
             "/api/v1/query/generate",
-            json={"intent": "follow up", "schema_hints": [], "session_id": session_id},
+            json={
+                "intent": "follow up",
+                "schema_hints": [],
+                "session_id": session_id,
+            },
         )
         assert resp2.status_code == 200, resp2.text
 
     app.dependency_overrides.clear()
 
 
-def test_chat_session_preserved_across_provider_switch():
+def test_chat_session_preserved_across_provider_switch() -> None:
     """
     Sending the same session_id on a second request with a different provider
     should persist context and return the same session_id.
@@ -156,7 +211,11 @@ def test_chat_session_preserved_across_provider_switch():
         # Turn 1: initial request
         resp1 = client.post(
             "/api/v1/query/generate",
-            json={"intent": "Show all users", "schema_hints": [], "provider_id": "ollama:llama3"},
+            json={
+                "intent": "Show all users",
+                "schema_hints": [],
+                "provider_id": "ollama:llama3",
+            },
         )
         assert resp1.status_code == 200, resp1.text
         session_id = resp1.json()["session_id"]

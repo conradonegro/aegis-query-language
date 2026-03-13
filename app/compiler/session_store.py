@@ -18,7 +18,9 @@ class SessionStore:
     with a simple size cap and oldest-entry eviction to prevent unbounded growth.
     """
 
-    def __init__(self, redis_client: Any | None = None, ttl: int = _DEFAULT_TTL) -> None:
+    def __init__(
+        self, redis_client: Any | None = None, ttl: int = _DEFAULT_TTL
+    ) -> None:
         self._redis = redis_client
         self._ttl = ttl
         self._local: dict[str, SessionQueryContext] = {}

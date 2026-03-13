@@ -1,7 +1,7 @@
 import sys
 
 
-def scan_bird_sql(filepath):  # noqa: C901
+def scan_bird_sql(filepath: str) -> None:  # noqa: C901
     """
     Phase 1: Script Review Requirements
     - Identify encoding issues (Non-UTF8)
@@ -21,11 +21,14 @@ def scan_bird_sql(filepath):  # noqa: C901
                     # Attempt strict UTF-8 decoding to find encoding issues
                     line = raw_line.decode('utf-8')
                 except UnicodeDecodeError as e:
-                    issues.append(f"Line {line_no}: Non-UTF8 Character Detected - {str(e)}")
+                    issues.append(
+                        f"Line {line_no}: Non-UTF8 Character Detected - {str(e)}"
+                    )
                     line = raw_line.decode('utf-8', errors='replace')
 
-                # We are scanning for "COPY public.table_name" to track row insertions
-                # This operates between 2242 to 3900956 per the user constraints
+                # We are scanning for "COPY public.table_name" to track row
+                # insertions. This operates between 2242 to 3900956 per the
+                # user constraints
                 if 2242 <= line_no <= 3900956:
                     if line.startswith("COPY public.") and "FROM stdin;" in line:
                         parts = line.split(" ")
@@ -48,11 +51,19 @@ def scan_bird_sql(filepath):  # noqa: C901
                     if line.startswith("\\."):
                         current_table = None
 
-                # Check for explicit owner references (schema agnostic) in the DDL ranges
+                # Check for explicit owner references (schema agnostic) in the
+                # DDL ranges
                 if line_no < 2242 or line_no > 3900956:
-                    if "xiaolongli" in line or "johndoe" in line or "OWNER TO" in line:
+                    if (
+                        "xiaolongli" in line
+                        or "johndoe" in line
+                        or "OWNER TO" in line
+                    ):
                         if len(issues) < 20: # Cap output flood
-                            issues.append(f"Line {line_no}: Hardcoded Owner discovered -> {line.strip()}")
+                            issues.append(
+                                f"Line {line_no}: Hardcoded Owner"
+                                f" discovered -> {line.strip()}"
+                            )
 
     except Exception as e:
         print(f"Failed to scan: {e}")

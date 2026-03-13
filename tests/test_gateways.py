@@ -31,7 +31,7 @@ def envelope() -> PromptEnvelope:
     )
 
 
-def _ok_response(body: dict) -> AsyncMock:
+def _ok_response(body: dict[str, object]) -> AsyncMock:
     mock = AsyncMock(spec=httpx.Response)
     mock.status_code = 200
     mock.json.return_value = body
@@ -52,7 +52,9 @@ def _error_response(status: int = 500) -> AsyncMock:
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_openai_success_returns_raw_json(mock_post, mock_secrets, envelope):
+async def test_openai_success_returns_raw_json(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "sk-test"
     payload = json.dumps({"sql": "SELECT COUNT(*) FROM users"})
     mock_post.return_value = _ok_response({
@@ -68,7 +70,9 @@ async def test_openai_success_returns_raw_json(mock_post, mock_secrets, envelope
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_openai_refusal_payload_passed_through(mock_post, mock_secrets, envelope):
+async def test_openai_refusal_payload_passed_through(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "sk-test"
     refusal = json.dumps({"refused": True, "reason": "destructive intent"})
     mock_post.return_value = _ok_response({
@@ -82,7 +86,9 @@ async def test_openai_refusal_payload_passed_through(mock_post, mock_secrets, en
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_openai_invalid_json_raises(mock_post, mock_secrets, envelope):
+async def test_openai_invalid_json_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "sk-test"
     mock_post.return_value = _ok_response({
         "choices": [{"message": {"content": "not valid json"}}],
@@ -95,7 +101,9 @@ async def test_openai_invalid_json_raises(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_openai_no_choices_raises(mock_post, mock_secrets, envelope):
+async def test_openai_no_choices_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "sk-test"
     mock_post.return_value = _ok_response({"choices": [], "usage": {}})
     with pytest.raises(LLMGenerationError, match="(?i)no choices"):
@@ -104,7 +112,9 @@ async def test_openai_no_choices_raises(mock_post, mock_secrets, envelope):
 
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
-async def test_openai_missing_api_key_raises(mock_secrets, envelope):
+async def test_openai_missing_api_key_raises(
+    mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = None
     with pytest.raises(LLMGenerationError, match="(?i)API key is missing"):
         await OpenAILLMGateway().generate(envelope)
@@ -113,7 +123,9 @@ async def test_openai_missing_api_key_raises(mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_openai_http_error_raises(mock_post, mock_secrets, envelope):
+async def test_openai_http_error_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "sk-test"
     mock_post.side_effect = httpx.HTTPStatusError(
         "500", request=MagicMock(), response=MagicMock()
@@ -127,7 +139,9 @@ async def test_openai_http_error_raises(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_anthropic_success_prepends_brace(mock_post, mock_secrets, envelope):
+async def test_anthropic_success_prepends_brace(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     """
     Anthropic uses assistant prefilling: the gateway sends {"role": "assistant",
     "content": "{"} and Anthropic returns the continuation.  The gateway must
@@ -150,7 +164,9 @@ async def test_anthropic_success_prepends_brace(mock_post, mock_secrets, envelop
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_anthropic_refusal_passed_through(mock_post, mock_secrets, envelope):
+async def test_anthropic_refusal_passed_through(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "anthro-test"
     continuation = '"refused": true, "reason": "cannot drop tables"}'
     mock_post.return_value = _ok_response({
@@ -165,7 +181,9 @@ async def test_anthropic_refusal_passed_through(mock_post, mock_secrets, envelop
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_anthropic_no_content_blocks_raises(mock_post, mock_secrets, envelope):
+async def test_anthropic_no_content_blocks_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "anthro-test"
     mock_post.return_value = _ok_response({"content": [], "usage": {}})
     with pytest.raises(LLMGenerationError, match="(?i)no content"):
@@ -174,7 +192,9 @@ async def test_anthropic_no_content_blocks_raises(mock_post, mock_secrets, envel
 
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
-async def test_anthropic_missing_api_key_raises(mock_secrets, envelope):
+async def test_anthropic_missing_api_key_raises(
+    mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = None
     with pytest.raises(LLMGenerationError, match="(?i)API key is missing"):
         await AnthropicLLMGateway().generate(envelope)
@@ -183,7 +203,9 @@ async def test_anthropic_missing_api_key_raises(mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_anthropic_http_error_raises(mock_post, mock_secrets, envelope):
+async def test_anthropic_http_error_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "anthro-test"
     mock_post.side_effect = httpx.HTTPStatusError(
         "500", request=MagicMock(), response=MagicMock()
@@ -197,7 +219,9 @@ async def test_anthropic_http_error_raises(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_google_success_returns_raw_json(mock_post, mock_secrets, envelope):
+async def test_google_success_returns_raw_json(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "goog-test"
     payload = json.dumps({"sql": "SELECT * FROM users"})
     mock_post.return_value = _ok_response({
@@ -213,7 +237,9 @@ async def test_google_success_returns_raw_json(mock_post, mock_secrets, envelope
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_google_refusal_passed_through(mock_post, mock_secrets, envelope):
+async def test_google_refusal_passed_through(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "goog-test"
     refusal = json.dumps({"refused": True, "reason": "forbidden"})
     mock_post.return_value = _ok_response({
@@ -227,7 +253,9 @@ async def test_google_refusal_passed_through(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_google_no_candidates_raises(mock_post, mock_secrets, envelope):
+async def test_google_no_candidates_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "goog-test"
     mock_post.return_value = _ok_response({"candidates": []})
     with pytest.raises(LLMGenerationError, match="(?i)no candidates"):
@@ -236,7 +264,9 @@ async def test_google_no_candidates_raises(mock_post, mock_secrets, envelope):
 
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
-async def test_google_missing_api_key_raises(mock_secrets, envelope):
+async def test_google_missing_api_key_raises(
+    mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = None
     with pytest.raises(LLMGenerationError, match="(?i)API key is missing"):
         await GoogleLLMGateway().generate(envelope)
@@ -245,7 +275,9 @@ async def test_google_missing_api_key_raises(mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_google_invalid_json_raises(mock_post, mock_secrets, envelope):
+async def test_google_invalid_json_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "goog-test"
     mock_post.return_value = _ok_response({
         "candidates": [{"content": {"parts": [{"text": "not json"}]}}],
@@ -257,7 +289,9 @@ async def test_google_invalid_json_raises(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_google_http_error_raises(mock_post, mock_secrets, envelope):
+async def test_google_http_error_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "goog-test"
     mock_post.side_effect = httpx.HTTPStatusError(
         "500", request=MagicMock(), response=MagicMock()
@@ -271,7 +305,9 @@ async def test_google_http_error_raises(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_xai_success_returns_raw_json(mock_post, mock_secrets, envelope):
+async def test_xai_success_returns_raw_json(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "xai-test"
     payload = json.dumps({"sql": "SELECT id FROM users"})
     mock_post.return_value = _ok_response({
@@ -286,7 +322,9 @@ async def test_xai_success_returns_raw_json(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_xai_refusal_passed_through(mock_post, mock_secrets, envelope):
+async def test_xai_refusal_passed_through(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "xai-test"
     refusal = json.dumps({"refused": True, "reason": "not allowed"})
     mock_post.return_value = _ok_response({
@@ -300,7 +338,9 @@ async def test_xai_refusal_passed_through(mock_post, mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_xai_no_choices_raises(mock_post, mock_secrets, envelope):
+async def test_xai_no_choices_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "xai-test"
     mock_post.return_value = _ok_response({"choices": [], "usage": {}})
     with pytest.raises(LLMGenerationError, match="(?i)no choices"):
@@ -309,7 +349,9 @@ async def test_xai_no_choices_raises(mock_post, mock_secrets, envelope):
 
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @pytest.mark.asyncio
-async def test_xai_missing_api_key_raises(mock_secrets, envelope):
+async def test_xai_missing_api_key_raises(
+    mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = None
     with pytest.raises(LLMGenerationError, match="(?i)API key is missing"):
         await XAILLMGateway().generate(envelope)
@@ -318,7 +360,9 @@ async def test_xai_missing_api_key_raises(mock_secrets, envelope):
 @patch("app.compiler.base_gateway.get_secrets_manager")
 @patch("httpx.AsyncClient.post")
 @pytest.mark.asyncio
-async def test_xai_http_error_raises(mock_post, mock_secrets, envelope):
+async def test_xai_http_error_raises(
+    mock_post: MagicMock, mock_secrets: MagicMock, envelope: PromptEnvelope
+) -> None:
     mock_secrets.return_value.get_api_key.return_value = "xai-test"
     mock_post.side_effect = httpx.HTTPStatusError(
         "500", request=MagicMock(), response=MagicMock()

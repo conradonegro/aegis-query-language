@@ -15,7 +15,8 @@ _http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=500.0)
 
 
 class LLMGenerationError(Exception):
-    """Raised when the LLM fails to generate a valid response that meets strict constraints."""
+    """Raised when the LLM fails to generate a valid response that meets strict
+    constraints."""
     def __init__(self, message: str, raw_response: str = ""):
         super().__init__(message)
         self.raw_response = raw_response
@@ -81,7 +82,8 @@ class OllamaLLMGateway:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "stream": False # We must buffer the entire JSON response to validate it, no partial streams
+            # We must buffer the entire JSON response to validate it, no partial streams
+            "stream": False
         }
 
         if self.strict_json:
@@ -95,9 +97,13 @@ class OllamaLLMGateway:
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as e:
-            raise LLMGenerationError(f"HTTP Error communicating with Ollama: {e}") from e
+            raise LLMGenerationError(
+                f"HTTP Error communicating with Ollama: {e}"
+            ) from e
         except Exception as e:
-            raise LLMGenerationError(f"Unexpected connection error with Ollama: {e}") from e
+            raise LLMGenerationError(
+                f"Unexpected connection error with Ollama: {e}"
+            ) from e
 
         latency_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -110,7 +116,8 @@ class OllamaLLMGateway:
                 json.loads(message_content)
             except json.JSONDecodeError as e:
                 raise LLMGenerationError(
-                    f"Ollama failed to return valid JSON. Raw output: {message_content[:100]}...",
+                    f"Ollama failed to return valid JSON. "
+                    f"Raw output: {message_content[:100]}...",
                     raw_response=message_content,
                 ) from e
         final_text = message_content

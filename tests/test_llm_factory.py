@@ -11,41 +11,43 @@ from app.compiler.openai_gateway import OpenAILLMGateway
 from app.compiler.xai_gateway import XAILLMGateway
 
 
-def test_get_llm_gateway_ollama_default():
+def test_get_llm_gateway_ollama_default() -> None:
     with mock.patch.dict(os.environ, {}, clear=True):
         gateway = get_llm_gateway()
         assert isinstance(gateway, OllamaLLMGateway)
         assert gateway.model == "llama3"
 
-def test_get_llm_gateway_ollama_explicit():
+def test_get_llm_gateway_ollama_explicit() -> None:
     gateway = get_llm_gateway("ollama:llama3.1")
     assert isinstance(gateway, OllamaLLMGateway)
     assert gateway.model == "llama3.1"
 
-def test_get_llm_gateway_openai_explicit():
+def test_get_llm_gateway_openai_explicit() -> None:
     with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("openai:gpt-3.5-turbo")
         assert isinstance(gateway, OpenAILLMGateway)
         assert gateway.model == "gpt-3.5-turbo"
 
-def test_get_llm_gateway_anthropic_explicit():
+def test_get_llm_gateway_anthropic_explicit() -> None:
     with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("anthropic:claude-3-5-sonnet")
         assert isinstance(gateway, AnthropicLLMGateway)
         assert gateway.model == "claude-3-5-sonnet"
 
-def test_get_llm_gateway_google_explicit():
+def test_get_llm_gateway_google_explicit() -> None:
     with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("google:gemini-1.5-pro")
         assert isinstance(gateway, GoogleLLMGateway)
         assert gateway.model == "gemini-1.5-pro"
 
-def test_get_llm_gateway_xai_explicit():
+def test_get_llm_gateway_xai_explicit() -> None:
     with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
         gateway = get_llm_gateway("xai:grok-2")
         assert isinstance(gateway, XAILLMGateway)
         assert gateway.model == "grok-2"
 
-def test_get_llm_gateway_unknown_provider():
-    with pytest.raises(ValueError, match="Unknown LLM Provider designated: invalid_provider"):
+def test_get_llm_gateway_unknown_provider() -> None:
+    with pytest.raises(
+        ValueError, match="Unknown LLM Provider designated: invalid_provider"
+    ):
         get_llm_gateway("invalid_provider")

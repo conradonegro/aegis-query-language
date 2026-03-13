@@ -18,14 +18,16 @@ from app.vault import get_secrets_manager
 logger = logging.getLogger(__name__)
 
 class UnauthorizedRegistryTamperError(Exception):
-    """Raised natively when the DB Artifact's physical footprint fails HMAC verification."""
+    """Raised natively when the DB Artifact's physical footprint fails HMAC
+    verification."""
     pass
 
 
 class RegistryLoader:
     """
     Bridge utility fetching the absolute latest Active compilation hash
-    from the PostgreSQL Database and mapping it statically into memory for the LLM Middleware.
+    from the PostgreSQL Database and mapping it statically into memory for
+    the LLM Middleware.
     """
 
     @staticmethod
@@ -35,7 +37,10 @@ class RegistryLoader:
         # archived version would be silently loaded as the live schema.
         stmt = (
             select(CompiledRegistryArtifact)
-            .join(MetadataVersion, CompiledRegistryArtifact.version_id == MetadataVersion.version_id)
+            .join(
+                MetadataVersion,
+                CompiledRegistryArtifact.version_id == MetadataVersion.version_id,
+            )
             .where(MetadataVersion.status == "active")
             .order_by(CompiledRegistryArtifact.compiled_at.desc())
             .limit(1)
@@ -52,7 +57,10 @@ class RegistryLoader:
         computed_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
 
         if computed_hash != artifact.artifact_hash:
-            logger.critical(f"Tamper Error: Registry Hash mismatch on Artifact {artifact.artifact_id}!")
+            logger.critical(
+                f"Tamper Error: Registry Hash mismatch on Artifact "
+                f"{artifact.artifact_id}!"
+            )
             raise UnauthorizedRegistryTamperError("Artifact Hash discrepancy detected.")
 
         secrets_mgr = get_secrets_manager()
@@ -60,18 +68,28 @@ class RegistryLoader:
         kid = artifact.signature_key_id or secrets_mgr.get_current_signing_key_id()
         signing_key = secrets_mgr.get_signing_key(kid)
 
-        if not verify_hmac_signature(signing_key, canonical_payload, str(artifact.signature)):
-            logger.critical(f"HMAC Verification Failed! Artifact {artifact.artifact_id} - Key {kid}")
+        if not verify_hmac_signature(
+            signing_key, canonical_payload, str(artifact.signature)
+        ):
+            logger.critical(
+                f"HMAC Verification Failed! Artifact {artifact.artifact_id} "
+                f"- Key {kid}"
+            )
             raise UnauthorizedRegistryTamperError(
-                f"HMAC Signature match absolutely failed for Artifact {artifact.artifact_id}. Execution halted."
+                f"HMAC Signature match absolutely failed for Artifact "
+                f"{artifact.artifact_id}. Execution halted."
             )
 
-        logger.info(f"Verified WORM Boot HMAC Signature! Artifact {artifact.artifact_id} - Key {kid}")
+        logger.info(
+            f"Verified WORM Boot HMAC Signature! Artifact {artifact.artifact_id} "
+            f"- Key {kid}"
+        )
         # -------------------------------------------------------------
 
         payload = artifact.artifact_blob
 
-        # Hydrate JSON blob into strict internal typed Pydantic structures needed by CompilerEngine
+        # Hydrate JSON blob into strict internal typed Pydantic structures needed
+        # by CompilerEngine
         tables_def = []
         relationships_def = []
 
@@ -114,7 +132,8 @@ class RegistryLoader:
                         description=col_dict.get("description", ""),
                         data_type=col_dict.get("type", "text"),
                         safety=safety,
-                        physical_target=col_dict["name"] # Mapping conceptual alias directly to real name
+                        # Mapping conceptual alias directly to real name
+                        physical_target=col_dict["name"]
                     )
                 )
 
@@ -127,13 +146,19 @@ class RegistryLoader:
                 )
             )
 
-            # Map relationships using the pre-built column-ID → alias map for both ends.
+            # Map relationships using the pre-built column-ID → alias map for
+            # both ends.
             for rel_dict in tbl_dict.get("relationships", []):
                 source_col = next(
-                    (c for c in tbl_dict.get("columns", []) if c["id"] == rel_dict.get("source_column_id")),
+                    (
+                        c for c in tbl_dict.get("columns", [])
+                        if c["id"] == rel_dict.get("source_column_id")
+                    ),
                     None,
                 )
-                target_col_alias = col_id_to_alias.get(rel_dict.get("target_column_id", ""), "")
+                target_col_alias = col_id_to_alias.get(
+                    rel_dict.get("target_column_id", ""), ""
+                )
 
                 relationships_def.append(
                     AbstractRelationshipDef(

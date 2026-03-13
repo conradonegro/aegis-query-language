@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB = "postgresql+asyncpg://postgres:postgrespassword@localhost:5432/aegis"
 DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DB)
 
-async def seed_database():
+async def seed_database() -> None:
     """Seeds the Aegis proxy database with default Alice, Bob, and Charlie mock data."""
     logger.info(f"Connecting to database: {DATABASE_URL}")
     engine = create_async_engine(DATABASE_URL, echo=False)
@@ -41,9 +41,15 @@ async def seed_database():
         """))
 
         logger.info("Inserting mock user data...")
-        await conn.execute(text("INSERT INTO users VALUES (1, 'Alice', true, '2025-01-01')"))
-        await conn.execute(text("INSERT INTO users VALUES (2, 'Bob', true, '2025-01-02')"))
-        await conn.execute(text("INSERT INTO users VALUES (3, 'Charlie', false, '2025-01-03')"))
+        await conn.execute(
+            text("INSERT INTO users VALUES (1, 'Alice', true, '2025-01-01')")
+        )
+        await conn.execute(
+            text("INSERT INTO users VALUES (2, 'Bob', true, '2025-01-02')")
+        )
+        await conn.execute(
+            text("INSERT INTO users VALUES (3, 'Charlie', false, '2025-01-03')")
+        )
 
         logger.info("Inserting mock order data...")
         await conn.execute(text("INSERT INTO orders VALUES (101, 1, 99.99)"))

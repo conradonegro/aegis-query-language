@@ -13,7 +13,12 @@ from sqlalchemy import (  # noqa: E402
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID  # noqa: E402
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship  # noqa: E402
+from sqlalchemy.orm import (  # noqa: E402
+    DeclarativeBase,
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 # SQLite (used in tests) doesn't support schemas. Conditionally strip it.
 _SCHEMA: str | None = None if os.getenv("TESTING") == "true" else "aegis_meta"
@@ -30,34 +35,59 @@ class MetadataVersion(Base):
     __tablename__ = "metadata_versions"
     __table_args__ = {"schema": "aegis_meta"}
 
-    version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     registry_hash: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
-        Enum("draft", "pending_review", "active", "archived", name="version_status", schema="aegis_meta"),
+        Enum(
+            "draft",
+            "pending_review",
+            "active",
+            "archived",
+            name="version_status",
+            schema="aegis_meta",
+        ),
         default="draft",
     )
     created_by: Mapped[str] = mapped_column(Text, default="system")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
     approved_by: Mapped[str | None] = mapped_column(Text)
-    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     change_reason: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
-    tables = relationship("MetadataTable", back_populates="version", cascade="all, delete-orphan")
-    columns = relationship("MetadataColumn", back_populates="version", cascade="all, delete-orphan")
-    edges = relationship("MetadataRelationship", back_populates="version", cascade="all, delete-orphan")
+    tables = relationship(
+        "MetadataTable", back_populates="version", cascade="all, delete-orphan"
+    )
+    columns = relationship(
+        "MetadataColumn", back_populates="version", cascade="all, delete-orphan"
+    )
+    edges = relationship(
+        "MetadataRelationship",
+        back_populates="version",
+        cascade="all, delete-orphan",
+    )
 
 
 class MetadataTable(Base):
     __tablename__ = "metadata_tables"
-    table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("aegis_meta.metadata_versions.version_id"))
+    table_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("aegis_meta.metadata_versions.version_id")
+    )
     real_name: Mapped[str] = mapped_column(Text, nullable=False)
     alias: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     tenant_id: Mapped[str | None] = mapped_column(Text)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
     __table_args__ = (
         UniqueConstraint("version_id", "alias", name="uq_table_alias"),
@@ -67,13 +97,22 @@ class MetadataTable(Base):
     )
 
     version = relationship("MetadataVersion", back_populates="tables")
-    columns = relationship("MetadataColumn", back_populates="table", cascade="all, delete-orphan", overlaps="columns")
+    columns = relationship(
+        "MetadataColumn",
+        back_populates="table",
+        cascade="all, delete-orphan",
+        overlaps="columns",
+    )
 
 
 class MetadataColumn(Base):
     __tablename__ = "metadata_columns"
-    column_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("aegis_meta.metadata_versions.version_id"))
+    column_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("aegis_meta.metadata_versions.version_id")
+    )
     table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
 
     real_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -93,23 +132,36 @@ class MetadataColumn(Base):
 
     __table_args__ = (
         UniqueConstraint("version_id", "table_id", "alias", name="uq_col_alias"),
-        UniqueConstraint("version_id", "table_id", "real_name", name="uq_col_real_name"),
+        UniqueConstraint(
+            "version_id", "table_id", "real_name", name="uq_col_real_name"
+        ),
         UniqueConstraint("version_id", "column_id", name="uq_col_composite_id"),
         ForeignKeyConstraint(
             ["version_id", "table_id"],
-            ["aegis_meta.metadata_tables.version_id", "aegis_meta.metadata_tables.table_id"]
+            [
+                "aegis_meta.metadata_tables.version_id",
+                "aegis_meta.metadata_tables.table_id",
+            ]
         ),
         {"schema": "aegis_meta"}
     )
 
-    version = relationship("MetadataVersion", back_populates="columns", overlaps="columns")
-    table = relationship("MetadataTable", back_populates="columns", overlaps="columns,version")
+    version = relationship(
+        "MetadataVersion", back_populates="columns", overlaps="columns"
+    )
+    table = relationship(
+        "MetadataTable", back_populates="columns", overlaps="columns,version"
+    )
 
 
 class MetadataRelationship(Base):
     __tablename__ = "metadata_relationships"
-    relationship_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("aegis_meta.metadata_versions.version_id"))
+    relationship_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("aegis_meta.metadata_versions.version_id")
+    )
 
     source_table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     source_column_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
@@ -120,7 +172,15 @@ class MetadataRelationship(Base):
         Enum("fk", "logical", "denormalized", name="rel_type", schema="aegis_meta")
     )
     cardinality: Mapped[str] = mapped_column(
-        Enum("1:1", "1:n", "n:1", "n:m", name="cardinality_type", schema="aegis_meta", default="1:n")
+        Enum(
+            "1:1",
+            "1:n",
+            "n:1",
+            "n:m",
+            name="cardinality_type",
+            schema="aegis_meta",
+            default="1:n",
+        )
     )
 
     bidirectional: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -129,11 +189,17 @@ class MetadataRelationship(Base):
     __table_args__ = (
         ForeignKeyConstraint(
             ["version_id", "source_column_id"],
-            ["aegis_meta.metadata_columns.version_id", "aegis_meta.metadata_columns.column_id"]
+            [
+                "aegis_meta.metadata_columns.version_id",
+                "aegis_meta.metadata_columns.column_id",
+            ]
         ),
         ForeignKeyConstraint(
             ["version_id", "target_column_id"],
-            ["aegis_meta.metadata_columns.version_id", "aegis_meta.metadata_columns.column_id"]
+            [
+                "aegis_meta.metadata_columns.version_id",
+                "aegis_meta.metadata_columns.column_id",
+            ]
         ),
         {"schema": "aegis_meta"}
     )
@@ -148,14 +214,26 @@ class MetadataAudit(Base):
     __tablename__ = "metadata_audit"
     __table_args__ = {"schema": "aegis_meta"}
 
-    audit_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    audit_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     actor: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(
-        Enum("create", "update", "approve", "deploy", "revoke", name="audit_action", schema="aegis_meta")
+        Enum(
+            "create",
+            "update",
+            "approve",
+            "deploy",
+            "revoke",
+            name="audit_action",
+            schema="aegis_meta",
+        )
     )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
     # Cryptographic WORM Chaining
     previous_hash: Mapped[str | None] = mapped_column(Text)
@@ -172,11 +250,17 @@ class CompiledRegistryArtifact(Base):
     __tablename__ = "compiled_registry_artifacts"
     __table_args__ = {"schema": "aegis_meta"}
 
-    artifact_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("aegis_meta.metadata_versions.version_id"), unique=True)
+    artifact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("aegis_meta.metadata_versions.version_id"), unique=True
+    )
     artifact_blob: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     artifact_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    compiled_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    compiled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
     compiler_version: Mapped[str] = mapped_column(Text)
 
     # Cryptographic HMAC Verification
@@ -192,13 +276,24 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
     __table_args__ = {"schema": _SCHEMA} if _SCHEMA else {}
 
-    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False, default="default_tenant")
-    user_id: Mapped[str] = mapped_column(Text, nullable=False, default="api_user")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default="default_tenant"
+    )
+    user_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default="api_user"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
     messages = relationship(
-        "ChatMessage", back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.sequence_number"
+        "ChatMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ChatMessage.sequence_number",
     )
 
 
@@ -213,9 +308,15 @@ class ChatMessage(Base):
         {"schema": _SCHEMA} if _SCHEMA else {}
     )
 
-    message_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     session_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey(f"{_SCHEMA}.chat_sessions.session_id" if _SCHEMA else "chat_sessions.session_id")
+        ForeignKey(
+            f"{_SCHEMA}.chat_sessions.session_id"
+            if _SCHEMA
+            else "chat_sessions.session_id"
+        )
     )
     sequence_number: Mapped[int] = mapped_column(nullable=False)
 
@@ -226,9 +327,12 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Provider Context
-    provider_id: Mapped[str | None] = mapped_column(Text)  # e.g., 'ollama:llama3', 'openai:gpt-4o'
+    # e.g., 'ollama:llama3', 'openai:gpt-4o'
+    provider_id: Mapped[str | None] = mapped_column(Text)
     prompt_tokens: Mapped[int | None] = mapped_column()
     completion_tokens: Mapped[int | None] = mapped_column()
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
     session = relationship("ChatSession", back_populates="messages")

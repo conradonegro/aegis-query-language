@@ -68,7 +68,11 @@ def _col(alias: str, description: str = "") -> AbstractColumnDef:
     )
 
 
-def _table(alias: str, description: str = "", cols: list | None = None) -> AbstractTableDef:
+def _table(
+    alias: str,
+    description: str = "",
+    cols: list[AbstractColumnDef] | None = None,
+) -> AbstractTableDef:
     return AbstractTableDef(
         alias=alias,
         description=description,
@@ -141,7 +145,10 @@ def test_is_follow_up_long_query_no_structural_match_returns_false() -> None:
     """
     f = DeterministicSchemaFilter()
     intent = UserIntent(
-        natural_language_query="recent monthly revenue breakdown quarter category region segment channel"
+        natural_language_query=(
+            "recent monthly revenue breakdown quarter category region"
+            " segment channel"
+        )
     )
     last = _filtered([_table("x", "something completely unrelated")])
     assert f.is_follow_up(intent, last_schema=last) is False
@@ -206,7 +213,8 @@ def test_filter_schema_prunes_unrelated_relationships() -> None:
     # products doesn't match "user profile" tokens and has no RAG force
     # BUT it IS augmented via relationship — check that if products gets
     # dropped (zero overlap + no force), the relationship is also pruned.
-    # Since augmentation adds products, verify relationship is kept when both present.
+    # Since augmentation adds products, verify relationship is kept when both
+    # present.
     if len(filtered.tables) == 2:
         assert len(filtered.relationships) == 1
     else:

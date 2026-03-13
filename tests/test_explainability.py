@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi.testclient import TestClient
 
 from app.api.router import get_executor
@@ -6,10 +8,10 @@ from app.main import app
 
 
 class SpyExecutionEngine:
-    def __init__(self):
+    def __init__(self) -> None:
         self.call_count = 0
 
-    async def execute(self, query, *, context):
+    async def execute(self, query: Any, *, context: Any) -> QueryResult:
         self.call_count += 1
         return QueryResult(
             columns=["count"],
@@ -17,7 +19,7 @@ class SpyExecutionEngine:
             metadata={"row_limit_applied": False, "registry_version": "1.0.0"}
         )
 
-def test_explainability_absence_by_default():
+def test_explainability_absence_by_default() -> None:
     """Assert explain=false (or missing) explicitly returns no explainability data."""
     spy_engine = SpyExecutionEngine()
     app.dependency_overrides[get_executor] = lambda: spy_engine
@@ -39,7 +41,7 @@ def test_explainability_absence_by_default():
         app.dependency_overrides.clear()
 
 
-def test_explainability_population_when_requested():
+def test_explainability_population_when_requested() -> None:
     """Submit explain=true, verify payload populates securely with redactions."""
     spy_engine = SpyExecutionEngine()
     app.dependency_overrides[get_executor] = lambda: spy_engine

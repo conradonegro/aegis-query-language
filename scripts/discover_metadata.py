@@ -23,11 +23,12 @@ engine = create_async_engine(DATABASE_URL)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
-async def discover_and_draft_metadata():
+async def discover_and_draft_metadata() -> None:
     """
     Reverse-engineers the 'public' BIRD-SQL schema natively tracking PostgreSQL
-    Foreign keys, Columns, Data Types, Nullability etc., and inserts them collectively
-    under a single 'draft' MetadataVersion payload for Steward review.
+    Foreign keys, Columns, Data Types, Nullability etc., and inserts them
+    collectively under a single 'draft' MetadataVersion payload for Steward
+    review.
     """
     async with AsyncSessionLocal() as session:
         # Create the top-level Container Version
@@ -35,7 +36,9 @@ async def discover_and_draft_metadata():
             version_id=uuid.uuid4(),
             status="draft",
             created_by="system-auto-discovery",
-            change_reason="Initial automated auto-discovery ingestion from BIRD-SQL baseline",
+            change_reason=(
+                "Initial automated auto-discovery ingestion from BIRD-SQL baseline"
+            ),
         )
         session.add(new_version)
         await session.commit()
@@ -123,7 +126,10 @@ async def discover_and_draft_metadata():
         session.add_all(table_map.values())
         session.add_all(column_map.values())
         await session.commit()
-        print(f"[*] Generated {len(table_map)} Tables and {len(column_map)} Columns")
+        print(
+            f"[*] Generated {len(table_map)} Tables and"
+            f" {len(column_map)} Columns"
+        )
 
         # 2. Extract Native Foreign Keys to form Edges
         raw_fk_sql = text("""
@@ -152,7 +158,10 @@ async def discover_and_draft_metadata():
             tgt_col_obj = column_map.get((tgt_tbl, tgt_col))
 
             if not src_col_obj or not tgt_col_obj:
-                print(f"[!] Warning: FK map missing cols: {src_tbl}.{src_col} -> {tgt_tbl}.{tgt_col}")
+                print(
+                    f"[!] Warning: FK map missing cols:"
+                    f" {src_tbl}.{src_col} -> {tgt_tbl}.{tgt_col}"
+                )
                 continue
 
             rel_obj = MetadataRelationship(
@@ -172,7 +181,10 @@ async def discover_and_draft_metadata():
         session.add_all(relationships)
         await session.commit()
         print(f"[*] Generated {len(relationships)} standard Relationship edges.")
-        print(f"[*] Discovery Draft Version {target_version_id} completed successfully!")
+        print(
+            f"[*] Discovery Draft Version {target_version_id} completed"
+            f" successfully!"
+        )
 
 
 if __name__ == "__main__":
