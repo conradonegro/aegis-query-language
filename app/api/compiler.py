@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -167,6 +167,12 @@ class MetadataCompiler:
         signing_key = secrets_mgr.get_signing_key(current_key_id)
 
         signature = compute_artifact_hmac_signature(signing_key, canonical_payload)
+
+        await session.execute(
+            delete(CompiledRegistryArtifact).where(
+                CompiledRegistryArtifact.version_id == version.version_id
+            )
+        )
 
         artifact = CompiledRegistryArtifact(
             version_id=version.version_id,

@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b1c2d3e4f5a6"
-down_revision: str | Sequence[str] | None = "1f31f87352cc"
+down_revision: str | Sequence[str] | None = "a3b8f2c91d04"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -102,6 +102,18 @@ def upgrade() -> None:
         "metadata_column_values",
         ["column_id", "active"],
         schema="aegis_meta",
+    )
+    op.execute(
+        "GRANT SELECT ON aegis_meta.metadata_column_values"
+        " TO user_aegis_registry_runtime"
+    )
+    op.execute(
+        "GRANT SELECT ON aegis_meta.metadata_column_values"
+        " TO user_aegis_registry_admin"
+    )
+    op.execute(
+        "GRANT SELECT, INSERT, UPDATE, DELETE"
+        " ON aegis_meta.metadata_column_values TO user_aegis_steward"
     )
 
 
