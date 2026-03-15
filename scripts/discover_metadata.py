@@ -134,18 +134,17 @@ async def discover_and_draft_metadata() -> None:
         # 2. Extract Native Foreign Keys to form Edges
         raw_fk_sql = text("""
             SELECT
-                tc.table_name AS source_table,
-                kcu.column_name AS source_column,
-                ccu.table_name AS target_table,
-                ccu.column_name AS target_column
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu
-              ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage AS ccu
-              ON ccu.constraint_name = tc.constraint_name
-              AND ccu.table_schema = tc.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public';
+                cl.relname AS source_table,
+                a.attname AS source_column,
+                clf.relname AS target_table,
+                af.attname AS target_column
+            FROM pg_constraint c
+            JOIN pg_class cl ON c.conrelid = cl.oid
+            JOIN pg_namespace n ON cl.relnamespace = n.oid
+            JOIN pg_attribute a ON a.attnum = ANY(c.conkey) AND a.attrelid = c.conrelid
+            JOIN pg_class clf ON c.confrelid = clf.oid
+            JOIN pg_attribute af ON af.attnum = ANY(c.confkey) AND af.attrelid = c.confrelid
+            WHERE c.contype = 'f' AND n.nspname = 'public';
         """)
 
         fk_res = await session.execute(raw_fk_sql)
