@@ -47,7 +47,7 @@ def test_explainability_population_when_requested() -> None:
     app.dependency_overrides[get_executor] = lambda: spy_engine
 
     payload = {
-        "intent": "Get user details from the table",
+        "intent": "Get the record for Alice",
         "explain": True
     }
 
@@ -66,7 +66,7 @@ def test_explainability_population_when_requested() -> None:
         # Vector Store Traces
         assert "rag" in explain
         assert explain["rag"]["outcome"] == "SINGLE_HIGH_CONFIDENCE_MATCH"
-        assert "User details" in explain["rag"]["matches"]
+        assert "Alice" in explain["rag"]["matches"]
 
         # Schema Traces
         assert "schema_filter" in explain

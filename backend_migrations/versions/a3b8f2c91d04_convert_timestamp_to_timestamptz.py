@@ -59,9 +59,18 @@ def upgrade() -> None:
         type_=sa.DateTime(timezone=True),
         schema="aegis_meta",
     )
-    # Public schema tables
-    op.alter_column("chat_sessions", "created_at", type_=sa.DateTime(timezone=True))
-    op.alter_column("chat_messages", "timestamp", type_=sa.DateTime(timezone=True))
+    op.alter_column(
+        "chat_sessions",
+        "created_at",
+        type_=sa.DateTime(timezone=True),
+        schema="aegis_meta",
+    )
+    op.alter_column(
+        "chat_messages",
+        "timestamp",
+        type_=sa.DateTime(timezone=True),
+        schema="aegis_meta",
+    )
 
 
 def downgrade() -> None:
@@ -96,8 +105,14 @@ def downgrade() -> None:
         schema="aegis_meta",
     )
     op.alter_column(
-        "chat_sessions", "created_at", type_=sa.DateTime(timezone=False)
+        "chat_sessions",
+        "created_at",
+        type_=sa.DateTime(timezone=False),
+        schema="aegis_meta",
     )
     op.alter_column(
-        "chat_messages", "timestamp", type_=sa.DateTime(timezone=False)
+        "chat_messages",
+        "timestamp",
+        type_=sa.DateTime(timezone=False),
+        schema="aegis_meta",
     )

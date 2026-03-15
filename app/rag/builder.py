@@ -138,10 +138,10 @@ def _index_column(
     col_id_str: str = col_dict.get("id", "")
     expected_hash: str = col_dict.get("rag_values_hash", "")
     limit = _resolve_limit(col_dict)
-    db_values = column_values.get(col_id_str, [])[:limit]
+    db_values_all = column_values.get(col_id_str, [])
 
     if expected_hash:
-        actual_hash = _compute_values_hash(db_values)
+        actual_hash = _compute_values_hash(db_values_all)
         if actual_hash != expected_hash:
             raise RagDivergenceError(
                 f"RAG divergence for {abstract_col}: "
@@ -149,6 +149,8 @@ def _index_column(
                 f"DB hash {actual_hash!r}. "
                 f"Re-compile the artifact after editing values."
             )
+
+    db_values = db_values_all[:limit]
 
     seen_normalized: set[str] = set()
     for raw_val in db_values:
@@ -230,9 +232,6 @@ def build_test_store(
     """
     store = InMemoryVectorStore()
     defaults: list[tuple[str, str, str]] = entries or [
-        # Table-level description hints (mirrors _warm_rag_store behaviour)
-        ("User details", "users.users", "default_tenant"),
-        ("Customer orders", "orders.orders", "default_tenant"),
         # Column description hints
         ("PK", "users.id", "default_tenant"),
         ("Name", "users.name", "default_tenant"),
