@@ -2,9 +2,25 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.api.auth import ResolvedCredential, require_query_credential
 from app.api.router import get_compiler, get_executor
 from app.execution.models import QueryResult
 from app.main import app
+from tests.conftest import TEST_ADMIN_CREDENTIAL_ID, TEST_QUERY_CREDENTIAL_ID
+
+_FAKE_QUERY_CRED = ResolvedCredential(
+    credential_id=TEST_QUERY_CREDENTIAL_ID,
+    tenant_id="test_tenant",
+    user_id="test_user",
+    scope="query",
+)
+
+_FAKE_ADMIN_CRED = ResolvedCredential(
+    credential_id=TEST_ADMIN_CREDENTIAL_ID,
+    tenant_id="test_tenant",
+    user_id="admin_user",
+    scope="admin",
+)
 
 
 class SpyExecutionEngine:
@@ -32,6 +48,7 @@ def test_api_generate_boundary() -> None:
         return spy_engine
 
     app.dependency_overrides[get_executor] = override_executor
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     payload = {
         "intent": "Get Alice in the system",
@@ -69,6 +86,7 @@ def test_api_error_shape() -> None:
         return MockCompilerRaise()
 
     app.dependency_overrides[get_compiler] = override_compiler
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     try:
         payload = {"intent": "DROP TABLE users;", "schema_hints": []}
@@ -102,6 +120,7 @@ def test_api_execute_pipeline() -> None:
         return spy_engine
 
     app.dependency_overrides[get_executor] = override_executor
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     payload = {
         "intent": "Get Alice in the system",

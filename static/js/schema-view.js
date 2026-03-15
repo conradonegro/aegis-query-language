@@ -58,6 +58,7 @@ export class SchemaView {
                                     <th>Physical Context</th>
                                     <th>Data Type</th>
                                     <th>Safety Classifications</th>
+                                    <th>RAG Configuration</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -75,6 +76,21 @@ export class SchemaView {
                                             <label><input type="checkbox" class="col-flag" data-target="allowed_in_select" data-id="${c.column_id}" ${c.allowed_in_select ? 'checked' : ''}> Select <span class="dim">(read)</span></label>
                                             <label><input type="checkbox" class="col-flag" data-target="allowed_in_filter" data-id="${c.column_id}" ${c.allowed_in_filter ? 'checked' : ''}> Filter <span class="dim">(where)</span></label>
                                             <label><input type="checkbox" class="col-flag" data-target="allowed_in_join" data-id="${c.column_id}" ${c.allowed_in_join ? 'checked' : ''}> Join <span class="dim">(on)</span></label>
+                                        </td>
+                                        <td>
+                                            <div style="display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
+                                                <label><input type="checkbox" class="col-flag" data-target="rag_enabled" data-id="${c.column_id}" ${c.rag_enabled ? 'checked' : ''}> Enabled</label>
+                                                <label>Cardinality:
+                                                    <select class="col-rag-cardinality" data-id="${c.column_id}" data-original="${c.rag_cardinality_hint || 'low'}" style="background: #1a1b26; color: #c0caf5; border: 1px solid #414868; border-radius: 3px; padding: 2px 4px;">
+                                                        <option value="low" ${(!c.rag_cardinality_hint || c.rag_cardinality_hint === 'low') ? 'selected' : ''}>Low</option>
+                                                        <option value="medium" ${c.rag_cardinality_hint === 'medium' ? 'selected' : ''}>Medium</option>
+                                                        <option value="high" ${c.rag_cardinality_hint === 'high' ? 'selected' : ''}>High</option>
+                                                    </select>
+                                                </label>
+                                                <label>Limit:
+                                                    <input type="number" class="col-rag-limit" data-id="${c.column_id}" data-original="${c.rag_limit ?? 10}" value="${c.rag_limit ?? 10}" min="1" max="100" style="width: 55px; background: #1a1b26; color: #c0caf5; border: 1px solid #414868; border-radius: 3px; padding: 2px 4px;" />
+                                                </label>
+                                            </div>
                                         </td>
                                     </tr>
                                 `).join('')}
@@ -205,6 +221,28 @@ export class SchemaView {
                 const payload = {};
                 payload[target] = e.target.checked;
                 await API.updateColumn(id, payload);
+            });
+        });
+
+        this.container.querySelectorAll('.col-rag-cardinality').forEach(select => {
+            select.addEventListener('change', async (e) => {
+                const id = e.target.dataset.id;
+                const oldVal = e.target.dataset.original;
+                const newVal = e.target.value;
+                if (oldVal === newVal) return;
+                e.target.dataset.original = newVal;
+                await API.updateColumn(id, { rag_cardinality_hint: newVal });
+            });
+        });
+
+        this.container.querySelectorAll('.col-rag-limit').forEach(input => {
+            input.addEventListener('change', async (e) => {
+                const id = e.target.dataset.id;
+                const oldVal = e.target.dataset.original;
+                const newVal = e.target.value;
+                if (oldVal === newVal) return;
+                e.target.dataset.original = newVal;
+                await API.updateColumn(id, { rag_limit: parseInt(newVal, 10) });
             });
         });
     }

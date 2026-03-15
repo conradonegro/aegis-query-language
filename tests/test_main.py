@@ -2,11 +2,20 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.api.auth import ResolvedCredential, require_query_credential
 from app.api.router import get_compiler
 from app.compiler.engine import RAGUncertaintyError
 from app.compiler.ollama import LLMGenerationError
 from app.compiler.translator import TranslationError
 from app.main import app
+from tests.conftest import TEST_QUERY_CREDENTIAL_ID
+
+_FAKE_QUERY_CRED = ResolvedCredential(
+    credential_id=TEST_QUERY_CREDENTIAL_ID,
+    tenant_id="test_tenant",
+    user_id="test_user",
+    scope="query",
+)
 
 
 def test_health_check() -> None:
@@ -25,6 +34,7 @@ def test_standard_exception_handler() -> None:
         return MockCrashCompiler()
 
     app.dependency_overrides[get_compiler] = override_compiler
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -60,6 +70,7 @@ def test_translation_error_returns_400() -> None:
             )
 
     app.dependency_overrides[get_compiler] = lambda: TranslationCrashCompiler()
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
     try:
         with TestClient(app) as client:
             response = client.post(
@@ -80,6 +91,7 @@ def test_llm_generation_error_returns_502() -> None:
             raise LLMGenerationError("OpenAI returned no choices.", raw_response="")
 
     app.dependency_overrides[get_compiler] = lambda: LLMCrashCompiler()
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
     try:
         with TestClient(app) as client:
             response = client.post(
@@ -100,6 +112,7 @@ def test_rag_uncertainty_error_returns_400() -> None:
             raise RAGUncertaintyError("Ambiguous RAG match; cannot proceed")
 
     app.dependency_overrides[get_compiler] = lambda: RAGCrashCompiler()
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
     try:
         with TestClient(app) as client:
             response = client.post(

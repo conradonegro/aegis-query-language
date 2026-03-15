@@ -2,9 +2,18 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.api.auth import ResolvedCredential, require_query_credential
 from app.api.router import get_executor
 from app.execution.models import QueryResult
 from app.main import app
+from tests.conftest import TEST_QUERY_CREDENTIAL_ID
+
+_FAKE_QUERY_CRED = ResolvedCredential(
+    credential_id=TEST_QUERY_CREDENTIAL_ID,
+    tenant_id="test_tenant",
+    user_id="test_user",
+    scope="query",
+)
 
 
 class SpyExecutionEngine:
@@ -23,6 +32,7 @@ def test_explainability_absence_by_default() -> None:
     """Assert explain=false (or missing) explicitly returns no explainability data."""
     spy_engine = SpyExecutionEngine()
     app.dependency_overrides[get_executor] = lambda: spy_engine
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     payload = {"intent": "Get user details in the system"}
 
@@ -45,6 +55,7 @@ def test_explainability_population_when_requested() -> None:
     """Submit explain=true, verify payload populates securely with redactions."""
     spy_engine = SpyExecutionEngine()
     app.dependency_overrides[get_executor] = lambda: spy_engine
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     payload = {
         "intent": "Get the record for Alice",

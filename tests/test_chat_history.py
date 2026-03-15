@@ -10,8 +10,17 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.api.auth import ResolvedCredential, require_query_credential
 from app.api.router import get_compiler
 from app.main import app
+from tests.conftest import TEST_QUERY_CREDENTIAL_ID
+
+_FAKE_QUERY_CRED = ResolvedCredential(
+    credential_id=TEST_QUERY_CREDENTIAL_ID,
+    tenant_id="test_tenant",
+    user_id="test_user",
+    scope="query",
+)
 
 
 class MockCompilerTurnA:
@@ -71,6 +80,7 @@ def test_chat_session_created_on_first_request() -> None:
     /query/generate must return a session_id even when none was sent.
     """
     app.dependency_overrides[get_compiler] = lambda: MockCompilerTurnA()
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
     try:
         with TestClient(app) as client:
             resp = client.post(
@@ -175,6 +185,7 @@ def test_chat_history_stores_abstract_sql_not_physical() -> None:
     This must hold when explain=False (the default), not just when explain=True.
     """
     app.dependency_overrides[get_compiler] = lambda: MockCompilerAbstractTurn1()
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     with TestClient(app) as client:
         # Turn 1: no explain flag — default behaviour
@@ -206,6 +217,7 @@ def test_chat_session_preserved_across_provider_switch() -> None:
     should persist context and return the same session_id.
     """
     app.dependency_overrides[get_compiler] = lambda: MockCompilerTurnA()
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     with TestClient(app) as client:
         # Turn 1: initial request

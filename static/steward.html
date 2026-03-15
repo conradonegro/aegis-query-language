@@ -164,6 +164,56 @@
             font-size: 12px;
             margin-top: 10px;
         }
+
+        dialog#auth_modal {
+            background: #24283b;
+            color: #c0caf5;
+            border: 1px solid #414868;
+            border-radius: 8px;
+            padding: 32px;
+            min-width: 380px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        }
+
+        dialog#auth_modal::backdrop {
+            background: rgba(0, 0, 0, 0.7);
+        }
+
+        dialog#auth_modal h2 {
+            margin: 0 0 8px 0;
+            font-size: 18px;
+        }
+
+        dialog#auth_modal p {
+            margin: 0 0 20px 0;
+            color: #565f89;
+            font-size: 13px;
+        }
+
+        dialog#auth_modal input[type="password"] {
+            width: 100%;
+            box-sizing: border-box;
+            background: #1a1b26;
+            color: #c0caf5;
+            border: 1px solid #414868;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+
+        dialog#auth_modal #auth_error {
+            color: #f7768e;
+            font-size: 13px;
+            min-height: 18px;
+            margin-bottom: 16px;
+        }
+
+        dialog#auth_modal .auth-actions {
+            display: flex;
+            justify-content: flex-end;
+        }
     </style>
 </head>
 
@@ -198,6 +248,20 @@
             </div>
         </div>
     </div>
+
+    <dialog id="auth_modal">
+        <h2>Aegis Steward — Authentication</h2>
+        <p>Enter your admin API key to access the Steward Console.</p>
+        <form id="auth_form">
+            <input type="password" id="auth_key_input" placeholder="aegis_..." autocomplete="current-password" autofocus />
+            <div id="auth_error"></div>
+            <div class="auth-actions">
+                <button id="auth_submit_btn" type="submit" class="btn btn-primary">Authenticate</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script type="module" src="/static/js/auth-modal.js"></script>
 
     <script type="module">
         import { VersionManager } from '/static/js/version-manager.js';

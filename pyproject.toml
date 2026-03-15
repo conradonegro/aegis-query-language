@@ -61,3 +61,8 @@ addopts = "-ra -q --strict-markers"
 testpaths = [
     "tests",
 ]
+filterwarnings = [
+    # aiosqlite calls asyncio.get_event_loop() from its worker thread during
+    # connection teardown — harmless, unfixable from our side (third-party bug).
+    "ignore:There is no current event loop:DeprecationWarning:aiosqlite",
+]

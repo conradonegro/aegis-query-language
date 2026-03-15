@@ -1,3 +1,10 @@
+function _apiHeaders(extra = {}) {
+    const key = localStorage.getItem('aegis_api_key');
+    const h = { ...extra };
+    if (key) h['Authorization'] = `Bearer ${key}`;
+    return h;
+}
+
 const DOMElements = {
     providerSelect: document.getElementById('provider_select'),
     modelSelect: document.getElementById('model_select'),
@@ -184,7 +191,7 @@ DOMElements.runBtn.addEventListener('click', runCompilation);
 // ─── Boot ──────────────────────────────────────────────────────────────────────
 async function loadActiveVersion() {
     try {
-        const res = await fetch('/api/v1/metadata/active');
+        const res = await fetch('/api/v1/metadata/active', { headers: _apiHeaders() });
         const data = await res.json();
         document.getElementById('active_version').textContent =
             (data && data.version_id) ? data.version_id : 'Development Sandbox';
@@ -262,9 +269,14 @@ async function runCompilation() {
     try {
         const response = await fetch('/api/v1/query/execute', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: _apiHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(payload),
         });
+
+        if (response.status === 401) {
+            handleError({ title: 'Authentication Required (401)', message: 'No valid API key. Set aegis_api_key in localStorage and reload.' });
+            return;
+        }
 
         const data = await response.json();
         if (data.session_id) currentSessionId = data.session_id;

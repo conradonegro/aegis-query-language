@@ -4,7 +4,16 @@ from collections.abc import Generator
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.auth import ResolvedCredential, require_query_credential
 from app.main import app
+from tests.conftest import TEST_QUERY_CREDENTIAL_ID
+
+_FAKE_QUERY_CRED = ResolvedCredential(
+    credential_id=TEST_QUERY_CREDENTIAL_ID,
+    tenant_id="test_tenant",
+    user_id="test_user",
+    scope="query",
+)
 
 
 @pytest.fixture(params=["mock", "ollama"])
@@ -18,11 +27,13 @@ def override_llm_provider(
     # Override the environment variable temporarily
     original = os.environ.get("LLM_PROVIDER")
     os.environ["LLM_PROVIDER"] = request.param
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
 
     # We must force a reload of the app lifespan to pick up the env var change
     with TestClient(app) as client:
-        yield client # Inside context manager, lifespan has run
+        yield client  # Inside context manager, lifespan has run
 
+    app.dependency_overrides.pop(require_query_credential, None)
     if original is not None:
         os.environ["LLM_PROVIDER"] = original
     else:

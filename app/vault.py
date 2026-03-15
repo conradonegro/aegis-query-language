@@ -40,6 +40,14 @@ class SecretsManager(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_credential_hmac_secret(self) -> str:
+        """
+        Fetch the HMAC-SHA256 secret used to hash tenant API keys.
+        Raises VaultMissingSecretError if the secret is absent.
+        """
+        pass
+
 
 class EnvFallbackProvider(SecretsManager):
     """
@@ -84,6 +92,15 @@ class EnvFallbackProvider(SecretsManager):
                 f"Set {env_var} in your .env file."
             )
         return key
+
+    def get_credential_hmac_secret(self) -> str:
+        secret = os.getenv("API_KEY_HMAC_SECRET")
+        if not secret:
+            raise VaultMissingSecretError(
+                "API_KEY_HMAC_SECRET is not set. "
+                "Set it in your .env file before using tenant API keys."
+            )
+        return secret
 
 
 class HashiCorpVaultProvider(SecretsManager):
@@ -224,6 +241,15 @@ class HashiCorpVaultProvider(SecretsManager):
         key_name = f"{provider_name.upper()}_API_KEY"
         return self._get_cached_secret(
             path="aegis/llm/credentials", key_name=key_name
+        )
+
+    def get_credential_hmac_secret(self) -> str:
+        """
+        Retrieves the HMAC-SHA256 secret used to hash tenant API keys.
+        Expects KV v2 format: aegis/api_keys/config, key: hmac_secret.
+        """
+        return self._get_cached_secret(
+            path="aegis/api_keys/config", key_name="hmac_secret"
         )
 
 

@@ -304,6 +304,9 @@ class MetadataAudit(Base):
     hash_algorithm: Mapped[str] = mapped_column(Text, default="sha256-v1")
     key_id: Mapped[str | None] = mapped_column(Text)
 
+    # API key traceability — which credential triggered this admin action
+    credential_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
 
 class CompiledRegistryArtifact(Base):
     """
@@ -330,6 +333,34 @@ class CompiledRegistryArtifact(Base):
     signature: Mapped[str | None] = mapped_column(Text)
     signature_algo: Mapped[str] = mapped_column(Text, default="hmac-sha256-v1")
     signature_key_id: Mapped[str | None] = mapped_column(Text)
+
+
+class TenantCredential(Base):
+    """
+    Stores hashed API keys for tenant authentication.
+    scope='query' permits query endpoints only;
+    scope='admin' permits query and metadata endpoints.
+    Raw keys are never stored — only the HMAC-SHA256 digest.
+    """
+
+    __tablename__ = "tenant_credentials"
+    __table_args__ = {"schema": _SCHEMA} if _SCHEMA else {}
+
+    credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    key_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    scope: Mapped[str] = mapped_column(
+        Enum("query", "admin", name="credential_scope", schema=_SCHEMA),
+        nullable=False,
+    )
+    description: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
 
 
 class ChatSession(Base):

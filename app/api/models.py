@@ -240,3 +240,31 @@ class VersionCreateRequest(BaseModel):
 class VersionStatusUpdateRequest(BaseModel):
     status: Literal["draft", "pending_review", "active", "archived"]
     reason: str | None = None
+
+
+class CredentialCreateRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+    scope: Literal["query", "admin"]
+    description: str | None = None
+
+
+class CredentialCreateResponse(BaseModel):
+    credential_id: str
+    tenant_id: str
+    user_id: str
+    scope: str
+    description: str | None
+    is_active: bool
+    created_at: str
+    raw_key: str
+
+
+class CredentialListItem(BaseModel):
+    credential_id: str
+    tenant_id: str
+    user_id: str
+    scope: str
+    description: str | None
+    is_active: bool
+    created_at: str

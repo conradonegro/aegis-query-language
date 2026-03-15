@@ -19,6 +19,8 @@ class QueryAuditEvent(BaseModel):
     error_message: str | None = None
     row_limit_applied: bool = False
 
+    credential_id: str | None = None
+
     rag_outcome: str | None = None
     rag_matched_value: str | None = None
     rag_abstract_column: str | None = None

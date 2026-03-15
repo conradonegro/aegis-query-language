@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 
 # Must be set globally BEFORE pytest collections import app modules
@@ -8,6 +10,15 @@ from collections.abc import Generator
 
 import pytest
 from sqlalchemy import create_engine, text
+
+# ------------------------------------------------------------------
+# Shared auth test constants — imported by test_auth.py / test_api.py
+# ------------------------------------------------------------------
+TEST_HMAC_SECRET = "test_hmac_secret_dev"
+TEST_QUERY_RAW_KEY = "aegis_test_query_key"
+TEST_ADMIN_RAW_KEY = "aegis_test_admin_key"
+TEST_QUERY_CREDENTIAL_ID = "00000000-0000-0000-0000-000000000001"
+TEST_ADMIN_CREDENTIAL_ID = "00000000-0000-0000-0000-000000000002"
 
 
 # Force SQLite in-memory overrides for all tests before `main.py` is imported
@@ -31,6 +42,7 @@ def override_database_url_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "mock")
     monkeypatch.setenv("OPENAI_API_KEY", "test_key_sandbox")
     monkeypatch.setenv("TESTING", "true")
+    monkeypatch.setenv("API_KEY_HMAC_SECRET", TEST_HMAC_SECRET)
 
 
 @pytest.fixture(autouse=True, scope="function")
@@ -95,6 +107,45 @@ def seed_memory_db_for_tests() -> Generator[None, None, None]:
         """))
         conn.execute(text("DELETE FROM chat_messages"))
         conn.execute(text("DELETE FROM chat_sessions"))
+
+        # Tenant credentials table (no schema prefix, TEXT scope for SQLite)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS tenant_credentials (
+                credential_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                scope TEXT NOT NULL,
+                description TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("DELETE FROM tenant_credentials"))
+
+        # Pre-hash test keys using the same algorithm as _hash_api_key
+        _q_hash = hmac.new(
+            TEST_HMAC_SECRET.encode("utf-8"),
+            TEST_QUERY_RAW_KEY.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        _a_hash = hmac.new(
+            TEST_HMAC_SECRET.encode("utf-8"),
+            TEST_ADMIN_RAW_KEY.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        conn.execute(text(
+            "INSERT INTO tenant_credentials"
+            " (credential_id, tenant_id, user_id, key_hash, scope, is_active)"
+            f" VALUES ('{TEST_QUERY_CREDENTIAL_ID}', 'test_tenant',"
+            f" 'test_user', '{_q_hash}', 'query', 1)"
+        ))
+        conn.execute(text(
+            "INSERT INTO tenant_credentials"
+            " (credential_id, tenant_id, user_id, key_hash, scope, is_active)"
+            f" VALUES ('{TEST_ADMIN_CREDENTIAL_ID}', 'test_tenant',"
+            f" 'admin_user', '{_a_hash}', 'admin', 1)"
+        ))
 
         # RAG curated-values table
         conn.execute(text("""

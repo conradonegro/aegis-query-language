@@ -2,7 +2,6 @@ import asyncio
 import logging
 import uuid
 from collections import defaultdict
-from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -12,7 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.requests import Request
 
+from app.api.auth import (
+    ResolvedCredential,
+    _hash_api_key,
+    generate_api_key,
+    require_admin_credential,
+    require_query_credential,
+)
 from app.api.compiler import MetadataCompiler
+from app.api.dependencies import (
+    get_registry_admin_db_session,
+    get_registry_runtime_db_session,
+    get_runtime_db_session,
+    get_steward_db_session,
+)
 from app.api.meta_models import (
     ChatMessage,
     ChatSession,
@@ -22,12 +34,16 @@ from app.api.meta_models import (
     MetadataRelationship,
     MetadataTable,
     MetadataVersion,
+    TenantCredential,
 )
 from app.api.models import (
     ColumnUpdateRequest,
     ColumnValueBulkImportRequest,
     ColumnValueBulkImportResponse,
     ColumnValueCreateRequest,
+    CredentialCreateRequest,
+    CredentialCreateResponse,
+    CredentialListItem,
     ExplainabilityContext,
     MetadataCompileResponse,
     ProtocolColumn,
@@ -51,7 +67,7 @@ from app.execution import ExecutionContext
 from app.execution.interfaces import ExecutionLayer
 from app.rag.normalizer import normalize as normalize_rag_value
 from app.steward import RegistrySchema
-from app.vault import get_secrets_manager
+from app.vault import VaultMissingSecretError, get_secrets_manager
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +83,16 @@ api_router = APIRouter()
 async def _resolve_session(
     payload_session_id: str | None,
     session: AsyncSession,
+    tenant_id: str,
 ) -> tuple[uuid.UUID, list[ChatHistoryItem]]:
     """
-    Resolve or create a chat session.
+    Resolve or create a chat session, scoped to the requesting tenant.
 
-    If payload_session_id is a valid UUID referencing an existing ChatSession,
-    its message history is loaded and returned. Otherwise a new session row is
-    created and committed so the PK exists before any message writes.
+    If payload_session_id is a valid UUID referencing an existing ChatSession
+    owned by tenant_id, its message history is loaded and returned.  A session
+    UUID belonging to a different tenant is treated as not-found (IDOR guard).
+    Otherwise a new session row is created and committed so the PK exists
+    before any message writes.
     """
     session_id: uuid.UUID | None = None
     chat_history: list[ChatHistoryItem] = []
@@ -82,7 +101,10 @@ async def _resolve_session(
         try:
             session_uuid = uuid.UUID(payload_session_id)
             res = await session.execute(
-                select(ChatSession).where(ChatSession.session_id == session_uuid)
+                select(ChatSession).where(
+                    ChatSession.session_id == session_uuid,
+                    ChatSession.tenant_id == tenant_id,
+                )
             )
             chat_session = res.scalar_one_or_none()
             if chat_session:
@@ -104,7 +126,7 @@ async def _resolve_session(
 
     if not session_id:
         session_id = uuid.uuid4()
-        new_session = ChatSession(session_id=session_id)
+        new_session = ChatSession(session_id=session_id, tenant_id=tenant_id)
         session.add(new_session)
         # Commit to ensure the PK exists before messages are flushed.
         await session.commit()
@@ -124,37 +146,14 @@ def get_auditor(request: Request) -> Any:
 def get_registry(request: Request) -> RegistrySchema:
     return cast(RegistrySchema, request.app.state.registry)
 
-async def get_registry_runtime_db_session(
-    request: Request,
-) -> AsyncGenerator[AsyncSession, None]:
-    async with request.app.state.registry_runtime_session_factory() as session:
-        yield session
-
-async def get_registry_admin_db_session(
-    request: Request,
-) -> AsyncGenerator[AsyncSession, None]:
-    async with request.app.state.registry_admin_session_factory() as session:
-        yield session
-
-async def get_runtime_db_session(
-    request: Request,
-) -> AsyncGenerator[AsyncSession, None]:
-    async with request.app.state.runtime_session_factory() as session:
-        yield session
-
-async def get_steward_db_session(
-    request: Request,
-) -> AsyncGenerator[AsyncSession, None]:
-    async with request.app.state.steward_session_factory() as session:
-        yield session
-
 
 @api_router.post("/query/generate", response_model=QueryGenerateResponse)
 async def generate_query(
     payload: QueryRequest,
     compiler: Annotated[CompilerEngine, Depends(get_compiler)],
     registry: Annotated[RegistrySchema, Depends(get_registry)],
-    session: Annotated[AsyncSession, Depends(get_runtime_db_session)]
+    session: Annotated[AsyncSession, Depends(get_runtime_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_query_credential)],
 ) -> QueryGenerateResponse:
     """
     Compiles natural language into an ExecutableQuery, strictly omitting
@@ -163,7 +162,9 @@ async def generate_query(
     intent = UserIntent(natural_language_query=payload.intent)
     hints = PromptHints(column_hints=payload.schema_hints)
 
-    session_id, chat_history = await _resolve_session(payload.session_id, session)
+    session_id, chat_history = await _resolve_session(
+        payload.session_id, session, tenant_id=cred.tenant_id
+    )
 
     executable = await compiler.compile(
         schema=registry,
@@ -241,7 +242,8 @@ async def execute_query(
     executor: Annotated[ExecutionLayer, Depends(get_executor)],
     auditor: Annotated[Any, Depends(get_auditor)],
     registry: Annotated[RegistrySchema, Depends(get_registry)],
-    session: Annotated[AsyncSession, Depends(get_runtime_db_session)]
+    session: Annotated[AsyncSession, Depends(get_runtime_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_query_credential)],
 ) -> QueryExecuteResponse:
     """
     Compiles and executes the query against the physical database.
@@ -250,7 +252,9 @@ async def execute_query(
     intent = UserIntent(natural_language_query=payload.intent)
     hints = PromptHints(column_hints=payload.schema_hints)
 
-    session_id, chat_history = await _resolve_session(payload.session_id, session)
+    session_id, chat_history = await _resolve_session(
+        payload.session_id, session, tenant_id=cred.tenant_id
+    )
 
     # Compile
     executable = await compiler.compile(
@@ -312,9 +316,9 @@ async def execute_query(
 
     # Execute
     context = ExecutionContext(
-            tenant_id="default_tenant",
-            user_id="api_user",
-        )
+        tenant_id=cred.tenant_id,
+        user_id=cred.user_id,
+    )
     result = await executor.execute(executable, context=context)
 
     # Background audit log mapping
@@ -322,8 +326,9 @@ async def execute_query(
         query_id=executable.query_id or str(uuid.uuid4()),
         tenant_id=context.tenant_id,
         user_id=context.user_id,
+        credential_id=cred.credential_id,
         natural_language_query=payload.intent,
-        abstract_query=executable.sql, # Tracking compiled sql
+        abstract_query=executable.sql,
         physical_query=executable.sql,
         registry_version=executable.registry_version,
         safety_engine_version=executable.safety_engine_version,
@@ -333,7 +338,7 @@ async def execute_query(
         completion_tokens=0,
         status="SUCCESS",
         error_message=None,
-        row_limit_applied=executable.row_limit_applied
+        row_limit_applied=executable.row_limit_applied,
     )
 
     # Add audit dispatch to non-blocking tasks list
@@ -357,7 +362,8 @@ async def execute_query(
 
 @api_router.get("/metadata/versions", response_model=list[ProtocolMetadataVersion])
 async def list_metadata_versions(
-    session: Annotated[AsyncSession, Depends(get_registry_runtime_db_session)]
+    session: Annotated[AsyncSession, Depends(get_registry_runtime_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> list[ProtocolMetadataVersion]:
     """Retrieve all metadata schema versions."""
     res = await session.execute(
@@ -399,6 +405,7 @@ async def update_version_status(
     version_id: uuid.UUID,
     payload: VersionStatusUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolMetadataVersion:
     """
     Advance or retract a MetadataVersion through its review lifecycle.
@@ -448,7 +455,7 @@ async def update_version_status(
 
     # Approval timestamps are populated when a version becomes active
     if payload.status == "active":
-        version.approved_by = "admin_api"
+        version.approved_by = cred.user_id
         version.approved_at = datetime.now(UTC)
 
     # Build the WORM audit chain record — must happen in the same transaction
@@ -479,13 +486,14 @@ async def update_version_status(
     secrets_mgr = get_secrets_manager()
     audit_event = MetadataAudit(
         version_id=version_id,
-        actor="admin_api",
+        actor=cred.user_id,
         action=audit_action,
         payload=audit_payload,
         timestamp=audit_timestamp,
         previous_hash=previous_hash,
         row_hash=new_row_hash,
         key_id=secrets_mgr.get_current_signing_key_id(),
+        credential_id=cred.credential_id,
     )
     session.add(audit_event)
 
@@ -502,7 +510,8 @@ async def update_version_status(
 
 @api_router.get("/metadata/active")
 async def get_active_metadata(
-    registry: Annotated[RegistrySchema, Depends(get_registry)]
+    registry: Annotated[RegistrySchema, Depends(get_registry)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> dict[str, str | None]:
     """Retrieve the ID of the actively loaded registry schema."""
     return {
@@ -538,6 +547,7 @@ async def compile_metadata_version(
     version_id: uuid.UUID,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
     wait_for_index: bool = False,
 ) -> MetadataCompileResponse:
     """Compile an active metadata version into a runtime Aegis Registry artifact."""
@@ -547,7 +557,7 @@ async def compile_metadata_version(
     artifact = await MetadataCompiler.compile_version(
         session=session,
         version_id=version_id,
-        actor="admin_api",
+        actor=cred.user_id,
     )
 
     # Hot-reload schema
@@ -601,6 +611,7 @@ async def compile_metadata_version(
 async def list_column_values(
     column_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> list[ProtocolColumnValue]:
     """List curated RAG values for a column."""
     stmt = (
@@ -630,6 +641,7 @@ async def create_column_value(
     column_id: uuid.UUID,
     payload: ColumnValueCreateRequest,
     session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolColumnValue:
     """Add a curated RAG value to a column."""
     col_res = await session.execute(
@@ -679,6 +691,7 @@ async def bulk_import_column_values(
     column_id: uuid.UUID,
     payload: ColumnValueBulkImportRequest,
     session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ColumnValueBulkImportResponse:
     """Bulk-import curated RAG values (e.g. from a CSV upload via client)."""
     col_res = await session.execute(
@@ -747,6 +760,7 @@ async def deactivate_column_value(
     column_id: uuid.UUID,
     value_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> None:
     """Soft-delete (deactivate) a curated RAG value."""
     res = await session.execute(
@@ -799,7 +813,8 @@ def _map_table(t: MetadataTable) -> ProtocolTable:
 )
 async def get_metadata_schema(
     version_id: uuid.UUID,
-    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolSchemaResponse:
     stmt = (
         select(MetadataVersion)
@@ -839,7 +854,8 @@ async def get_metadata_schema(
 async def update_metadata_table(
     table_id: uuid.UUID,
     payload: TableUpdateRequest,
-    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolTable:
     stmt = (
         select(MetadataTable)
@@ -866,7 +882,8 @@ async def update_metadata_table(
 async def update_metadata_column(
     column_id: uuid.UUID,
     payload: ColumnUpdateRequest,
-    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolColumn:
     stmt = select(MetadataColumn).where(MetadataColumn.column_id == column_id)
     res = await session.execute(stmt)
@@ -898,12 +915,14 @@ async def update_metadata_column(
 @api_router.post("/metadata/versions", response_model=ProtocolMetadataVersion)
 async def create_metadata_version(
     payload: VersionCreateRequest,
-    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolMetadataVersion:
     new_version_id = uuid.uuid4()
     new_version = MetadataVersion(
         version_id=new_version_id,
         status="draft",
+        created_by=cred.user_id,
         change_reason="Steward UI clone",
     )
     session.add(new_version)
@@ -1003,7 +1022,8 @@ async def create_metadata_version(
 @api_router.post("/metadata/versions/{version_id}/obfuscate")
 async def obfuscate_schema(
     version_id: uuid.UUID,
-    session: Annotated[AsyncSession, Depends(get_steward_db_session)]
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> dict[str, int | str]:
     stmt = (
         select(MetadataVersion)
@@ -1033,3 +1053,107 @@ async def obfuscate_schema(
         "tables_obfuscated": t_counter - 1,
         "columns_obfuscated": c_counter - 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# Credential management endpoints (admin scope required)
+# ---------------------------------------------------------------------------
+
+
+@api_router.post(
+    "/auth/credentials",
+    response_model=CredentialCreateResponse,
+    status_code=201,
+)
+async def create_credential(
+    payload: CredentialCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
+) -> CredentialCreateResponse:
+    """
+    Create a new tenant API key.  The raw key is returned exactly once in the
+    response body and is never stored — only its HMAC-SHA256 digest is persisted.
+    """
+    try:
+        secret = get_secrets_manager().get_credential_hmac_secret()
+    except VaultMissingSecretError as exc:
+        logger.error("HMAC secret unavailable while creating credential: %s", exc)
+        raise HTTPException(
+            status_code=500, detail="Auth service unavailable."
+        ) from exc
+
+    raw_key = generate_api_key()
+    key_hash = _hash_api_key(raw_key, secret)
+
+    new_cred = TenantCredential(
+        credential_id=uuid.uuid4(),
+        tenant_id=payload.tenant_id,
+        user_id=payload.user_id,
+        key_hash=key_hash,
+        scope=payload.scope,
+        description=payload.description,
+        is_active=True,
+    )
+    session.add(new_cred)
+    try:
+        await session.commit()
+        await session.refresh(new_cred)
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="A credential with this key hash already exists."
+        ) from exc
+
+    return CredentialCreateResponse(
+        credential_id=str(new_cred.credential_id),
+        tenant_id=new_cred.tenant_id,
+        user_id=new_cred.user_id,
+        scope=new_cred.scope,
+        description=new_cred.description,
+        is_active=new_cred.is_active,
+        created_at=new_cred.created_at.isoformat(),
+        raw_key=raw_key,
+    )
+
+
+@api_router.get("/auth/credentials", response_model=list[CredentialListItem])
+async def list_credentials(
+    session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
+) -> list[CredentialListItem]:
+    """List all tenant credentials (active and inactive)."""
+    res = await session.execute(
+        select(TenantCredential).order_by(TenantCredential.created_at.desc())
+    )
+    rows = res.scalars().all()
+    return [
+        CredentialListItem(
+            credential_id=str(r.credential_id),
+            tenant_id=r.tenant_id,
+            user_id=r.user_id,
+            scope=r.scope,
+            description=r.description,
+            is_active=r.is_active,
+            created_at=r.created_at.isoformat(),
+        )
+        for r in rows
+    ]
+
+
+@api_router.delete("/auth/credentials/{credential_id}", status_code=204)
+async def revoke_credential(
+    credential_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
+) -> None:
+    """Soft-revoke a tenant API key by setting is_active=False."""
+    res = await session.execute(
+        select(TenantCredential).where(
+            TenantCredential.credential_id == credential_id
+        )
+    )
+    target = res.scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Credential not found.")
+    target.is_active = False
+    await session.commit()
