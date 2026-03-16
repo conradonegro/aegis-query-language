@@ -2,8 +2,9 @@ import asyncio
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
+from typing import cast
 from urllib.parse import urlparse, urlunparse
 
 import redis.asyncio as aioredis
@@ -27,6 +28,7 @@ from app.compiler.engine import CompilerEngine, RAGUncertaintyError
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
 from app.compiler.interfaces import LLMGatewayProtocol
+from app.compiler.llm_factory import get_llm_gateway
 from app.compiler.ollama import LLMGenerationError, OllamaLLMGateway
 from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
@@ -55,6 +57,24 @@ def _mask_redis_url(redis_url: str) -> str:
         masked = parsed.netloc.replace(f":{parsed.password}@", ":***@")
         return urlunparse(parsed._replace(netloc=masked))
     return redis_url
+
+
+async def _connect_redis(redis_url: str) -> "aioredis.Redis | None":
+    """Probe Redis at startup; return client on success, None on failure."""
+    client = aioredis.from_url(redis_url, decode_responses=True)
+    try:
+        await cast(Awaitable[bool], client.ping())
+        logger.info("Session store: Redis (%s)", _mask_redis_url(redis_url))
+        return client
+    except Exception as exc:
+        await client.aclose()
+        logger.warning(
+            "Session store: Redis (%s) unreachable at startup (%s) — "
+            "falling back to in-memory. Multi-worker session continuity is broken.",
+            _mask_redis_url(redis_url),
+            exc,
+        )
+        return None
 
 
 async def _boot_rag_index(app: FastAPI) -> None:
@@ -286,27 +306,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.executor = ExecutionEngine(connection_string=secure_runtime_db_url)
 
     redis_url = os.getenv("REDIS_URL")
-    redis_client = (
-        aioredis.from_url(redis_url, decode_responses=True) if redis_url else None
-    )
+    redis_client = await _connect_redis(redis_url) if redis_url else None
+    if not redis_url:
+        logger.info("Session store: in-memory (set REDIS_URL to enable Redis)")
     session_store = SessionStore(redis_client=redis_client)
-    if redis_url:
-        logger.info("Session store: Redis (%s)", _mask_redis_url(redis_url))
-    else:
-        logger.info(
-            "Session store: in-memory (set REDIS_URL to enable Redis)"
-        )
 
     app.state.auditor = JSONAuditLogger()
 
     provider = os.getenv("LLM_PROVIDER", "mock").lower()
     llm_gateway: LLMGatewayProtocol
-    if provider == "ollama":
-        llm_gateway = OllamaLLMGateway()
+    if provider == "mock":
+        llm_gateway = MockLLMGateway()
     else:
-        llm_gateway = MockLLMGateway(
-            mock_response_sql="SELECT count(*) FROM users"
-        )
+        llm_gateway = get_llm_gateway(provider)
 
     app.state.compiler = CompilerEngine(
         schema_filter=DeterministicSchemaFilter(),

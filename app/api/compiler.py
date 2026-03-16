@@ -96,7 +96,7 @@ class MetadataCompiler:
                     "id": str(col.column_id),
                     "name": col.real_name,
                     "alias": col.alias,
-                    "description": col.description,
+                    "description": col.description or "",
                     "type": col.data_type,
                     "is_primary": col.is_primary_key,
                     "is_nullable": col.is_nullable,

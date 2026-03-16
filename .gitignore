@@ -170,3 +170,4 @@ cython_debug/
 
 # Data artifacts
 data/
+docker/initdb/01_BIRD_dev.sql

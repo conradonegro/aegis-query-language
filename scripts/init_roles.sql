@@ -22,7 +22,10 @@ GRANT role_aegis_registry_admin TO user_aegis_registry_admin;
 GRANT role_aegis_data_owner TO user_aegis_data_owner;
 GRANT role_aegis_meta_owner TO user_aegis_meta_owner;
 
--- 4. Revoke default public schema access to ensure clean slate
+-- 4. Create aegis_meta schema if not yet created (Alembic will own it after migrate runs)
+CREATE SCHEMA IF NOT EXISTS aegis_meta;
+
+-- 5. Revoke default public schema access to ensure clean slate
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON SCHEMA aegis_meta FROM PUBLIC;
 
@@ -86,3 +89,12 @@ GRANT USAGE, CREATE ON SCHEMA aegis_meta TO role_aegis_meta_owner;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA aegis_meta TO role_aegis_meta_owner;
 ALTER DEFAULT PRIVILEGES IN SCHEMA aegis_meta GRANT ALL PRIVILEGES ON TABLES TO role_aegis_meta_owner;
 -- Full control over metadata schema
+
+--------------------------------------------------------------------------------
+-- 7. Temporary bootstrap grants for discover_metadata.py
+--    Revoked by discover_metadata.py on successful first run (try/else block).
+--    SELECT-only, no REFERENCES privilege.
+--------------------------------------------------------------------------------
+GRANT USAGE ON SCHEMA public TO role_aegis_meta_owner;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO role_aegis_meta_owner;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO role_aegis_meta_owner;

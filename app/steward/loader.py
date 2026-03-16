@@ -129,7 +129,7 @@ class RegistryLoader:
                 columns_def.append(
                     AbstractColumnDef(
                         alias=col_dict["alias"],
-                        description=col_dict.get("description", ""),
+                        description=col_dict.get("description") or "",
                         data_type=col_dict.get("type", "text"),
                         safety=safety,
                         # Mapping conceptual alias directly to real name

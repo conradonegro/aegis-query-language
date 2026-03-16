@@ -1,0 +1,28 @@
+# Large data files — never in build context
+data/
+docker/initdb/01_BIRD_dev.sql
+
+# Secrets
+.env
+
+# Version control
+.git/
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment
+.venv/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Local dev files
+*.log

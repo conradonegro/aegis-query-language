@@ -1,0 +1,72 @@
+# =============================================================================
+# docker-compose.bird.yml — BIRD dataset overlay
+#
+# Extends the core stack with the BIRD-SQL benchmark database (75 tables,
+# 3.9M rows). Use this overlay when you want the full demo dataset.
+#
+# Prerequisites:
+#   1. Download 01_BIRD_dev.sql — see docs/BIRD_SETUP.md
+#   2. Place it at ./docker/bird_data/01_BIRD_dev.sql
+#      (or set BIRD_SQL_PATH=/your/path/01_BIRD_dev.sql)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.bird.yml up --build
+#
+# WARNING: switching between core-only and BIRD modes requires a clean volume
+# wipe first, otherwise the discover idempotency guard skips re-discovery:
+#   docker compose down -v
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # db — override: add memory limits for the 3.9M-row BIRD load
+  # The sentinel healthcheck is inherited from the base; retries are generous
+  # because bird-loader (not initdb) does the heavy lifting, so db itself
+  # is still fast. Memory limits keep the container stable under bulk inserts.
+  # ---------------------------------------------------------------------------
+  db:
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+
+  # ---------------------------------------------------------------------------
+  # bird-loader — one-shot container that loads BIRD SQL after db is healthy.
+  # Runs in parallel with migrate (no schema conflict: BIRD → public,
+  # migrate → aegis_meta). discover waits for both to complete.
+  #
+  # NOT idempotent: re-running against an already-loaded DB will fail.
+  # Run `docker compose down -v` before retrying a failed load.
+  # ---------------------------------------------------------------------------
+  bird-loader:
+    image: postgres:15-alpine
+    container_name: aegis_bird_loader
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgrespassword
+    command: >
+      psql -h db -U postgres -d aegis_data_warehouse
+      -f /bird/01_BIRD_dev.sql
+    volumes:
+      - ${BIRD_SQL_PATH:-./docker/bird_data/01_BIRD_dev.sql}:/bird/01_BIRD_dev.sql:ro
+
+  # ---------------------------------------------------------------------------
+  # discover — override: wait for bird-loader and populate semantic descriptions
+  # Compose merges depends_on maps, so the migrate dependency from the base
+  # is preserved. Both migrate and bird-loader must complete before discovery.
+  # ---------------------------------------------------------------------------
+  discover:
+    depends_on:
+      bird-loader:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -c
+      - |
+        uv run python scripts/discover_metadata.py &&
+        uv run python scripts/populate_descriptions.py

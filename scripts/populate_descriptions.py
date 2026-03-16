@@ -29,7 +29,7 @@ def find_all_csvs(root_dir: str) -> dict[str, str]:
     return csv_map
 
 async def populate_metadata() -> None:
-    csv_map = find_all_csvs("./data/minidev/MINIDEV/dev_databases")
+    csv_map = find_all_csvs("./docker/bird_descriptions")
 
     async with async_session() as session:
         # Get the latest version that actually has tables tied to it

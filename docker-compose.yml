@@ -1,6 +1,14 @@
-version: '3.8'
-
 services:
+
+  # ---------------------------------------------------------------------------
+  # db — PostgreSQL 15
+  # initdb.d execution order (alphabetical):
+  #   00_init_roles.sql   → roles, users, grants (incl. bootstrap for discover)
+  #   99_ready_signal.sql → sentinel table; healthcheck blocks on this
+  #
+  # BIRD data is NOT loaded here. Use docker-compose.bird.yml overlay instead:
+  #   docker compose -f docker-compose.yml -f docker-compose.bird.yml up --build
+  # ---------------------------------------------------------------------------
   db:
     image: postgres:15-alpine
     container_name: aegis_postgres
@@ -9,21 +17,104 @@ services:
       POSTGRES_PASSWORD: postgrespassword
       POSTGRES_DB: aegis_data_warehouse
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - ./data/processed:/docker-entrypoint-initdb.d
-    deploy:
-      resources:
-        limits:
-          memory: 8G
-        reservations:
-          memory: 4G
+      - ./docker/initdb:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d aegis_data_warehouse"]
+      test:
+        - "CMD-SHELL"
+        - "psql -U postgres -d aegis_data_warehouse -c 'SELECT 1 FROM public._aegis_docker_ready LIMIT 1;'"
       interval: 5s
       timeout: 5s
+      retries: 20       # 100s budget — sufficient for initdb without BIRD data
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # redis — session store for multi-worker session continuity
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: aegis_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # migrate — one-shot Alembic init container
+  # Runs alembic upgrade head, then exits 0.
+  # Idempotent: safe to re-run on every docker compose up.
+  # ---------------------------------------------------------------------------
+  migrate:
+    build: .
+    container_name: aegis_migrate
+    command:
+      - /bin/sh
+      - -c
+      - "uv run alembic upgrade head && uv run python scripts/apply_grants.py"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user_aegis_meta_owner:meta_owner_pass@db:5432/aegis_data_warehouse
+      SECRETS_PROVIDER: env
+    restart: on-failure
+
+  # ---------------------------------------------------------------------------
+  # discover — one-shot schema discovery init container
+  # Reads public schema, writes draft MetadataVersion to aegis_meta.
+  # Idempotent: skips if metadata_versions already has rows.
+  # Revokes bootstrap public grants on success (try/else in discover_metadata.py).
+  # NOTE: populate_descriptions.py is intentionally omitted here — it is only
+  # meaningful with the BIRD dataset. The BIRD overlay re-adds it.
+  # ---------------------------------------------------------------------------
+  discover:
+    build: .
+    container_name: aegis_discover
+    command:
+      - /bin/sh
+      - -c
+      - "uv run python scripts/discover_metadata.py"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user_aegis_meta_owner:meta_owner_pass@db:5432/aegis_data_warehouse
+      # SUPERUSER_DB_URL is used only for the REVOKE step — grants in 00_init_roles.sql
+      # were made by postgres, so only postgres can revoke them.
+      SUPERUSER_DB_URL: postgresql+asyncpg://postgres:postgrespassword@db:5432/aegis_data_warehouse
+      SECRETS_PROVIDER: env
+      PYTHONPATH: /app
+    restart: on-failure
+
+  # ---------------------------------------------------------------------------
+  # aegis — the FastAPI application
+  # ---------------------------------------------------------------------------
+  aegis:
+    build: .
+    container_name: aegis_app
+    ports:
+      - "8000:8000"
+    depends_on:
+      discover:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      SECRETS_PROVIDER: env
+      ENVIRONMENT: development
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      REDIS_URL: redis://redis:6379/0
+      API_KEY_HMAC_SECRET: ${API_KEY_HMAC_SECRET}
+      DB_URL_RUNTIME: postgresql+asyncpg://user_aegis_runtime:runtime_pass@db:5432/aegis_data_warehouse
+      DB_URL_REGISTRY_RUNTIME: postgresql+asyncpg://user_aegis_registry_runtime:registry_pass@db:5432/aegis_data_warehouse
+      DB_URL_STEWARD: postgresql+asyncpg://user_aegis_steward:steward_pass@db:5432/aegis_data_warehouse
+      DB_URL_REGISTRY_ADMIN: postgresql+asyncpg://user_aegis_registry_admin:admin_pass@db:5432/aegis_data_warehouse
+
+  # ---------------------------------------------------------------------------
+  # pgadmin — optional DB browser (unchanged from original)
+  # ---------------------------------------------------------------------------
   pgadmin:
     image: dpage/pgadmin4
     container_name: aegis_pgadmin
@@ -32,5 +123,24 @@ services:
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
       - "5050:80"
+    volumes:
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
     depends_on:
       - db
+
+  # ---------------------------------------------------------------------------
+  # ollama — local LLM (optional, activate with: --profile local-llm)
+  # Set LLM_PROVIDER=ollama in .env to wire aegis to this service.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama
+    container_name: aegis_ollama
+    profiles:
+      - local-llm
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:
