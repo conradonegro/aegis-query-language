@@ -159,7 +159,10 @@ async def generate_query(
     Compiles natural language into an ExecutableQuery, strictly omitting
     physical DB execution.
     """
-    intent = UserIntent(natural_language_query=payload.intent)
+    intent = UserIntent(
+        natural_language_query=payload.intent,
+        source_database=payload.source_database,
+    )
     hints = PromptHints(column_hints=payload.schema_hints)
 
     session_id, chat_history = await _resolve_session(
@@ -249,7 +252,10 @@ async def execute_query(
     Compiles and executes the query against the physical database.
     Dispatches asynchronous audit sink logging.
     """
-    intent = UserIntent(natural_language_query=payload.intent)
+    intent = UserIntent(
+        natural_language_query=payload.intent,
+        source_database=payload.source_database,
+    )
     hints = PromptHints(column_hints=payload.schema_hints)
 
     session_id, chat_history = await _resolve_session(

@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class QueryRequest(BaseModel):
@@ -31,6 +31,21 @@ class QueryRequest(BaseModel):
         default=None,
         description="Optional explicit LLM Provider ID to use for this execution.",
     )
+    source_database: str | None = Field(
+        default=None,
+        description=(
+            "Optional logical database name to restrict schema filtering. "
+            "If omitted, the pipeline attempts to auto-detect the relevant database. "
+            "Pass explicitly for benchmarks or when the target database is known."
+        ),
+    )
+
+    @field_validator("source_database", mode="before")
+    @classmethod
+    def _normalise_source_database(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
 
 class TranslationRepair(BaseModel):

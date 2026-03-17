@@ -11,6 +11,7 @@ class UserIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     natural_language_query: str
+    source_database: str | None = None
 
 class ChatHistoryItem(BaseModel):
     role: Literal["user", "assistant", "system"]
