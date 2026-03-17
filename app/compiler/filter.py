@@ -1,5 +1,7 @@
+import functools
 import re
 
+from app.compiler.exceptions import UnknownSourceDatabaseError
 from app.compiler.models import FilteredSchema, RAGIncludedColumns, UserIntent
 from app.steward import AbstractTableDef, RegistrySchema
 
@@ -15,18 +17,26 @@ class DeterministicSchemaFilter:
         self.cutoff_threshold = cutoff_threshold
 
     @staticmethod
-    def _tokenize(text: str) -> set[str]:
-        """Normalizes and extracts alphanumeric vocabulary tokens."""
+    @functools.lru_cache(maxsize=8192)
+    def _tokenize(text: str) -> frozenset[str]:
+        """Normalizes and extracts alphanumeric vocabulary tokens.
+
+        Decorated with lru_cache so each unique string (table alias, column
+        description, etc.) is tokenized exactly once per process lifetime.
+        Returns frozenset to prevent accidental mutation of cached results.
+        """
         clean = re.sub(r"[^a-z0-9\s]", "", text.lower())
         stop_words = {
             "select", "show", "get", "find", "all", "the", "a", "an",
             "and", "or", "of", "in", "to", "for", "with", "by",
             "is", "are", "do", "does",
         }
-        return {w for w in clean.split() if w and w not in stop_words}
+        return frozenset(w for w in clean.split() if w and w not in stop_words)
 
     @staticmethod
-    def token_match_score(tokens_a: set[str], tokens_b: set[str]) -> int:
+    def token_match_score(
+        tokens_a: frozenset[str], tokens_b: frozenset[str]
+    ) -> int:
         return sum(
             1 for a in tokens_a for b in tokens_b
             if a == b or (len(a) > 3 and len(b) > 3 and (a in b or b in a))
@@ -38,7 +48,7 @@ class DeterministicSchemaFilter:
 
     def _tables_have_structural_match(
         self,
-        intent_tokens: set[str],
+        intent_tokens: frozenset[str],
         all_tables: list[AbstractTableDef],
     ) -> bool:
         """Returns True if any table or column has a token match with intent."""
@@ -100,7 +110,7 @@ class DeterministicSchemaFilter:
     def _find_matched_table_aliases(
         self,
         schema: RegistrySchema,
-        intent_tokens: set[str],
+        intent_tokens: frozenset[str],
         forced_columns: set[str],
     ) -> set[str]:
         """First pass: find table aliases that match the intent tokens."""
@@ -166,7 +176,7 @@ class DeterministicSchemaFilter:
     def _build_filtered_tables(
         self,
         schema: RegistrySchema,
-        intent_tokens: set[str],
+        intent_tokens: frozenset[str],
         augmented_tables: set[str],
         rel_columns: set[str],
         forced_columns: set[str],
@@ -209,10 +219,19 @@ class DeterministicSchemaFilter:
                         description=table.description,
                         columns=allowed_columns,
                         physical_target=table.physical_target,
+                        source_database=table.source_database,
                     )
                 )
 
         return allowed_tables, rejected_columns
+
+    @staticmethod
+    def _apply_database_scope(
+        schema: RegistrySchema,
+        source_database: str,
+    ) -> list[AbstractTableDef]:
+        """Returns only tables belonging to the specified logical database."""
+        return [t for t in schema.tables if t.source_database == source_database]
 
     def filter_schema(
         self,
@@ -220,6 +239,19 @@ class DeterministicSchemaFilter:
         schema: RegistrySchema,
         included_columns: RAGIncludedColumns | None = None,
     ) -> FilteredSchema:
+        # Explicit database scope: restrict to matching tables before token scoring.
+        if intent.source_database:
+            candidate_tables = self._apply_database_scope(
+                schema, intent.source_database
+            )
+            if not candidate_tables:
+                raise UnknownSourceDatabaseError(intent.source_database)
+            schema = RegistrySchema(
+                version=schema.version,
+                tables=candidate_tables,
+                relationships=schema.relationships,
+            )
+
         intent_tokens = self._tokenize(intent.natural_language_query)
         forced_columns = set(
             included_columns.columns if included_columns else []
