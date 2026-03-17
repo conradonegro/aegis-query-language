@@ -50,6 +50,8 @@ const DOMElements = {
 };
 
 let currentSessionId = null;
+let _pendingSourceDatabase = null; // set by DB pills; consumed once per request
+let _lastIntent = null;            // preserved so pills can re-run the last query
 
 // ─── Per-turn snapshot store ──────────────────────────────────────────────────
 // Each snapshot mirrors the full right-pane state for one query turn.
@@ -207,6 +209,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // ─── UI reset ─────────────────────────────────────────────────────────────────
 function resetUI() {
     DOMElements.errorContainer.classList.add('hidden');
+    const pills = document.getElementById('db_pills');
+    if (pills) pills.remove();
     DOMElements.resultsHead.innerHTML = '';
     DOMElements.resultsBody.innerHTML = '';
     DOMElements.rowCount.textContent = '0';
@@ -235,6 +239,7 @@ function resetTraceUI() {
 async function runCompilation() {
     const intent = DOMElements.input.value.trim();
     if (!intent) return;
+    _lastIntent = intent;
 
     resetUI();
     DOMElements.runBtn.disabled = true;
@@ -260,7 +265,9 @@ async function runCompilation() {
         schema_hints: [],
         provider_id: `${activeProvider}:${activeModel}`,
         session_id: currentSessionId,
+        source_database: _pendingSourceDatabase,
     };
+    _pendingSourceDatabase = null; // consumed — clear before fetch
 
     const jsonReqStr = JSON.stringify(payload, null, 2);
     DOMElements.jsonRequest.textContent = jsonReqStr;
@@ -301,10 +308,13 @@ async function runCompilation() {
             applySuccessData(successData);
             if (data.explainability) renderExplainability(data.explainability);
 
+            const dbBadge = data.source_database_used
+                ? ` <span style="font-size:11px;padding:1px 6px;border-radius:3px;background:#1e3a5f;color:#7ec8f0;vertical-align:middle;">${data.source_database_used}</span>`
+                : '';
             const assistantMsg = document.createElement('div');
             assistantMsg.className = 'chat-message assistant-message success';
             assistantMsg.innerHTML =
-                `<strong>Assistant (${activeProvider}:${activeModel}):</strong>` +
+                `<strong>Assistant (${activeProvider}:${activeModel}):</strong>${dbBadge}` +
                 `<pre style="margin:5px 0 0;white-space:pre-wrap;font-family:monospace;font-size:13px;">${data.sql}</pre>`;
             turnPair.appendChild(assistantMsg);
         }
@@ -337,8 +347,17 @@ async function runCompilation() {
 
 // ─── Error helpers ────────────────────────────────────────────────────────────
 function buildErrorData(data) {
+    const candidates = data.explainability?.candidates;
+    if (data.code === 400 && candidates?.length > 0) {
+        return {
+            title: 'Ambiguous Database (400)',
+            message: 'Multiple databases matched. Select one to retry:',
+            candidates,
+        };
+    }
     let title;
-    if (data.code === 400 && data.message?.includes('RAG')) title = 'Semantic RAG Failure (400)';
+    if (data.code === 400 && data.message?.includes('Unknown source_database')) title = 'Unknown Database (400)';
+    else if (data.code === 400 && data.message?.includes('RAG')) title = 'Semantic RAG Failure (400)';
     else if (data.code === 403) title = 'Safety Policy Violation (403)';
     else if (data.code === 400 && data.message?.includes('Translation')) title = 'LLM Syntax Malformation (400)';
     else if (data.code === 502) title = 'LLM Generation Error (502)';
@@ -346,10 +365,34 @@ function buildErrorData(data) {
     return { title, message: data.message || 'Unknown error.' };
 }
 
-function handleError({ title, message }) {
+function handleError({ title, message, candidates }) {
     DOMElements.errorContainer.classList.remove('hidden');
     DOMElements.errorTitle.textContent = title;
     DOMElements.errorMessage.textContent = message;
+
+    // Remove any previous pill row
+    const existing = document.getElementById('db_pills');
+    if (existing) existing.remove();
+
+    if (candidates?.length > 0) {
+        const pillBox = document.createElement('div');
+        pillBox.id = 'db_pills';
+        pillBox.style.cssText = 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;';
+        candidates.forEach(db => {
+            const pill = document.createElement('button');
+            pill.textContent = db;
+            pill.style.cssText =
+                'padding:3px 10px;border-radius:12px;border:1px solid #4a9eda;' +
+                'background:#1a2e42;color:#7ec8f0;cursor:pointer;font-size:12px;';
+            pill.addEventListener('click', () => {
+                _pendingSourceDatabase = db;
+                DOMElements.input.value = _lastIntent || '';
+                runCompilation();
+            });
+            pillBox.appendChild(pill);
+        });
+        DOMElements.errorContainer.appendChild(pillBox);
+    }
 }
 
 // ─── Success data helpers ─────────────────────────────────────────────────────
