@@ -29,7 +29,7 @@ from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
 from app.compiler.interfaces import LLMGatewayProtocol
 from app.compiler.llm_factory import get_llm_gateway
-from app.compiler.ollama import LLMGenerationError, OllamaLLMGateway
+from app.compiler.ollama import LLMGenerationError
 from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
 from app.compiler.safety import SafetyEngine, SafetyViolationError

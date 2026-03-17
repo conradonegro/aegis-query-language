@@ -20,7 +20,7 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL must be set.")
 
 # Superuser URL used only for revoking bootstrap grants.
-# The grants in 00_init_roles.sql were made by postgres, so only postgres can revoke them.
+# The grants in 00_init_roles.sql were made by postgres; only postgres can revoke them.
 SUPERUSER_DB_URL = os.getenv("SUPERUSER_DB_URL")
 
 engine = create_async_engine(DATABASE_URL)
@@ -217,7 +217,9 @@ async def discover_and_draft_metadata() -> None:
             # were made by postgres; only the grantor can revoke them.
             if SUPERUSER_DB_URL:
                 su_engine = create_async_engine(SUPERUSER_DB_URL)
-                su_session_factory = async_sessionmaker(su_engine, expire_on_commit=False)
+                su_session_factory = async_sessionmaker(
+                    su_engine, expire_on_commit=False
+                )
                 async with su_session_factory() as su_session:
                     await su_session.execute(text(
                         "REVOKE SELECT ON ALL TABLES IN SCHEMA public"

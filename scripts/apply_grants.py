@@ -29,7 +29,8 @@ _GRANTS: list[str] = [
     "GRANT SELECT, INSERT, UPDATE ON aegis_meta.chat_sessions TO role_aegis_runtime",
     "GRANT SELECT, INSERT ON aegis_meta.chat_messages TO role_aegis_runtime",
     # role_aegis_registry_runtime — compiler loader at startup / reload
-    "GRANT SELECT ON aegis_meta.compiled_registry_artifacts TO role_aegis_registry_runtime",
+    "GRANT SELECT ON aegis_meta.compiled_registry_artifacts"
+    " TO role_aegis_registry_runtime",
     "GRANT SELECT ON aegis_meta.metadata_versions TO role_aegis_registry_runtime",
     # role_aegis_steward — Steward UI / metadata editors
     "GRANT SELECT ON ALL TABLES IN SCHEMA aegis_meta TO role_aegis_steward",
@@ -40,9 +41,11 @@ _GRANTS: list[str] = [
     "GRANT INSERT ON aegis_meta.metadata_audit TO role_aegis_steward",
     # role_aegis_registry_admin — controlled deployment pipeline / senior operator
     "GRANT SELECT ON ALL TABLES IN SCHEMA aegis_meta TO role_aegis_registry_admin",
-    "GRANT UPDATE (status, registry_hash, approved_by, approved_at) ON aegis_meta.metadata_versions TO role_aegis_registry_admin",
-    # DELETE is required: compile_version() deletes the old artifact before re-inserting.
-    "GRANT INSERT, DELETE ON aegis_meta.compiled_registry_artifacts TO role_aegis_registry_admin",
+    "GRANT UPDATE (status, registry_hash, approved_by, approved_at)"
+    " ON aegis_meta.metadata_versions TO role_aegis_registry_admin",
+    # DELETE is required: compile_version() deletes the old artifact before insert.
+    "GRANT INSERT, DELETE ON aegis_meta.compiled_registry_artifacts"
+    " TO role_aegis_registry_admin",
     "GRANT INSERT ON aegis_meta.metadata_audit TO role_aegis_registry_admin",
 ]
 
