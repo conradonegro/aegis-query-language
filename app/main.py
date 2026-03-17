@@ -434,7 +434,7 @@ async def ambiguous_source_database_handler(
         code=400,
         message=str(exc),
         request_id=None,
-        explainability={"candidates": exc.candidates},
+        explainability={"candidates": exc.candidates, "scores": exc.scores},
     )
     return JSONResponse(status_code=400, content=error_resp.model_dump())
 

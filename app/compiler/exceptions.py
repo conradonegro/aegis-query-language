@@ -12,8 +12,11 @@ class UnknownSourceDatabaseError(Exception):
 class AmbiguousSourceDatabaseError(Exception):
     """Raised when auto-detection finds multiple equally plausible databases."""
 
-    def __init__(self, candidates: list[str]) -> None:
+    def __init__(
+        self, candidates: list[str], scores: dict[str, int] | None = None
+    ) -> None:
         self.candidates = candidates
+        self.scores = scores or {}
         super().__init__(
             f"Query matches multiple databases: {candidates}. "
             "Retry with source_database set to one of the candidates."

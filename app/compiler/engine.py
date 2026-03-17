@@ -137,6 +137,9 @@ class CompilerEngine:
                         filtered_schema.omitted_columns.keys()
                     ),
                     "reasons": list(filtered_schema.omitted_columns.values()),
+                    "source_database_used": filtered_schema.source_database_used,
+                    "source_database_mode": filtered_schema.source_database_mode,
+                    "db_detection_scores": filtered_schema.db_detection_scores,
                 }
 
             # 3. Build Prompt Envelope

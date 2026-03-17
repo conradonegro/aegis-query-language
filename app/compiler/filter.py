@@ -249,15 +249,14 @@ class DeterministicSchemaFilter:
         self,
         schema: RegistrySchema,
         intent_tokens: frozenset[str],
-    ) -> str | None:
+    ) -> tuple[str | None, dict[str, int]]:
         """
-        Auto-detects the target source_database using MAX-aggregated token scoring.
+        Auto-detects the target source_database using combined table+column scoring.
 
-        For each database, computes the MAX token-match score across all its tables
-        and columns (not SUM — avoids bias toward larger databases). Returns the
-        winning database name only when it scores at least 2× the runner-up.
-        Returns None if no database has any signal. Raises AmbiguousSourceDatabaseError
-        when multiple databases are plausible and no clear winner emerges.
+        For each database, takes the MAX across tables of (table_score +
+        max_col_score). Returns (winner, all_db_scores). winner is None when no
+        database clears the cutoff threshold. Raises AmbiguousSourceDatabaseError
+        (with scores) when multiple databases tie and no 2× margin winner exists.
         """
         db_scores: dict[str, int] = {}
 
@@ -288,18 +287,21 @@ class DeterministicSchemaFilter:
             db: s for db, s in db_scores.items() if s >= self.cutoff_threshold
         }
         if not candidates:
-            return None
+            return None, db_scores
 
         sorted_dbs = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
         if len(sorted_dbs) == 1:
-            return sorted_dbs[0][0]
+            return sorted_dbs[0][0], db_scores
 
         best_db, best_score = sorted_dbs[0]
         _, second_score = sorted_dbs[1]
         if best_score >= 2 * second_score:
-            return best_db
+            return best_db, db_scores
 
-        raise AmbiguousSourceDatabaseError([db for db, _ in sorted_dbs])
+        raise AmbiguousSourceDatabaseError(
+            candidates=[db for db, _ in sorted_dbs],
+            scores=dict(sorted_dbs),
+        )
 
     def filter_schema(
         self,
@@ -312,6 +314,8 @@ class DeterministicSchemaFilter:
             included_columns.columns if included_columns else []
         )
         resolved_db: str | None = None
+        source_database_mode = "none"
+        db_detection_scores: dict[str, int] = {}
 
         # Explicit database scope: restrict to matching tables before token scoring.
         if intent.source_database:
@@ -326,8 +330,11 @@ class DeterministicSchemaFilter:
                 relationships=schema.relationships,
             )
             resolved_db = intent.source_database
+            source_database_mode = "explicit"
         else:
-            detected = self._detect_source_database(schema, intent_tokens)
+            detected, db_detection_scores = self._detect_source_database(
+                schema, intent_tokens
+            )
             if detected:
                 candidate_tables = self._apply_database_scope(schema, detected)
                 schema = RegistrySchema(
@@ -336,6 +343,7 @@ class DeterministicSchemaFilter:
                     relationships=schema.relationships,
                 )
                 resolved_db = detected
+                source_database_mode = "auto_detected"
 
         matched_tables = self._find_matched_table_aliases(
             schema, intent_tokens, forced_columns
@@ -363,4 +371,6 @@ class DeterministicSchemaFilter:
             relationships=allowed_relationships,
             omitted_columns=rejected_columns,
             source_database_used=resolved_db,
+            source_database_mode=source_database_mode,
+            db_detection_scores=db_detection_scores,
         )

@@ -37,6 +37,8 @@ class FilteredSchema(BaseModel):
     relationships: list[AbstractRelationshipDef]
     omitted_columns: dict[str, str]
     source_database_used: str | None = None
+    source_database_mode: str = "none"  # "explicit" | "auto_detected" | "none"
+    db_detection_scores: dict[str, int] = {}
 
 class SessionQueryContext(BaseModel):
     last_filtered_schema: FilteredSchema
