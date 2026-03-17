@@ -2,10 +2,11 @@ import pytest
 
 from app.compiler import AbstractQuery
 from app.compiler.parser import SQLParser
-from app.compiler.safety import SafetyEngine
+from app.compiler.safety import SafetyEngine, SafetyViolationError
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.steward import (
     AbstractColumnDef,
+    AbstractRelationshipDef,
     AbstractTableDef,
     RegistrySchema,
     SafetyClassification,
@@ -149,3 +150,132 @@ def test_column_from_out_of_scope_table_raises_translation_error() -> None:
 
     with pytest.raises(TranslationError, match="owning table"):
         translator.translate(validated, schema, abstract_query_hash="h")
+
+
+def _make_schema_with_relationship() -> RegistrySchema:
+    """Two-table schema with a declared users→orders FK, used for JOIN tests."""
+    return RegistrySchema(
+        version="v1.0.0",
+        tables=[
+            AbstractTableDef(
+                alias="users",
+                description="Users",
+                physical_target="public.users",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id",
+                        description="ID",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            join_participation_allowed=True,
+                        ),
+                        physical_target="user_id",
+                    ),
+                ],
+            ),
+            AbstractTableDef(
+                alias="orders",
+                description="Orders",
+                physical_target="public.orders",
+                columns=[
+                    AbstractColumnDef(
+                        alias="user_id",
+                        description="FK to users",
+                        safety=SafetyClassification(
+                            join_participation_allowed=True,
+                        ),
+                        physical_target="fk_user_id",
+                    ),
+                    AbstractColumnDef(
+                        alias="total",
+                        description="Total",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="order_total",
+                    ),
+                ],
+            ),
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="users",
+                source_column="id",
+                target_table="orders",
+                target_column="user_id",
+            )
+        ],
+    )
+
+
+def test_valid_join_passes() -> None:
+    """A JOIN whose ON clause matches a declared relationship is accepted."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_relationship()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT users.id FROM users JOIN orders ON users.id = orders.user_id"
+    ))
+    validated = safety.validate(ast)
+    executable = translator.translate(
+        validated, schema,
+        abstract_query_hash="h",
+        relationships=schema.relationships,
+    )
+    assert executable is not None
+
+
+def test_join_literal_predicate_blocked() -> None:
+    """ON 1=1 contains no Column=Column equality — must be rejected."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_relationship()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT users.id FROM users JOIN orders ON 1=1"
+    ))
+    validated = safety.validate(ast)
+
+    with pytest.raises(TranslationError, match="no column-equality condition"):
+        translator.translate(
+            validated, schema,
+            abstract_query_hash="h",
+            relationships=schema.relationships,
+        )
+
+
+def test_join_inequality_predicate_blocked() -> None:
+    """ON a.id >= b.user_id has no EQ node — must be rejected."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_relationship()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT users.id FROM users"
+            " JOIN orders ON users.id >= orders.user_id"
+        )
+    ))
+    validated = safety.validate(ast)
+
+    with pytest.raises(TranslationError, match="no column-equality condition"):
+        translator.translate(
+            validated, schema,
+            abstract_query_hash="h",
+            relationships=schema.relationships,
+        )
+
+
+def test_join_without_on_clause_blocked() -> None:
+    """A CROSS JOIN (no ON clause) is rejected by the safety engine before
+    reaching the translator; the translator's own check is defence-in-depth."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT users.id FROM users CROSS JOIN orders"
+    ))
+    with pytest.raises(SafetyViolationError, match="cross JOIN"):
+        safety.validate(ast)

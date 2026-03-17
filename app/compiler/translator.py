@@ -464,7 +464,12 @@ class DeterministicTranslator:
         for join_node in tree.find_all(exp.Join):
             on_clause = join_node.args.get("on")
             if on_clause is None:
-                continue
+                raise TranslationError(
+                    "JOIN without an explicit ON clause is not permitted."
+                    " All JOINs must reference a declared relationship"
+                    " via a column-equality condition."
+                )
+            found_declared_edge = False
             for eq_node in on_clause.find_all(exp.EQ):
                 left, right = eq_node.left, eq_node.right
                 if not isinstance(left, exp.Column) or not isinstance(
@@ -482,6 +487,13 @@ class DeterministicTranslator:
                         f" correspond to any declared relationship in the schema."
                         f" Hallucinated JOIN blocked."
                     )
+                found_declared_edge = True
+            if not found_declared_edge:
+                raise TranslationError(
+                    "JOIN ON clause contains no column-equality condition that"
+                    " matches a declared relationship. Non-equality, literal,"
+                    " or unqualified JOIN predicates are not permitted."
+                )
 
     @staticmethod
     def _build_edge_index(
