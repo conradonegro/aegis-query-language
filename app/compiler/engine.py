@@ -188,9 +188,14 @@ class CompilerEngine:
             abstract_query_hash = hashlib.sha256(
                 abstract_sql.encode()
             ).hexdigest()
+            scoped_schema = RegistrySchema(
+                version=filtered_schema.version,
+                tables=filtered_schema.tables,
+                relationships=filtered_schema.relationships,
+            )
             executable = self.translator.translate(
                 validated_ast,
-                schema,
+                scoped_schema,
                 abstract_query_hash=abstract_query_hash,
                 relationships=filtered_schema.relationships,
             )

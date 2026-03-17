@@ -107,6 +107,10 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       REDIS_URL: redis://redis:6379/0
       API_KEY_HMAC_SECRET: ${API_KEY_HMAC_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
       DB_URL_RUNTIME: postgresql+asyncpg://user_aegis_runtime:runtime_pass@db:5432/aegis_data_warehouse
       DB_URL_REGISTRY_RUNTIME: postgresql+asyncpg://user_aegis_registry_runtime:registry_pass@db:5432/aegis_data_warehouse
       DB_URL_STEWARD: postgresql+asyncpg://user_aegis_steward:steward_pass@db:5432/aegis_data_warehouse

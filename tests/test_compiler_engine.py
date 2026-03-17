@@ -35,7 +35,14 @@ def mock_registry() -> RegistrySchema:
                         alias="id", description="ID",
                         safety=SafetyClassification(allowed_in_select=True),
                         physical_target="auth.users.id",
-                    )
+                    ),
+                    AbstractColumnDef(
+                        alias="name", description="Name",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True
+                        ),
+                        physical_target="auth.users.name",
+                    ),
                 ]
             )
         ],
@@ -109,7 +116,7 @@ async def test_compiler_engine_rag_success(
 async def test_compiler_engine_rag_no_match(
     rag_compiler_engine: CompilerEngine, mock_registry: RegistrySchema
 ) -> None:
-    intent = UserIntent(natural_language_query="Show me Bob")
+    intent = UserIntent(natural_language_query="Show me users named Bob")
     hints = PromptHints(column_hints=[])
 
     executable = await rag_compiler_engine.compile(intent, mock_registry, hints)
@@ -129,7 +136,9 @@ async def test_compiler_engine_rag_ambiguous_match(
         value="Alice Cooper", abstract_column="users.name", tenant_id="default_tenant"
     ))
 
-    intent = UserIntent(natural_language_query="Show me Alice or Alice Cooper")
+    intent = UserIntent(
+        natural_language_query="Show me users named Alice or Alice Cooper"
+    )
     hints = PromptHints(column_hints=[])
 
     executable = await rag_compiler_engine.compile(intent, mock_registry, hints)
@@ -207,16 +216,9 @@ async def test_compiler_engine_follow_up_topic_shift(
         explain=True,
     )
 
-    # 2. Topic Shift (contains structural token "users" which forces a fresh pull)
-    intent2 = UserIntent(natural_language_query="what about authors")
-
-    # Let's add authors to registry so we can test the shift
-    mock_registry.tables.append(AbstractTableDef(
-        alias="authors",
-        description="The authors table",
-        physical_target="auth.authors",
-        columns=[]
-    ))
+    # 2. Not a follow-up: contains "users" schema token which triggers fresh
+    # schema filtering instead of reusing the prior session context.
+    intent2 = UserIntent(natural_language_query="Show me users ordered by name")
 
     hints2 = PromptHints(column_hints=[])
     exec2 = await compiler_engine.compile(
