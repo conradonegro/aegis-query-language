@@ -1,3 +1,4 @@
+import os
 import uuid
 from collections import namedtuple
 from typing import Any
@@ -8,6 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.steward.loader import RegistryLoader, UnauthorizedRegistryTamperError
 from app.vault import EnvFallbackProvider
+
+_PG_HOST = os.getenv("TEST_PG_HOST", "localhost")
+_PG_PORT = os.getenv("TEST_PG_PORT", "5432")
+
+
+def _pg_url(role: str, password: str) -> str:
+    return (
+        f"postgresql+asyncpg://{role}:{password}"
+        f"@{_PG_HOST}:{_PG_PORT}/aegis_data_warehouse"
+    )
 
 
 class MockResult:
@@ -24,10 +35,7 @@ async def test_db_privilege_enforcement_runtime() -> None:
     """Verifies that user_aegis_runtime is blocked from DDL and metadata mutations."""
     provider = EnvFallbackProvider()
     val = provider.get_database_password("user_aegis_runtime")
-    url = (
-        f"postgresql+asyncpg://user_aegis_runtime:{val}"
-        f"@localhost:5432/aegis_data_warehouse"
-    )
+    url = _pg_url("user_aegis_runtime", val)
     engine = create_async_engine(url)
 
     async with engine.begin() as conn:
@@ -53,10 +61,7 @@ async def test_worm_physical_trigger_enforcement() -> None:
     triggers."""
     provider = EnvFallbackProvider()
     val = provider.get_database_password("user_aegis_steward")
-    url = (
-        f"postgresql+asyncpg://user_aegis_steward:{val}"
-        f"@localhost:5432/aegis_data_warehouse"
-    )
+    url = _pg_url("user_aegis_steward", val)
     engine = create_async_engine(url)
 
     audit_id = uuid.uuid4()
@@ -96,10 +101,7 @@ async def test_worm_physical_trigger_enforcement() -> None:
 
     # Superuser backdoor cleanup (as we cannot delete via normal roles)
     val_admin = provider.get_database_password("user_aegis_meta_owner")
-    url_admin = (
-        f"postgresql+asyncpg://user_aegis_meta_owner:{val_admin}"
-        f"@localhost:5432/aegis_data_warehouse"
-    )
+    url_admin = _pg_url("user_aegis_meta_owner", val_admin)
     engine_admin = create_async_engine(url_admin)
     async with engine_admin.begin() as conn_admin:
         await conn_admin.execute(
@@ -155,10 +157,7 @@ async def test_registry_forgery_halt() -> None:
     """Verifies that an altered Artifact JSON blob crashes the FastAPI bootloader."""
     provider = EnvFallbackProvider()
     val = provider.get_database_password("user_aegis_meta_owner")
-    url = (
-        f"postgresql+asyncpg://user_aegis_meta_owner:{val}"
-        f"@localhost:5432/aegis_data_warehouse"
-    )
+    url = _pg_url("user_aegis_meta_owner", val)
     engine = create_async_engine(url)
 
     vid = uuid.uuid4()

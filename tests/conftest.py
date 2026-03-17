@@ -1,15 +1,17 @@
 import hashlib
 import hmac
-import os
-
-# Must be set globally BEFORE pytest collections import app modules
-os.environ["TESTING"] = "true"
-
 import logging
+import os
 from collections.abc import Generator
 
 import pytest
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+
+load_dotenv()
+
+# Must be set globally BEFORE pytest collections import app modules
+os.environ["TESTING"] = "true"
 
 # ------------------------------------------------------------------
 # Shared auth test constants — imported by test_auth.py / test_api.py
