@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from pydantic import ValidationError
+from sqlglot import exp as sqlglot_exp
 
 from app.compiler.interfaces import (
     LLMGatewayProtocol,
@@ -101,6 +102,9 @@ class CompilerEngine:
                     full_schema=schema,
                 )
             )
+            explain_context["session"]["session_id"] = session_id
+            explain_context["session"]["is_follow_up"] = is_follow_up
+            explain_context["session"]["prior_schema_reused"] = is_follow_up
 
             included_cols = RAGIncludedColumns(columns=[])
 
@@ -151,6 +155,9 @@ class CompilerEngine:
             )
             explain_context["prompt"]["raw_user"] = prompt_envelope.user_prompt
             explain_context["prompt"]["system_prompt_redacted"] = False
+            explain_context["prompt"]["chat_history_turns"] = (
+                len(chat_history) if chat_history else 0
+            )
 
             # 4. Call LLM
             gateway = (
@@ -189,9 +196,27 @@ class CompilerEngine:
             )
             explain_context["translation"]["parameterized_sql"] = executable.sql
             explain_context["translation"]["parameters"] = executable.parameters
+            explain_context["translation"]["abstract_query_hash"] = (
+                abstract_query_hash
+            )
+            explain_context["translation"]["row_limit_applied"] = (
+                executable.row_limit_applied
+            )
+            explain_context["translation"]["joins_validated"] = len(
+                list(validated_ast.tree.find_all(sqlglot_exp.Join))
+            )
+            explain_context["translation"]["temporal_expressions_validated"] = len(
+                list(validated_ast.tree.find_all(sqlglot_exp.Extract))
+            )
             explain_context["translation_repairs"] = [
                 r.model_dump() for r in executable.translation_repairs
             ]
+            explain_context["compilation"]["registry_version"] = (
+                executable.registry_version
+            )
+            explain_context["compilation"]["safety_engine_version"] = (
+                executable.safety_engine_version
+            )
 
             executable.abstract_sql = abstract_query.sql
             executable.query_id = str(uuid.uuid4())
@@ -230,6 +255,11 @@ class CompilerEngine:
     @staticmethod
     def _init_explain_context(intent: UserIntent) -> dict[str, Any]:
         return {
+            "session": {
+                "session_id": None,
+                "is_follow_up": False,
+                "prior_schema_reused": False,
+            },
             "rag": {
                 "outcome": "NOT_EVALUATED",
                 "matches": [],
@@ -242,6 +272,7 @@ class CompilerEngine:
                 "reasons": [],
             },
             "prompt": {
+                "chat_history_turns": 0,
                 "system_prompt_redacted": True,
                 "user_prompt": intent.natural_language_query,
                 "raw_system": "",
@@ -255,8 +286,16 @@ class CompilerEngine:
             },
             "translation": {
                 "llm_abstract_query": "",
+                "abstract_query_hash": "",
                 "parameterized_sql": "",
                 "parameters": {},
+                "row_limit_applied": False,
+                "joins_validated": 0,
+                "temporal_expressions_validated": 0,
+            },
+            "compilation": {
+                "registry_version": "",
+                "safety_engine_version": "",
             },
         }
 
