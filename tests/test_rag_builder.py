@@ -315,7 +315,7 @@ async def test_builder_tenant_isolation() -> None:
 def test_build_test_store() -> None:
     store = build_test_store()
     assert store.index_ready
-    result = store.search("Alice", tenant_id="default_tenant")
+    result = store.search("Alice", tenant_id="test_tenant")
     assert result.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
 
 

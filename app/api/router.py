@@ -177,6 +177,7 @@ async def generate_query(
         chat_history=chat_history,
         provider_id=payload.provider_id,
         session_id=str(session_id),
+        tenant_id=cred.tenant_id,
     )
 
     async with _session_locks[str(session_id)]:
@@ -271,7 +272,8 @@ async def execute_query(
         explain=payload.explain,
         chat_history=chat_history,
         provider_id=payload.provider_id,
-        session_id=str(session_id)
+        session_id=str(session_id),
+        tenant_id=cred.tenant_id,
     )
 
     async with _session_locks[str(session_id)]:

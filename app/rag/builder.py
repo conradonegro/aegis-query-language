@@ -233,16 +233,16 @@ def build_test_store(
     store = InMemoryVectorStore()
     defaults: list[tuple[str, str, str]] = entries or [
         # Column description hints
-        ("PK", "users.id", "default_tenant"),
-        ("Name", "users.name", "default_tenant"),
-        ("Active", "users.active", "default_tenant"),
-        ("Creation", "users.created_at", "default_tenant"),
-        ("FK", "orders.user_id", "default_tenant"),
-        ("Total", "orders.total_amount", "default_tenant"),
+        ("PK", "users.id", "test_tenant"),
+        ("Name", "users.name", "test_tenant"),
+        ("Active", "users.active", "test_tenant"),
+        ("Creation", "users.created_at", "test_tenant"),
+        ("FK", "orders.user_id", "test_tenant"),
+        ("Total", "orders.total_amount", "test_tenant"),
         # Sample categorical values
-        ("Alice", "users.name", "default_tenant"),
-        ("Bob", "users.name", "default_tenant"),
-        ("Charlie", "users.name", "default_tenant"),
+        ("Alice", "users.name", "test_tenant"),
+        ("Bob", "users.name", "test_tenant"),
+        ("Charlie", "users.name", "test_tenant"),
     ]
     for value, abstract_column, t_id in defaults:
         store.index_value(
