@@ -36,6 +36,7 @@ class FilteredSchema(BaseModel):
     tables: list[AbstractTableDef]
     relationships: list[AbstractRelationshipDef]
     omitted_columns: dict[str, str]
+    source_database_used: str | None = None
 
 class SessionQueryContext(BaseModel):
     last_filtered_schema: FilteredSchema
@@ -106,3 +107,4 @@ class ExecutableQuery(BaseModel):
     compilation_latency_ms: float | None = None
     explainability: dict[str, Any] | None = None
     translation_repairs: list[TranslationRepair] = Field(default_factory=list)
+    source_database_used: str | None = None

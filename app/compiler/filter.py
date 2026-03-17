@@ -1,7 +1,10 @@
 import functools
 import re
 
-from app.compiler.exceptions import UnknownSourceDatabaseError
+from app.compiler.exceptions import (
+    AmbiguousSourceDatabaseError,
+    UnknownSourceDatabaseError,
+)
 from app.compiler.models import FilteredSchema, RAGIncludedColumns, UserIntent
 from app.steward import AbstractTableDef, RegistrySchema
 
@@ -233,12 +236,67 @@ class DeterministicSchemaFilter:
         """Returns only tables belonging to the specified logical database."""
         return [t for t in schema.tables if t.source_database == source_database]
 
+    def _detect_source_database(
+        self,
+        schema: RegistrySchema,
+        intent_tokens: frozenset[str],
+    ) -> str | None:
+        """
+        Auto-detects the target source_database using MAX-aggregated token scoring.
+
+        For each database, computes the MAX token-match score across all its tables
+        and columns (not SUM — avoids bias toward larger databases). Returns the
+        winning database name only when it scores at least 2× the runner-up.
+        Returns None if no database has any signal. Raises AmbiguousSourceDatabaseError
+        when multiple databases are plausible and no clear winner emerges.
+        """
+        db_scores: dict[str, int] = {}
+
+        for table in schema.tables:
+            db = table.source_database
+            if db is None:
+                continue
+            table_tokens = (
+                self._tokenize(table.alias) | self._tokenize(table.description)
+            )
+            score = self.token_match_score(intent_tokens, table_tokens)
+            for col in table.columns:
+                col_tokens = (
+                    self._tokenize(col.alias) | self._tokenize(col.description)
+                )
+                score = max(score, self.token_match_score(intent_tokens, col_tokens))
+            if db not in db_scores or score > db_scores[db]:
+                db_scores[db] = score
+
+        candidates = {
+            db: s for db, s in db_scores.items() if s >= self.cutoff_threshold
+        }
+        if not candidates:
+            return None
+
+        sorted_dbs = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
+        if len(sorted_dbs) == 1:
+            return sorted_dbs[0][0]
+
+        best_db, best_score = sorted_dbs[0]
+        _, second_score = sorted_dbs[1]
+        if best_score >= 2 * second_score:
+            return best_db
+
+        raise AmbiguousSourceDatabaseError([db for db, _ in sorted_dbs])
+
     def filter_schema(
         self,
         intent: UserIntent,
         schema: RegistrySchema,
         included_columns: RAGIncludedColumns | None = None,
     ) -> FilteredSchema:
+        intent_tokens = self._tokenize(intent.natural_language_query)
+        forced_columns = set(
+            included_columns.columns if included_columns else []
+        )
+        resolved_db: str | None = None
+
         # Explicit database scope: restrict to matching tables before token scoring.
         if intent.source_database:
             candidate_tables = self._apply_database_scope(
@@ -251,11 +309,17 @@ class DeterministicSchemaFilter:
                 tables=candidate_tables,
                 relationships=schema.relationships,
             )
-
-        intent_tokens = self._tokenize(intent.natural_language_query)
-        forced_columns = set(
-            included_columns.columns if included_columns else []
-        )
+            resolved_db = intent.source_database
+        else:
+            detected = self._detect_source_database(schema, intent_tokens)
+            if detected:
+                candidate_tables = self._apply_database_scope(schema, detected)
+                schema = RegistrySchema(
+                    version=schema.version,
+                    tables=candidate_tables,
+                    relationships=schema.relationships,
+                )
+                resolved_db = detected
 
         matched_tables = self._find_matched_table_aliases(
             schema, intent_tokens, forced_columns
@@ -282,4 +346,5 @@ class DeterministicSchemaFilter:
             tables=allowed_tables,
             relationships=allowed_relationships,
             omitted_columns=rejected_columns,
+            source_database_used=resolved_db,
         )

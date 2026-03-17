@@ -233,6 +233,7 @@ async def generate_query(
         sql=executable.sql,
         parameters=executable.parameters,
         latency_ms=executable.compilation_latency_ms or 0.0,
+        source_database_used=executable.source_database_used,
         explainability=explain_ctx,
     )
 
@@ -362,6 +363,7 @@ async def execute_query(
         results=result.rows,
         row_count=len(result.rows),
         execution_latency_ms=0.0,
+        source_database_used=executable.source_database_used,
         explainability=exec_explain_ctx,
     )
 

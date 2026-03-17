@@ -119,6 +119,10 @@ class QueryGenerateResponse(BaseModel):
     latency_ms: float = Field(
         ..., description="Compilation pipeline latency including LLM overhead."
     )
+    source_database_used: str | None = Field(
+        default=None,
+        description="The logical database resolved during schema filtering.",
+    )
     explainability: ExplainabilityContext | None = Field(
         default=None, description="Diagnostic pipeline traces."
     )
@@ -142,6 +146,10 @@ class QueryExecuteResponse(BaseModel):
     row_count: int
     execution_latency_ms: float = Field(
         ..., description="Physical database execution latency."
+    )
+    source_database_used: str | None = Field(
+        default=None,
+        description="The logical database resolved during schema filtering.",
     )
     explainability: ExplainabilityContext | None = Field(
         default=None, description="Diagnostic pipeline traces."

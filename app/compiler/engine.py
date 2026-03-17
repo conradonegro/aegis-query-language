@@ -192,6 +192,7 @@ class CompilerEngine:
 
             executable.abstract_sql = abstract_query.sql
             executable.query_id = str(uuid.uuid4())
+            executable.source_database_used = filtered_schema.source_database_used
             executable.compilation_latency_ms = (
                 (time.perf_counter() - start) * 1000.0
             )

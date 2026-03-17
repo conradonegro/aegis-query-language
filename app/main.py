@@ -25,6 +25,10 @@ from app.api.models import ErrorResponse
 from app.api.router import api_router
 from app.audit.logger import JSONAuditLogger
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
+from app.compiler.exceptions import (
+    AmbiguousSourceDatabaseError,
+    UnknownSourceDatabaseError,
+)
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.gateway import MockLLMGateway
 from app.compiler.interfaces import LLMGatewayProtocol
@@ -407,6 +411,32 @@ async def llm_error_handler(
         explainability=getattr(exc, "explainability", None),
     )
     return JSONResponse(status_code=502, content=error_resp.model_dump())
+
+
+@app.exception_handler(UnknownSourceDatabaseError)
+async def unknown_source_database_handler(
+    request: Request, exc: UnknownSourceDatabaseError
+) -> JSONResponse:
+    error_resp = ErrorResponse(
+        code=400,
+        message=f"Unknown source_database: '{exc.name}'",
+        request_id=None,
+        explainability=None,
+    )
+    return JSONResponse(status_code=400, content=error_resp.model_dump())
+
+
+@app.exception_handler(AmbiguousSourceDatabaseError)
+async def ambiguous_source_database_handler(
+    request: Request, exc: AmbiguousSourceDatabaseError
+) -> JSONResponse:
+    error_resp = ErrorResponse(
+        code=400,
+        message=str(exc),
+        request_id=None,
+        explainability={"candidates": exc.candidates},
+    )
+    return JSONResponse(status_code=400, content=error_resp.model_dump())
 
 
 @app.exception_handler(Exception)
