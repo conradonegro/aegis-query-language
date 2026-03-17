@@ -649,35 +649,36 @@ def test_row_limit_applied_for_plain_select(
     assert "LIMIT" in result.sql
 
 
-def test_row_limit_not_applied_when_aggregation_present(
+def test_row_limit_applied_to_aggregation(
     translator: DeterministicTranslator, mock_schema: RegistrySchema
 ) -> None:
-    """A query with an aggregate function must not have a row limit injected."""
+    """Aggregate queries now receive a LIMIT cap — the exemption was a bypass."""
     ast = ValidatedAST(
         tree=sqlglot.parse_one("SELECT COUNT(*) FROM users", read="postgres")
     )
     result = translator.translate(ast, mock_schema)
-    assert result.row_limit_applied is False
-    assert "LIMIT" not in result.sql
+    assert result.row_limit_applied is True
+    assert "LIMIT" in result.sql
 
 
-def test_row_limit_not_applied_when_group_by_present(
+def test_row_limit_applied_to_group_by(
     translator: DeterministicTranslator, mock_schema: RegistrySchema
 ) -> None:
-    """A query with GROUP BY must not have a row limit injected."""
+    """GROUP BY queries now receive a LIMIT cap — the exemption was a bypass."""
     ast = ValidatedAST(
         tree=sqlglot.parse_one(
             "SELECT name, COUNT(*) FROM users GROUP BY name", read="postgres"
         )
     )
     result = translator.translate(ast, mock_schema)
-    assert result.row_limit_applied is False
+    assert result.row_limit_applied is True
+    assert "LIMIT" in result.sql
 
 
-def test_row_limit_not_applied_when_limit_already_exists(
+def test_row_limit_not_applied_when_safe_limit_already_exists(
     translator: DeterministicTranslator, mock_schema: RegistrySchema
 ) -> None:
-    """A query that already has a LIMIT clause must not have a second one injected."""
+    """A LIMIT already within the cap is preserved as-is; no second LIMIT injected."""
     ast = ValidatedAST(
         tree=sqlglot.parse_one("SELECT id FROM users LIMIT 5", read="postgres")
     )
@@ -685,6 +686,21 @@ def test_row_limit_not_applied_when_limit_already_exists(
     assert result.row_limit_applied is False
     # Verify there is exactly one LIMIT in the output (no duplication)
     assert result.sql.upper().count("LIMIT") == 1
+    # The value 5 is parameterized by the pipeline; confirm it is preserved
+    assert 5 in result.parameters.values()
+
+
+def test_row_limit_clamped_when_explicit_limit_exceeds_cap(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """An explicit LIMIT exceeding the cap is clamped to row_limit."""
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one("SELECT id FROM users LIMIT 99999", read="postgres")
+    )
+    result = translator.translate(ast, mock_schema)
+    assert result.row_limit_applied is True
+    assert "99999" not in result.sql
+    assert "LIMIT" in result.sql
 
 
 def test_where_only_aggregates_moves_to_having_and_removes_where(

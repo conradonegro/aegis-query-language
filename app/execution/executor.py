@@ -55,9 +55,12 @@ class ExecutionEngine:
             query_sql = text(query.sql)
             result = await conn.execute(query_sql, query.parameters)
 
-            # Extract standard dict response
+            # Extract standard dict response — fetchmany caps Python-side
+            # materialization as defence-in-depth against the translator's
+            # row-limit injection being absent or bypassed.
+            _MAX_ROWS = 1000
             columns = list(result.keys())
-            rows = [dict(row._mapping) for row in result.all()]
+            rows = [dict(row._mapping) for row in result.fetchmany(_MAX_ROWS)]
 
             metadata = {
                 "row_limit_applied": query.row_limit_applied,

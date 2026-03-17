@@ -63,7 +63,7 @@ class DeterministicTranslator:
         )
         self._validate_temporal_expressions(tree, column_datatypes)
         parameters = self._parameterize_literals(tree, literals)
-        row_limit_applied = self._apply_row_limit(tree, row_limit)
+        row_limit_applied = self._apply_row_limit(tree, row_limit, parameters)
 
         final_sql = tree.sql(dialect="postgres")
         # sqlglot renders positional params as $p1 in postgres dialect;
@@ -426,17 +426,70 @@ class DeterministicTranslator:
             param_counter += 1
         return parameters
 
-    def _apply_row_limit(self, tree: exp.Expression, row_limit: int) -> bool:
-        """Injects a LIMIT clause when the query has no aggregation or GROUP BY."""
-        is_aggregated = any(tree.find_all(exp.AggFunc))
-        has_groupby = tree.args.get("group") is not None
-        if not is_aggregated and not has_groupby:
-            if not tree.args.get("limit"):
+    def _apply_row_limit(
+        self,
+        tree: exp.Expression,
+        row_limit: int,
+        parameters: dict[str, Any] | None = None,
+    ) -> bool:
+        """Enforces a hard row-limit cap on every query.
+
+        Injects LIMIT row_limit when none exists, and clamps any existing
+        LIMIT that exceeds row_limit. Applies to all query types including
+        aggregations and GROUP BY — LIMIT is semantically valid on any SELECT
+        and is the only way to guarantee the documented cap.
+
+        parameters: the already-built parameter dict from _parameterize_literals.
+            When provided, an existing LIMIT that was already parameterized
+            (e.g. :p1) is clamped by updating the parameter value in-place
+            rather than replacing the AST node.
+        """
+        existing_limit_node = tree.args.get("limit")
+        if existing_limit_node is None:
+            tree.set(
+                "limit",
+                exp.Limit(expression=exp.Literal.number(row_limit)),
+            )
+            return True
+
+        # Clamp an existing LIMIT that exceeds the configured maximum.
+        # The limit expression may be a Literal (not yet parameterized) or an
+        # exp.Parameter (already replaced by _parameterize_literals).
+        limit_expr = existing_limit_node.expression
+        try:
+            if isinstance(limit_expr, exp.Literal):
+                supplied = int(limit_expr.this)
+                if supplied > row_limit:
+                    tree.set(
+                        "limit",
+                        exp.Limit(expression=exp.Literal.number(row_limit)),
+                    )
+                    return True
+            elif (
+                isinstance(limit_expr, exp.Parameter)
+                and parameters is not None
+            ):
+                # Already parameterized — clamp the bound value in-place.
+                param_name = limit_expr.this.name
+                supplied = int(parameters[param_name])
+                if supplied > row_limit:
+                    parameters[param_name] = row_limit
+                    return True
+            else:
+                # Unknown expression form — overwrite conservatively.
                 tree.set(
                     "limit",
                     exp.Limit(expression=exp.Literal.number(row_limit)),
                 )
                 return True
+        except (AttributeError, KeyError, ValueError):
+            # Cannot parse the limit expression — overwrite with the safe cap.
+            tree.set(
+                "limit",
+                exp.Limit(expression=exp.Literal.number(row_limit)),
+            )
+            return True
+
         return False
 
     # ------------------------------------------------------------------
