@@ -69,4 +69,5 @@ services:
       - -c
       - |
         uv run python scripts/discover_metadata.py &&
-        uv run python scripts/populate_descriptions.py
+        uv run python scripts/populate_descriptions.py &&
+        uv run python scripts/populate_source_databases.py
