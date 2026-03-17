@@ -24,6 +24,7 @@ class AbstractTableDef(BaseModel):
     description: str
     columns: list[AbstractColumnDef]
     physical_target: str
+    source_database: str | None = None
 
 class AbstractRelationshipDef(BaseModel):
     source_table: str

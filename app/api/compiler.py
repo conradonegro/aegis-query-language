@@ -86,6 +86,7 @@ class MetadataCompiler:
                 "alias": tbl.alias,
                 "description": tbl.description,
                 "tenant_id": tbl.tenant_id or "default_tenant",
+                "source_database": tbl.source_database,
                 "columns": [],
                 "relationships": [],
             }

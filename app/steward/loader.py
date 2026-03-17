@@ -142,7 +142,8 @@ class RegistryLoader:
                     alias=tbl_dict["alias"],
                     description=tbl_dict.get("description", ""),
                     physical_target=tbl_dict["name"],
-                    columns=columns_def
+                    columns=columns_def,
+                    source_database=tbl_dict.get("source_database"),
                 )
             )
 
