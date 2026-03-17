@@ -358,6 +358,40 @@ def test_schema_without_source_database_no_auto_detect() -> None:
     assert filtered.source_database_used is None
 
 
+def test_combined_table_and_column_score_resolves_ambiguity() -> None:
+    """
+    Regression: 'How many upvotes did user Andy get in total?'
+
+    codebase_community has a `users` table (matches 'user'→'users' via substring)
+    with an `upvotes` column (matches 'upvotes' exactly). Combined score = 2.
+    Other DBs only match one token at most → score = 1 → 2× margin fires.
+    """
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table_with_db(
+                "users",
+                "codebase_community",
+                "Registered users",
+                cols=[
+                    _col("id"),
+                    _col("upvotes", "the number of upvotes"),
+                ],
+            ),
+            # Generic competing tables that match 'user' or 'andy' loosely
+            _table_with_db("members", "student_club", "Club members and users"),
+            _table_with_db("drivers", "formula_1", "Formula 1 drivers"),
+        ],
+        relationships=[],
+    )
+    intent = UserIntent(
+        natural_language_query="How many upvotes did user Andy get in total"
+    )
+    filtered = f.filter_schema(intent, schema)
+    assert filtered.source_database_used == "codebase_community"
+
+
 def test_detect_source_database_clear_winner_two_match() -> None:
     """DB with score 4 beats DB with score 1 — 4× margin clears the 2× bar."""
     f = DeterministicSchemaFilter(cutoff_threshold=1)

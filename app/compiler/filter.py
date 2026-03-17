@@ -30,9 +30,18 @@ class DeterministicSchemaFilter:
         """
         clean = re.sub(r"[^a-z0-9\s]", "", text.lower())
         stop_words = {
-            "select", "show", "get", "find", "all", "the", "a", "an",
-            "and", "or", "of", "in", "to", "for", "with", "by",
-            "is", "are", "do", "does",
+            # SQL / UI verbs
+            "select", "show", "get", "find", "all", "list", "give",
+            # Articles / prepositions / conjunctions
+            "the", "a", "an", "and", "or", "of", "in", "to", "for",
+            "with", "by", "its", "their",
+            # Auxiliary verbs
+            "is", "are", "do", "does", "did", "was", "were",
+            "has", "have", "had",
+            # Question words (never a table/column discriminator)
+            "how", "many", "what", "which", "when", "where", "who",
+            # Filler quantifiers
+            "each", "per", "total", "count",
         }
         return frozenset(w for w in clean.split() if w and w not in stop_words)
 
@@ -259,12 +268,19 @@ class DeterministicSchemaFilter:
             table_tokens = (
                 self._tokenize(table.alias) | self._tokenize(table.description)
             )
-            score = self.token_match_score(intent_tokens, table_tokens)
+            table_score = self.token_match_score(intent_tokens, table_tokens)
+            max_col_score = 0
             for col in table.columns:
                 col_tokens = (
                     self._tokenize(col.alias) | self._tokenize(col.description)
                 )
-                score = max(score, self.token_match_score(intent_tokens, col_tokens))
+                max_col_score = max(
+                    max_col_score,
+                    self.token_match_score(intent_tokens, col_tokens),
+                )
+            # Combine table-level and best column-level signals: they are
+            # independent semantic dimensions pointing at the same table.
+            score = table_score + max_col_score
             if db not in db_scores or score > db_scores[db]:
                 db_scores[db] = score
 
