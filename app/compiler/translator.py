@@ -356,9 +356,14 @@ class DeterministicTranslator:
                 node_inst,
             )
         elif c_name in maps.alias_to_physical_col:
-            node_inst.set(
-                "this",
-                exp.Identifier(this=maps.alias_to_physical_col[c_name]),
+            raise TranslationError(
+                f"Column '{c_name}' exists in the schema but its owning table"
+                f" is not referenced in this query."
+                f" Explicit table qualification required."
+            )
+        else:
+            raise TranslationError(
+                f"Column '{c_name}' does not exist in the schema context."
             )
 
     # ------------------------------------------------------------------
