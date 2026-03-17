@@ -1,4 +1,10 @@
+import pytest
+
 from app.compiler import UserIntent
+from app.compiler.exceptions import (
+    AmbiguousSourceDatabaseError,
+    UnknownSourceDatabaseError,
+)
 from app.compiler.filter import DeterministicSchemaFilter
 from app.compiler.models import FilteredSchema
 from app.steward import (
@@ -220,3 +226,153 @@ def test_filter_schema_prunes_unrelated_relationships() -> None:
     else:
         # If products was dropped, relationship must be absent
         assert len(filtered.relationships) == 0
+
+
+# ─── source_database helpers ──────────────────────────────────────────────────
+
+def _table_with_db(
+    alias: str,
+    source_database: str,
+    description: str = "",
+    cols: list[AbstractColumnDef] | None = None,
+) -> AbstractTableDef:
+    return AbstractTableDef(
+        alias=alias,
+        description=description,
+        physical_target=f"phys_{alias}",
+        source_database=source_database,
+        columns=cols or [_col("id")],
+    )
+
+
+def _multi_db_schema() -> RegistrySchema:
+    """Schema with tables spread across two logical databases."""
+    return RegistrySchema(
+        version="1",
+        tables=[
+            _table_with_db("loan", "financial", "Loan records"),
+            _table_with_db("client", "financial", "Bank clients"),
+            _table_with_db("circuits", "formula_1", "Formula 1 circuits"),
+            _table_with_db("drivers", "formula_1", "Formula 1 drivers"),
+        ],
+        relationships=[],
+    )
+
+
+# ─── Explicit source_database scoping ────────────────────────────────────────
+
+def test_explicit_source_database_restricts_to_matching_tables() -> None:
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    intent = UserIntent(
+        natural_language_query="Show loan details for each client",
+        source_database="financial",
+    )
+    filtered = f.filter_schema(intent, schema)
+    aliases = {t.alias for t in filtered.tables}
+    # loan and client match; circuits/drivers are excluded by DB scope
+    assert aliases == {"loan", "client"}
+    assert filtered.source_database_used == "financial"
+
+
+def test_explicit_source_database_unknown_raises() -> None:
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    intent = UserIntent(
+        natural_language_query="anything", source_database="nonexistent"
+    )
+    with pytest.raises(UnknownSourceDatabaseError) as exc_info:
+        f.filter_schema(intent, schema)
+    assert exc_info.value.name == "nonexistent"
+
+
+def test_explicit_source_database_used_in_filtered_schema() -> None:
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    intent = UserIntent(
+        natural_language_query="List circuits and drivers",
+        source_database="formula_1",
+    )
+    filtered = f.filter_schema(intent, schema)
+    assert filtered.source_database_used == "formula_1"
+    aliases = {t.alias for t in filtered.tables}
+    assert aliases == {"circuits", "drivers"}
+
+
+# ─── Auto-detection ───────────────────────────────────────────────────────────
+
+def test_auto_detect_single_winner_restricts_schema() -> None:
+    """When one DB clearly matches (2× margin), schema is restricted to it."""
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    # "loan" and "client" are financial-DB terms — no formula_1 signal
+    intent = UserIntent(
+        natural_language_query="What are the loan details for each client"
+    )
+    filtered = f.filter_schema(intent, schema)
+    aliases = {t.alias for t in filtered.tables}
+    assert aliases.issubset({"loan", "client"})
+    assert filtered.source_database_used == "financial"
+
+
+def test_auto_detect_ambiguous_raises() -> None:
+    """When two DBs match equally, AmbiguousSourceDatabaseError is raised."""
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table_with_db("alpha", "db_a", "alpha records"),
+            _table_with_db("beta", "db_b", "beta records"),
+        ],
+        relationships=[],
+    )
+    # "alpha beta" — each DB scores 1 (equal tie, no 2× margin)
+    intent = UserIntent(natural_language_query="show alpha and beta records")
+    with pytest.raises(AmbiguousSourceDatabaseError) as exc_info:
+        f.filter_schema(intent, schema)
+    assert set(exc_info.value.candidates) == {"db_a", "db_b"}
+
+
+def test_auto_detect_no_match_uses_full_schema() -> None:
+    """When no DB has token signal, source_database_used is None."""
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    intent = UserIntent(natural_language_query="xyz completely unrelated qwerty")
+    filtered = f.filter_schema(intent, schema)
+    assert filtered.source_database_used is None
+
+
+def test_schema_without_source_database_no_auto_detect() -> None:
+    """Tables without source_database are never candidates for auto-detection."""
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table("users", "User accounts"),
+            _table("orders", "Purchase history"),
+        ],
+        relationships=[],
+    )
+    intent = UserIntent(natural_language_query="Show user orders")
+    filtered = f.filter_schema(intent, schema)
+    assert filtered.source_database_used is None
+
+
+def test_detect_source_database_clear_winner_two_match() -> None:
+    """DB with score 4 beats DB with score 1 — 4× margin clears the 2× bar."""
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table_with_db(
+                "loan", "financial", "Loan account balance interest rate"
+            ),
+            _table_with_db("circuits", "formula_1", "Circuit"),
+        ],
+        relationships=[],
+    )
+    intent = UserIntent(
+        natural_language_query="loan balance interest rate account"
+    )
+    filtered = f.filter_schema(intent, schema)
+    assert filtered.source_database_used == "financial"
