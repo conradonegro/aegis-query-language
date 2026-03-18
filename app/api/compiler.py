@@ -23,6 +23,20 @@ from app.audit.chaining import (
 from app.vault import get_secrets_manager
 
 
+class MixedTenantArtifactError(ValueError):
+    """Raised when a table's tenant_id conflicts with its owning version's tenant_id."""
+
+
+def _assert_table_tenant(tbl: MetadataTable, version: MetadataVersion) -> None:
+    """Raise MixedTenantArtifactError if the table's tenant_id conflicts."""
+    if tbl.tenant_id is not None and tbl.tenant_id != version.tenant_id:
+        raise MixedTenantArtifactError(
+            f"Table '{tbl.alias}' has tenant_id='{tbl.tenant_id}' "
+            f"which conflicts with version tenant_id='{version.tenant_id}'. "
+            f"All tables in a version must belong to the same tenant."
+        )
+
+
 def _compute_rag_values_hash(values: list[str]) -> str:
     """SHA256 of sorted JSON-encoded normalized values."""
     sorted_vals = sorted(values)
@@ -80,12 +94,14 @@ class MetadataCompiler:
             if not tbl.active:
                 continue
 
+            _assert_table_tenant(tbl, version)
+
             tbl_dict: dict[str, Any] = {
                 "id": str(tbl.table_id),
                 "name": tbl.real_name,
                 "alias": tbl.alias,
                 "description": tbl.description,
-                "tenant_id": tbl.tenant_id or "default_tenant",
+                "tenant_id": version.tenant_id,
                 "source_database": tbl.source_database,
                 "columns": [],
                 "relationships": [],
@@ -177,6 +193,7 @@ class MetadataCompiler:
 
         artifact = CompiledRegistryArtifact(
             version_id=version.version_id,
+            tenant_id=version.tenant_id,
             artifact_blob=payload,
             artifact_hash=final_hash,
             compiler_version="1.0.0",

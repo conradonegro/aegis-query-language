@@ -31,6 +31,7 @@ async def _run_discovery(session: AsyncSession) -> None:
     """Core discovery logic — tables, columns, and FK relationships."""
     new_version = MetadataVersion(
         version_id=uuid.uuid4(),
+        tenant_id="default",
         status="draft",
         created_by="system-auto-discovery",
         change_reason=(

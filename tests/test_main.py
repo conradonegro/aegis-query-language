@@ -55,7 +55,8 @@ def test_lifespan_initialization() -> None:
     """Verify that the lifespan context injects the required application state."""
     with TestClient(app):
         # The lifespan block should have set these on app.state
-        assert hasattr(app.state, "registry")
+        assert hasattr(app.state, "registries")
+        assert hasattr(app.state, "vector_stores")
         assert hasattr(app.state, "executor")
         assert hasattr(app.state, "auditor")
         assert hasattr(app.state, "compiler")

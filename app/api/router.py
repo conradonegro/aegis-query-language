@@ -143,8 +143,20 @@ def get_executor(request: Request) -> ExecutionLayer:
 def get_auditor(request: Request) -> Any:
     return request.app.state.auditor
 
-def get_registry(request: Request) -> RegistrySchema:
-    return cast(RegistrySchema, request.app.state.registry)
+def get_registry(
+    request: Request,
+    cred: Annotated[ResolvedCredential, Depends(require_query_credential)],
+) -> RegistrySchema:
+    schema = cast(RegistrySchema | None, request.app.state.registries.get(cred.tenant_id))
+    if schema is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No compiled schema available for this tenant. "
+                "Compile a registry artifact first."
+            ),
+        )
+    return schema
 
 
 @api_router.post("/query/generate", response_model=QueryGenerateResponse)
@@ -377,7 +389,9 @@ async def list_metadata_versions(
 ) -> list[ProtocolMetadataVersion]:
     """Retrieve all metadata schema versions."""
     res = await session.execute(
-        select(MetadataVersion).order_by(MetadataVersion.created_at.desc())
+        select(MetadataVersion)
+        .where(MetadataVersion.tenant_id == cred.tenant_id)
+        .order_by(MetadataVersion.created_at.desc())
     )
     versions = res.scalars().all()
 
@@ -436,6 +450,10 @@ async def update_version_status(
     version = res.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
+    if version.tenant_id != cred.tenant_id:
+        raise HTTPException(
+            status_code=403, detail="Version does not belong to your tenant."
+        )
 
     # Idempotency: already at the target status — return without side-effects
     if version.status == payload.status:
@@ -561,19 +579,35 @@ async def compile_metadata_version(
     wait_for_index: bool = False,
 ) -> MetadataCompileResponse:
     """Compile an active metadata version into a runtime Aegis Registry artifact."""
+    from app.api.compiler import MixedTenantArtifactError
     from app.rag.builder import RagDivergenceError, build_from_artifact
     from app.steward.loader import RegistryLoader
 
-    artifact = await MetadataCompiler.compile_version(
-        session=session,
-        version_id=version_id,
-        actor=cred.user_id,
+    # Ownership check: verify this version belongs to the requesting tenant
+    version_res = await session.execute(
+        select(MetadataVersion).where(MetadataVersion.version_id == version_id)
     )
+    version_obj = version_res.scalar_one_or_none()
+    if not version_obj:
+        raise HTTPException(status_code=404, detail="Version not found.")
+    if version_obj.tenant_id != cred.tenant_id:
+        raise HTTPException(
+            status_code=403, detail="Version does not belong to your tenant."
+        )
 
-    # Hot-reload schema
+    try:
+        artifact = await MetadataCompiler.compile_version(
+            session=session,
+            version_id=version_id,
+            actor=cred.user_id,
+        )
+    except MixedTenantArtifactError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Hot-reload this tenant's schema slot only
     async with request.app.state.registry_runtime_session_factory() as rt_session:
-        schema = await RegistryLoader.load_active_schema(rt_session)
-    request.app.state.registry = schema
+        schema = await RegistryLoader.load_active_schema(rt_session, cred.tenant_id)
+    request.app.state.registries[cred.tenant_id] = schema
 
     # Fetch column values for RAG builder
     async with request.app.state.registry_admin_session_factory() as val_session:
@@ -584,12 +618,12 @@ async def compile_metadata_version(
             new_store = await build_from_artifact(
                 artifact_blob=artifact.artifact_blob,
                 version_id=str(version_id),
-                tenant_id="default_tenant",
+                tenant_id=cred.tenant_id,
                 artifact_version=artifact.artifact_hash,
                 column_values=column_values,
             )
-            request.app.state.vector_store = new_store
-            request.app.state.compiler.set_vector_store(new_store)
+            request.app.state.vector_stores[cred.tenant_id] = new_store
+            request.app.state.compiler.set_vector_store(new_store, cred.tenant_id)
         except RagDivergenceError:
             logger.warning(
                 "RAG divergence detected for version %s — "
@@ -626,7 +660,15 @@ async def list_column_values(
     """List curated RAG values for a column."""
     stmt = (
         select(MetadataColumnValue)
-        .where(MetadataColumnValue.column_id == column_id)
+        .join(
+            MetadataColumn,
+            MetadataColumnValue.column_id == MetadataColumn.column_id,
+        )
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataColumnValue.column_id == column_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
+        )
         .order_by(MetadataColumnValue.value)
     )
     result = await session.execute(stmt)
@@ -655,7 +697,12 @@ async def create_column_value(
 ) -> ProtocolColumnValue:
     """Add a curated RAG value to a column."""
     col_res = await session.execute(
-        select(MetadataColumn).where(MetadataColumn.column_id == column_id)
+        select(MetadataColumn)
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataColumn.column_id == column_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
+        )
     )
     col = col_res.scalar_one_or_none()
     if col is None:
@@ -705,7 +752,12 @@ async def bulk_import_column_values(
 ) -> ColumnValueBulkImportResponse:
     """Bulk-import curated RAG values (e.g. from a CSV upload via client)."""
     col_res = await session.execute(
-        select(MetadataColumn).where(MetadataColumn.column_id == column_id)
+        select(MetadataColumn)
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataColumn.column_id == column_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
+        )
     )
     col = col_res.scalar_one_or_none()
     if col is None:
@@ -774,9 +826,16 @@ async def deactivate_column_value(
 ) -> None:
     """Soft-delete (deactivate) a curated RAG value."""
     res = await session.execute(
-        select(MetadataColumnValue).where(
+        select(MetadataColumnValue)
+        .join(
+            MetadataColumn,
+            MetadataColumnValue.column_id == MetadataColumn.column_id,
+        )
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
             MetadataColumnValue.value_id == value_id,
             MetadataColumnValue.column_id == column_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
         )
     )
     val = res.scalar_one_or_none()
@@ -838,6 +897,10 @@ async def get_metadata_schema(
     version = res.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
+    if version.tenant_id != cred.tenant_id:
+        raise HTTPException(
+            status_code=403, detail="Version does not belong to your tenant."
+        )
 
     tables_out = [_map_table(t) for t in version.tables]
 
@@ -869,7 +932,11 @@ async def update_metadata_table(
 ) -> ProtocolTable:
     stmt = (
         select(MetadataTable)
-        .where(MetadataTable.table_id == table_id)
+        .join(MetadataVersion, MetadataTable.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataTable.table_id == table_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
+        )
         .options(selectinload(MetadataTable.columns))
     )
     res = await session.execute(stmt)
@@ -895,7 +962,14 @@ async def update_metadata_column(
     session: Annotated[AsyncSession, Depends(get_steward_db_session)],
     cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolColumn:
-    stmt = select(MetadataColumn).where(MetadataColumn.column_id == column_id)
+    stmt = (
+        select(MetadataColumn)
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataColumn.column_id == column_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
+        )
+    )
     res = await session.execute(stmt)
     col = res.scalar_one_or_none()
     if not col:
@@ -931,6 +1005,7 @@ async def create_metadata_version(
     new_version_id = uuid.uuid4()
     new_version = MetadataVersion(
         version_id=new_version_id,
+        tenant_id=cred.tenant_id,
         status="draft",
         created_by=cred.user_id,
         change_reason="Steward UI clone",
@@ -953,6 +1028,11 @@ async def create_metadata_version(
         baseline = res.scalar_one_or_none()
         if not baseline:
              raise HTTPException(status_code=404, detail="Baseline not found")
+        if baseline.tenant_id != cred.tenant_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Baseline version does not belong to your tenant.",
+            )
 
         table_id_map = {}
         col_id_map = {}
@@ -1046,6 +1126,10 @@ async def obfuscate_schema(
     version = res.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
+    if version.tenant_id != cred.tenant_id:
+        raise HTTPException(
+            status_code=403, detail="Version does not belong to your tenant."
+        )
 
     t_counter = 1
     c_counter = 1
@@ -1092,6 +1176,12 @@ async def create_credential(
             status_code=500, detail="Auth service unavailable."
         ) from exc
 
+    if payload.tenant_id != cred.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot create credentials for a different tenant.",
+        )
+
     raw_key = generate_api_key()
     key_hash = _hash_api_key(raw_key, secret)
 
@@ -1133,7 +1223,9 @@ async def list_credentials(
 ) -> list[CredentialListItem]:
     """List all tenant credentials (active and inactive)."""
     res = await session.execute(
-        select(TenantCredential).order_by(TenantCredential.created_at.desc())
+        select(TenantCredential)
+        .where(TenantCredential.tenant_id == cred.tenant_id)
+        .order_by(TenantCredential.created_at.desc())
     )
     rows = res.scalars().all()
     return [
@@ -1165,5 +1257,9 @@ async def revoke_credential(
     target = res.scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="Credential not found.")
+    if target.tenant_id != cred.tenant_id:
+        raise HTTPException(
+            status_code=403, detail="Credential does not belong to your tenant."
+        )
     target.is_active = False
     await session.commit()

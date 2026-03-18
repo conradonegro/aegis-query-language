@@ -170,25 +170,25 @@ async def test_registry_forgery_halt() -> None:
         await conn.execute(
             text(
                 "INSERT INTO aegis_meta.metadata_versions"
-                " (version_id, status, created_by, created_at)"
-                " VALUES (:vid, 'active', 'system', NOW())"
+                " (version_id, tenant_id, status, created_by, created_at)"
+                " VALUES (:vid, 'test_tenant', 'active', 'system', NOW())"
             ),
             {"vid": vid}
         )
         await conn.execute(
             text(
                 "INSERT INTO aegis_meta.compiled_registry_artifacts"
-                " (artifact_id, version_id, artifact_blob, artifact_hash,"
+                " (artifact_id, version_id, tenant_id, artifact_blob, artifact_hash,"
                 " compiled_at, compiler_version, signature, signature_algo)"
-                " VALUES (:aid, :vid, CAST(:json_val AS JSONB), 'fake_hash',"
-                " NOW(), '1.0.0', 'fake_sig', 'hmac')"
+                " VALUES (:aid, :vid, 'test_tenant', CAST(:json_val AS JSONB),"
+                " 'fake_hash', NOW(), '1.0.0', 'fake_sig', 'hmac')"
             ),
             {"aid": uuid.uuid4(), "vid": vid, "json_val": '{"hacked": "payload"}'}
         )
 
     # Assert the boot sequence violently halts on discrepancy
     with pytest.raises(UnauthorizedRegistryTamperError, match="discrepancy"):
-        await RegistryLoader.load_active_schema(mock_session)  # type: ignore[arg-type]
+        await RegistryLoader.load_active_schema(mock_session, "test_tenant")  # type: ignore[arg-type]
 
     # 2. Test HMAC verification explicitly by matching the hash but breaking
     # the sig
@@ -212,7 +212,7 @@ async def test_registry_forgery_halt() -> None:
         UnauthorizedRegistryTamperError,
         match="HMAC Signature match absolutely failed",
     ):
-        await RegistryLoader.load_active_schema(mock_session)  # type: ignore[arg-type]
+        await RegistryLoader.load_active_schema(mock_session, "test_tenant")  # type: ignore[arg-type]
 
     # Cleanup injected forged payload
     async with engine.begin() as conn:

@@ -40,6 +40,7 @@ class MetadataVersion(Base):
     version_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
     registry_hash: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         Enum(
@@ -323,6 +324,7 @@ class CompiledRegistryArtifact(Base):
     version_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("aegis_meta.metadata_versions.version_id"), unique=True
     )
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
     artifact_blob: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     artifact_hash: Mapped[str] = mapped_column(Text, nullable=False)
     compiled_at: Mapped[datetime] = mapped_column(
@@ -374,9 +376,7 @@ class ChatSession(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    tenant_id: Mapped[str] = mapped_column(
-        Text, nullable=False, default="default_tenant"
-    )
+    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
     user_id: Mapped[str] = mapped_column(
         Text, nullable=False, default="api_user"
     )

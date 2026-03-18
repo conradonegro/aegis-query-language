@@ -4,7 +4,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
-from typing import cast
+from typing import Any, cast
 from urllib.parse import urlparse, urlunparse
 
 import redis.asyncio as aioredis
@@ -81,45 +81,83 @@ async def _connect_redis(redis_url: str) -> "aioredis.Redis | None":
         return None
 
 
-async def _boot_rag_index(app: FastAPI) -> None:
-    """Background task: build the RAG index from the active compiled artifact."""
+async def _load_tenant_registries(
+    app: FastAPI,
+) -> list[Any]:
+    """Load one registry schema per tenant; return the materialised artifact_rows."""
+    from app.steward.loader import RegistryLoader
+
+    stmt = (
+        sa_select(CompiledRegistryArtifact, MetadataVersion.tenant_id)
+        .join(
+            MetadataVersion,
+            CompiledRegistryArtifact.version_id == MetadataVersion.version_id,
+        )
+        .where(MetadataVersion.status == "active")
+        .distinct(MetadataVersion.tenant_id)
+        .order_by(
+            MetadataVersion.tenant_id,
+            CompiledRegistryArtifact.compiled_at.desc(),
+            CompiledRegistryArtifact.artifact_id.desc(),
+        )
+    )
+    async with app.state.registry_runtime_session_factory() as session:
+        result = await session.execute(stmt)
+        artifact_rows = result.all()
+
+    registries: dict[str, RegistrySchema] = {}
+    async with app.state.registry_runtime_session_factory() as session:
+        for _artifact, tid in artifact_rows:
+            loaded = await RegistryLoader.load_active_schema(session, tid)
+            if loaded:
+                registries[tid] = loaded
+
+    if not registries:
+        logger.warning(
+            "[!] No active metadata versions found. Serving empty schema fallback."
+        )
+
+    app.state.registries = registries
+    return list(artifact_rows)
+
+
+async def _boot_rag_index(
+    app: FastAPI,
+    artifact_rows: list[Any],
+) -> None:
+    """Background task: build per-tenant RAG indexes from active compiled artifacts."""
     try:
         async with app.state.registry_runtime_session_factory() as val_session:
-            stmt = (
-                sa_select(CompiledRegistryArtifact)
-                .join(
-                    MetadataVersion,
-                    CompiledRegistryArtifact.version_id
-                    == MetadataVersion.version_id,
+            for artifact, tid in artifact_rows:
+                col_values = await _fetch_rag_column_values_for_version(
+                    artifact.version_id, val_session
                 )
-                .where(MetadataVersion.status == "active")
-                .order_by(CompiledRegistryArtifact.compiled_at.desc())
-                .limit(1)
-            )
-            result = await val_session.execute(stmt)
-            artifact = result.scalar_one_or_none()
-            if artifact is None:
-                logger.info("RAG: no active artifact — index stays empty")
-                return
-
-            col_values = await _fetch_rag_column_values_for_version(
-                artifact.version_id, val_session
-            )
-
-        new_store = await build_from_artifact(
-            artifact_blob=artifact.artifact_blob,
-            version_id=str(artifact.version_id),
-            tenant_id="default_tenant",
-            artifact_version=artifact.artifact_hash,
-            column_values=col_values,
-        )
-        app.state.vector_store = new_store
-        app.state.compiler.set_vector_store(new_store)
-        logger.info("RAG: index ready — %s", artifact.artifact_hash[:12])
-    except RagDivergenceError:
-        logger.warning("RAG: divergence at boot — index stays empty")
+                try:
+                    new_store = await build_from_artifact(
+                        artifact_blob=artifact.artifact_blob,
+                        version_id=str(artifact.version_id),
+                        tenant_id=tid,
+                        artifact_version=artifact.artifact_hash,
+                        column_values=col_values,
+                    )
+                    app.state.vector_stores[tid] = new_store
+                    app.state.compiler.set_vector_store(new_store, tid)
+                    logger.info(
+                        "RAG: tenant '%s' index ready — %s",
+                        tid,
+                        artifact.artifact_hash[:12],
+                    )
+                except RagDivergenceError:
+                    logger.warning(
+                        "RAG: divergence for tenant '%s' — index stays empty", tid
+                    )
+                except Exception:
+                    logger.exception(
+                        "RAG: boot build failed for tenant '%s' — index stays empty",
+                        tid,
+                    )
     except Exception:
-        logger.exception("RAG: boot build failed — index stays empty")
+        logger.exception("RAG: boot failed — all tenant indexes stay empty")
 
 
 async def _fetch_rag_column_values_for_version(
@@ -232,8 +270,6 @@ def _build_test_registry_schema() -> RegistrySchema:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    from app.steward.loader import RegistryLoader
-
     runtime_db_url = os.getenv("DB_URL_RUNTIME", os.getenv("DATABASE_URL"))
     registry_runtime_db_url = os.getenv(
         "DB_URL_REGISTRY_RUNTIME", os.getenv("DATABASE_URL")
@@ -290,23 +326,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         create_async_engine(secure_runtime_db_url), expire_on_commit=False
     )
 
-    if os.getenv("TESTING") == "true":
-        logger.info(
-            "[*] Testing mode detected: Seeding deterministic static RegistrySchema"
-        )
-        schema = _build_test_registry_schema()
-    else:
-        async with app.state.registry_runtime_session_factory() as session:
-            _loaded = await RegistryLoader.load_active_schema(session)
-        if _loaded is None:
-            logger.warning(
-                "[!] No Active Metadata version found. Serving empty schema fallback."
-            )
-            schema = RegistrySchema(version="0.0.0", tables=[], relationships=[])
-        else:
-            schema = _loaded
-
-    app.state.registry = schema
     app.state.executor = ExecutionEngine(connection_string=secure_runtime_db_url)
 
     redis_url = os.getenv("REDIS_URL")
@@ -334,17 +353,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.compiler.session_store = session_store
 
-    # Initialize RAG Store
+    # Initialize per-tenant registry and RAG stores
     if os.getenv("TESTING") == "true":
+        logger.info(
+            "[*] Testing mode detected: Seeding deterministic static RegistrySchema"
+        )
+        schema = _build_test_registry_schema()
+        app.state.registries = {"test_tenant": schema}
         vector_store = build_test_store()
-        app.state.vector_store = vector_store
-        app.state.compiler.set_vector_store(vector_store)
+        app.state.vector_stores = {"test_tenant": vector_store}
+        app.state.compiler.set_vector_store(vector_store, "test_tenant")
     else:
-        # Start with empty store; background task will swap when ready
-        empty_store = InMemoryVectorStore()
-        app.state.vector_store = empty_store
-        app.state.compiler.set_vector_store(empty_store)
-        _ = asyncio.create_task(_boot_rag_index(app))
+        import time as _time
+
+        _boot_start = _time.monotonic()
+        artifact_rows = await _load_tenant_registries(app)
+        app.state.vector_stores = {}
+
+        elapsed_ms = (_time.monotonic() - _boot_start) * 1000.0
+        logger.info(
+            "Registry boot complete: %d tenant(s) loaded in %.1fms",
+            len(app.state.registries),
+            elapsed_ms,
+        )
+
+        _ = asyncio.create_task(_boot_rag_index(app, artifact_rows))
 
     logger.info("Aegis Semantic Proxy Initialized.")
     yield
@@ -465,6 +498,6 @@ async def serve_ui() -> FileResponse:
 
 @app.get("/health")
 async def health_check(request: Request) -> dict[str, str | bool]:
-    store = getattr(request.app.state, "vector_store", None)
-    index_ready: bool = store.index_ready if store is not None else False
+    stores = getattr(request.app.state, "vector_stores", {})
+    index_ready: bool = any(s.index_ready for s in stores.values()) if stores else False
     return {"status": "ok", "index_ready": index_ready}

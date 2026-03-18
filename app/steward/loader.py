@@ -31,17 +31,21 @@ class RegistryLoader:
     """
 
     @staticmethod
-    async def load_active_schema(session: AsyncSession) -> RegistrySchema | None:
-        # Load the most recent artifact whose parent version is still active.
-        # Without the status filter an artifact compiled for a subsequently
-        # archived version would be silently loaded as the live schema.
+    async def load_active_schema(
+        session: AsyncSession, tenant_id: str
+    ) -> RegistrySchema | None:
+        # Load the most recent artifact whose parent version is still active
+        # and belongs to the given tenant.
         stmt = (
             select(CompiledRegistryArtifact)
             .join(
                 MetadataVersion,
                 CompiledRegistryArtifact.version_id == MetadataVersion.version_id,
             )
-            .where(MetadataVersion.status == "active")
+            .where(
+                MetadataVersion.status == "active",
+                MetadataVersion.tenant_id == tenant_id,
+            )
             .order_by(CompiledRegistryArtifact.compiled_at.desc())
             .limit(1)
         )

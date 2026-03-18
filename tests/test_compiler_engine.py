@@ -73,7 +73,8 @@ async def test_compiler_engine_success(
     executable = await compiler_engine.compile(
         intent=intent,
         schema=mock_registry,
-        hints=hints
+        hints=hints,
+        tenant_id="test_tenant",
     )
 
     # Assert successful orchestration
@@ -90,10 +91,10 @@ def rag_compiler_engine(compiler_engine: CompilerEngine) -> CompilerEngine:
         CategoricalValue(
             value="Alice",
             abstract_column="users.name",
-            tenant_id="default_tenant",
+            tenant_id="test_tenant",
         )
     )
-    compiler_engine.set_vector_store(store)
+    compiler_engine.set_vector_store(store, "test_tenant")
     return compiler_engine
 
 @pytest.mark.asyncio
@@ -103,7 +104,9 @@ async def test_compiler_engine_rag_success(
     intent = UserIntent(natural_language_query="Show me Alice")
     hints = PromptHints(column_hints=[])
 
-    executable = await rag_compiler_engine.compile(intent, mock_registry, hints)
+    executable = await rag_compiler_engine.compile(
+        intent, mock_registry, hints, tenant_id="test_tenant"
+    )
 
     assert executable is not None
     assert len(hints.column_hints) == 1
@@ -119,7 +122,9 @@ async def test_compiler_engine_rag_no_match(
     intent = UserIntent(natural_language_query="Show me users named Bob")
     hints = PromptHints(column_hints=[])
 
-    executable = await rag_compiler_engine.compile(intent, mock_registry, hints)
+    executable = await rag_compiler_engine.compile(
+        intent, mock_registry, hints, tenant_id="test_tenant"
+    )
 
     assert executable is not None
     assert hints.rag_provenance is not None
@@ -131,9 +136,10 @@ async def test_compiler_engine_rag_ambiguous_match(
     rag_compiler_engine: CompilerEngine, mock_registry: RegistrySchema
 ) -> None:
     # Add an ambiguous item
-    assert rag_compiler_engine.vector_store is not None
-    rag_compiler_engine.vector_store.index_value(CategoricalValue(
-        value="Alice Cooper", abstract_column="users.name", tenant_id="default_tenant"
+    store = rag_compiler_engine._vector_stores.get("test_tenant")
+    assert store is not None
+    store.index_value(CategoricalValue(
+        value="Alice Cooper", abstract_column="users.name", tenant_id="test_tenant"
     ))
 
     intent = UserIntent(
@@ -141,7 +147,9 @@ async def test_compiler_engine_rag_ambiguous_match(
     )
     hints = PromptHints(column_hints=[])
 
-    executable = await rag_compiler_engine.compile(intent, mock_registry, hints)
+    executable = await rag_compiler_engine.compile(
+        intent, mock_registry, hints, tenant_id="test_tenant"
+    )
 
     assert executable is not None
     assert hints.rag_provenance is not None
@@ -166,6 +174,7 @@ async def test_compiler_engine_follow_up_reuse(
         hints=hints1,
         session_id=session_id,
         explain=True,
+        tenant_id="test_tenant",
     )
 
     # Verify state is stored
@@ -186,6 +195,7 @@ async def test_compiler_engine_follow_up_reuse(
         hints=hints2,
         session_id=session_id,
         explain=True,
+        tenant_id="test_tenant",
     )
 
     assert exec2.explainability is not None
@@ -214,6 +224,7 @@ async def test_compiler_engine_follow_up_topic_shift(
         hints=hints1,
         session_id=session_id,
         explain=True,
+        tenant_id="test_tenant",
     )
 
     # 2. Not a follow-up: contains "users" schema token which triggers fresh
@@ -227,6 +238,7 @@ async def test_compiler_engine_follow_up_topic_shift(
         hints=hints2,
         session_id=session_id,
         explain=True,
+        tenant_id="test_tenant",
     )
 
     # It should NOT say reused
@@ -246,7 +258,8 @@ async def test_compiler_engine_follow_up_failure_preservation(
     intent1 = UserIntent(natural_language_query="Show me all users")
     hints1 = PromptHints(column_hints=[])
     await compiler_engine.compile(
-        intent=intent1, schema=mock_registry, hints=hints1, session_id=session_id
+        intent=intent1, schema=mock_registry, hints=hints1, session_id=session_id,
+        tenant_id="test_tenant",
     )
 
     original_sql = (
@@ -276,6 +289,7 @@ async def test_compiler_engine_follow_up_failure_preservation(
             schema=mock_registry,
             hints=hints2,
             session_id=session_id,
+            tenant_id="test_tenant",
         )
 
     # 3. Assert state was NOT corrupted by the failure
@@ -317,7 +331,9 @@ async def test_compiler_engine_llm_refusal_is_raised(
     hints = PromptHints(column_hints=[])
 
     with pytest.raises(LLMGenerationError) as exc:
-        await compiler_engine.compile(intent=intent, schema=mock_registry, hints=hints)
+        await compiler_engine.compile(
+            intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
+        )
 
     assert (
         "refused" in str(exc.value).lower()
@@ -350,7 +366,7 @@ async def test_compiler_engine_strips_json_code_fence(
     intent = UserIntent(natural_language_query="Show all users")
     hints = PromptHints(column_hints=[])
     executable = await compiler_engine.compile(
-        intent=intent, schema=mock_registry, hints=hints
+        intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
     )
     assert executable is not None
     assert "users" in executable.sql.lower()
@@ -375,7 +391,7 @@ async def test_compiler_engine_handles_plain_sql_fallback(
     intent = UserIntent(natural_language_query="Show all users")
     hints = PromptHints(column_hints=[])
     executable = await compiler_engine.compile(
-        intent=intent, schema=mock_registry, hints=hints
+        intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
     )
     assert executable is not None
     assert "users" in executable.sql.lower()
@@ -400,4 +416,6 @@ async def test_compiler_engine_rejects_multi_statement_in_fallback(
     intent = UserIntent(natural_language_query="Show all users")
     hints = PromptHints(column_hints=[])
     with pytest.raises(LLMGenerationError, match="(?i)multi-statement"):
-        await compiler_engine.compile(intent=intent, schema=mock_registry, hints=hints)
+        await compiler_engine.compile(
+            intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
+        )

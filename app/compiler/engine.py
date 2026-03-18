@@ -61,11 +61,11 @@ class CompilerEngine:
         self.parser = parser
         self.safety_engine = safety_engine
         self.translator = translator
-        self.vector_store: VectorStoreProtocol | None = None
+        self._vector_stores: dict[str, VectorStoreProtocol] = {}
         self.session_store: SessionStore = SessionStore()
 
-    def set_vector_store(self, store: VectorStoreProtocol) -> None:
-        self.vector_store = store
+    def set_vector_store(self, store: VectorStoreProtocol, tenant_id: str) -> None:
+        self._vector_stores[tenant_id] = store
 
     # ------------------------------------------------------------------
     # Public compilation entry point
@@ -76,11 +76,11 @@ class CompilerEngine:
         intent: UserIntent,
         schema: RegistrySchema,
         hints: PromptHints,
+        tenant_id: str,
         explain: bool = False,
         chat_history: list[ChatHistoryItem] | None = None,
         provider_id: str | None = None,
         session_id: str | None = None,
-        tenant_id: str = "default_tenant",
     ) -> ExecutableQuery:
         """
         Executes the full pipeline.
@@ -314,13 +314,14 @@ class CompilerEngine:
         hints: PromptHints,
         included_cols: RAGIncludedColumns,
         explain_context: dict[str, Any],
-        tenant_id: str = "default_tenant",
+        tenant_id: str,
     ) -> None:
         """Runs RAG lookup and injects matching column hints into PromptHints."""
-        if not self.vector_store:
+        store = self._vector_stores.get(tenant_id)
+        if not store:
             return
 
-        rag_result = self.vector_store.search(
+        rag_result = store.search(
             intent.natural_language_query, tenant_id=tenant_id, limit=5
         )
 
