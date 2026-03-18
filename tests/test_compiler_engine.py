@@ -275,8 +275,13 @@ async def test_compiler_engine_follow_up_failure_preservation(
         async def generate(self, prompt: PromptEnvelope) -> LLMResult:
             import json as _json
             return LLMResult(
-                raw_text=_json.dumps({"sql": "SELECT * FROM hallucinated_table", "refused": False}),
-                model_id="mock", latency_ms=10.0, prompt_tokens=10, completion_tokens=10,
+                raw_text=_json.dumps(
+                    {"sql": "SELECT * FROM hallucinated_table", "refused": False}
+                ),
+                model_id="mock",
+                latency_ms=10.0,
+                prompt_tokens=10,
+                completion_tokens=10,
             )
 
     compiler_engine.llm_gateway = BrokenGateway()
@@ -410,8 +415,13 @@ async def test_compiler_engine_rejects_multi_statement_sql_in_json(
     class MultiStatementGateway(MockLLMGateway):
         async def generate(self, prompt: PromptEnvelope) -> LLMResult:
             return LLMResult(
-                raw_text=_json.dumps({"sql": "SELECT * FROM users; DROP TABLE users;", "refused": False}),
-                model_id="mock", latency_ms=1.0, prompt_tokens=5, completion_tokens=5
+                raw_text=_json.dumps(
+                    {"sql": "SELECT * FROM users; DROP TABLE users;", "refused": False}
+                ),
+                model_id="mock",
+                latency_ms=1.0,
+                prompt_tokens=5,
+                completion_tokens=5,
             )
 
     compiler_engine.llm_gateway = MultiStatementGateway()

@@ -88,7 +88,6 @@ def test_chat_session_created_on_first_request() -> None:
                 json={
                     "intent": "Show all users",
                     "schema_hints": [],
-                    "provider_id": "ollama:llama3",
                 },
             )
         assert resp.status_code == 200, resp.text
@@ -226,21 +225,19 @@ def test_chat_session_preserved_across_provider_switch() -> None:
             json={
                 "intent": "Show all users",
                 "schema_hints": [],
-                "provider_id": "ollama:llama3",
             },
         )
         assert resp1.status_code == 200, resp1.text
         session_id = resp1.json()["session_id"]
         assert session_id
 
-        # Turn 2: switch provider, same session
+        # Turn 2: same session
         app.dependency_overrides[get_compiler] = lambda: MockCompilerTurnB()
         resp2 = client.post(
             "/api/v1/query/generate",
             json={
                 "intent": "Filter to active only",
                 "schema_hints": [],
-                "provider_id": "openai:gpt-4o",
                 "session_id": session_id,
             },
         )

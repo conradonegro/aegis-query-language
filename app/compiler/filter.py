@@ -58,6 +58,47 @@ class DeterministicSchemaFilter:
     # Follow-up detection
     # ------------------------------------------------------------------
 
+    def _tables_in_scope(
+        self,
+        last_schema: FilteredSchema,
+        full_schema: RegistrySchema | None,
+    ) -> list[AbstractTableDef]:
+        """
+        Returns the tables to check for direct alias references.  Cross-database
+        tables are excluded when the prior schema has a known source_database, to
+        prevent coincidental word collisions with tables in other databases from
+        masking follow-up detection.
+        """
+        prior_aliases = {t.alias for t in last_schema.tables}
+        prior_db = last_schema.source_database_used
+        tables: list[AbstractTableDef] = list(last_schema.tables)
+        if full_schema:
+            for t in full_schema.tables:
+                if t.alias in prior_aliases:
+                    continue
+                if prior_db is not None and t.source_database != prior_db:
+                    continue
+                tables.append(t)
+        return tables
+
+    def _has_column_match(
+        self,
+        intent_tokens: frozenset[str],
+        last_schema: FilteredSchema,
+    ) -> bool:
+        """Returns True if any column alias/description in the prior schema matches."""
+        for table in last_schema.tables:
+            for col in table.columns:
+                col_tokens = (
+                    self._tokenize(col.alias) | self._tokenize(col.description)
+                )
+                if (
+                    self.token_match_score(intent_tokens, col_tokens)
+                    >= self.cutoff_threshold
+                ):
+                    return True
+        return False
+
     def is_follow_up(
         self,
         intent: UserIntent,
@@ -83,42 +124,19 @@ class DeterministicSchemaFilter:
             return False
 
         intent_tokens = self._tokenize(intent.natural_language_query)
-        if len(intent_tokens) == 0:
+        if not intent_tokens:
             return False
 
-        # Build the set of tables to check for direct table-alias references.
-        # Cross-database table aliases are excluded when the prior schema is
-        # database-scoped, to avoid false topic-drift signals from coincidental
-        # word collisions with table names in other databases.
-        prior_aliases = {t.alias for t in last_schema.tables}
-        prior_db = last_schema.source_database_used
-        tables_in_scope: list[AbstractTableDef] = list(last_schema.tables)
-        if full_schema:
-            for t in full_schema.tables:
-                if t.alias in prior_aliases:
-                    continue
-                # Skip cross-database tables when the prior schema has a known db.
-                if prior_db is not None and t.source_database != prior_db:
-                    continue
-                tables_in_scope.append(t)
-
         # Step 1 — Direct table alias reference → fresh query.
-        for table in tables_in_scope:
+        for table in self._tables_in_scope(last_schema, full_schema):
             alias_tokens = self._tokenize(table.alias)
-            if self.token_match_score(intent_tokens, alias_tokens) >= self.cutoff_threshold:
+            score = self.token_match_score(intent_tokens, alias_tokens)
+            if score >= self.cutoff_threshold:
                 return False
 
         # Step 2 — Column-level match to prior schema → refinement follow-up.
-        for table in last_schema.tables:
-            for col in table.columns:
-                col_tokens = (
-                    self._tokenize(col.alias) | self._tokenize(col.description)
-                )
-                if (
-                    self.token_match_score(intent_tokens, col_tokens)
-                    >= self.cutoff_threshold
-                ):
-                    return True
+        if self._has_column_match(intent_tokens, last_schema):
+            return True
 
         # Step 3 — No structural match → rely on query length.
         return len(intent_tokens) < 8

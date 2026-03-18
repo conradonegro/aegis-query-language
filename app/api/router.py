@@ -65,6 +65,12 @@ from app.audit.chaining import compute_audit_row_hash, get_canonical_json
 from app.compiler.backend_hints import BackendHintContext, build_backend_hints
 from app.compiler.engine import CompilerEngine
 from app.compiler.models import ChatHistoryItem, PromptHints, UserIntent
+from app.compiler.provider_config import (
+    MalformedProviderIdError,
+    ProviderNotAllowedError,
+    assert_provider_allowed,
+    parse_provider_id,
+)
 from app.execution import ExecutionContext
 from app.execution.interfaces import ExecutionLayer
 from app.rag.normalizer import normalize as normalize_rag_value
@@ -78,6 +84,37 @@ logger = logging.getLogger(__name__)
 # A plain defaultdict is safe here: asyncio is single-threaded so dict access is
 # non-preemptive, and asyncio.Lock() requires no running event loop since Python 3.10.
 _session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _validate_provider_id(raw: str | None, credential_id: str) -> str | None:
+    """
+    Validates and allowlist-checks a client-supplied provider_id.
+
+    Returns the normalised provider_id string, or None if no override was
+    requested.  Raises HTTPException(400) for malformed or blocked providers.
+    Logs a security warning (with credential ID) before raising for blocked
+    providers, without surfacing allowlist details to the client.
+    """
+    if not raw:
+        return None
+    try:
+        normalised = parse_provider_id(raw)
+    except MalformedProviderIdError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        assert_provider_allowed(normalised)
+    except ProviderNotAllowedError:
+        logger.warning(
+            "security: provider_id '%s' blocked — not in server allowlist "
+            "(credential_id=%s)",
+            raw,
+            credential_id,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Requested provider not permitted by server configuration.",
+        ) from None
+    return normalised
 
 api_router = APIRouter()
 
@@ -154,7 +191,9 @@ def get_registry(
     request: Request,
     cred: Annotated[ResolvedCredential, Depends(require_query_credential)],
 ) -> RegistrySchema:
-    schema = cast(RegistrySchema | None, request.app.state.registries.get(cred.tenant_id))
+    schema = cast(
+        RegistrySchema | None, request.app.state.registries.get(cred.tenant_id)
+    )
     if schema is None:
         raise HTTPException(
             status_code=503,
@@ -179,6 +218,8 @@ async def generate_query(
     Compiles natural language into an ExecutableQuery, strictly omitting
     physical DB execution.
     """
+    provider_id = _validate_provider_id(payload.provider_id, cred.credential_id)
+
     intent = UserIntent(
         natural_language_query=payload.intent,
         source_database=payload.source_database,
@@ -198,7 +239,7 @@ async def generate_query(
         hints=hints,
         explain=payload.explain,
         chat_history=chat_history,
-        provider_id=payload.provider_id,
+        provider_id=provider_id,
         session_id=str(session_id),
         tenant_id=cred.tenant_id,
     )
@@ -218,7 +259,7 @@ async def generate_query(
             sequence_number=last_seq + 1,
             role="user",
             content=intent.natural_language_query,
-            provider_id=payload.provider_id
+            provider_id=provider_id,
         )
         _llm_expl = (
             executable.explainability.get("llm", {})
@@ -238,7 +279,7 @@ async def generate_query(
             provider_id=(
                 _llm_expl.get("provider")
                 if executable.explainability
-                else payload.provider_id
+                else provider_id
             ),
             prompt_tokens=_llm_expl.get("prompt_tokens"),
             completion_tokens=_llm_expl.get("completion_tokens"),
@@ -278,6 +319,8 @@ async def execute_query(
     Compiles and executes the query against the physical database.
     Dispatches asynchronous audit sink logging.
     """
+    provider_id = _validate_provider_id(payload.provider_id, cred.credential_id)
+
     intent = UserIntent(
         natural_language_query=payload.intent,
         source_database=payload.source_database,
@@ -298,7 +341,7 @@ async def execute_query(
         hints=hints,
         explain=payload.explain,
         chat_history=chat_history,
-        provider_id=payload.provider_id,
+        provider_id=provider_id,
         session_id=str(session_id),
         tenant_id=cred.tenant_id,
     )
@@ -318,7 +361,7 @@ async def execute_query(
             sequence_number=last_seq + 1,
             role="user",
             content=intent.natural_language_query,
-            provider_id=payload.provider_id
+            provider_id=provider_id,
         )
         _exec_llm_expl = (
             executable.explainability.get("llm", {})
@@ -342,7 +385,7 @@ async def execute_query(
             provider_id=(
                 _exec_llm_expl.get("provider")
                 if executable.explainability
-                else payload.provider_id
+                else provider_id
             ),
             prompt_tokens=_exec_llm_expl.get("prompt_tokens"),
             completion_tokens=_exec_llm_expl.get("completion_tokens"),
@@ -391,7 +434,7 @@ async def execute_query(
         out: dict[str, str | int | float | bool | None] = {}
         for k, v in row.items():
             if v is None or isinstance(v, (str, int, float, bool)):
-                out[k] = v  # type: ignore[assignment]
+                out[k] = v
             else:
                 out[k] = str(v)
         return out

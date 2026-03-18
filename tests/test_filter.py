@@ -159,7 +159,9 @@ def test_is_follow_up_column_refinement_ignores_cross_db_table_alias() -> None:
         natural_language_query="location can contain city country format"
     )
 
-    def _db_table(alias: str, db: str, cols: list | None = None) -> AbstractTableDef:
+    def _db_table(
+        alias: str, db: str, cols: list[AbstractColumnDef] | None = None
+    ) -> AbstractTableDef:
         return AbstractTableDef(
             alias=alias,
             description="",

@@ -18,36 +18,39 @@ def test_get_llm_gateway_ollama_default() -> None:
         assert gateway.model == "llama3"
 
 def test_get_llm_gateway_ollama_explicit() -> None:
-    gateway = get_llm_gateway("ollama:llama3.1")
+    with mock.patch.dict(os.environ, {"ALLOWED_LLM_PROVIDERS": "*"}):
+        gateway = get_llm_gateway("ollama:llama3.1")
     assert isinstance(gateway, OllamaLLMGateway)
     assert gateway.model == "llama3.1"
 
 def test_get_llm_gateway_openai_explicit() -> None:
-    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
-        gateway = get_llm_gateway("openai:gpt-3.5-turbo")
-        assert isinstance(gateway, OpenAILLMGateway)
-        assert gateway.model == "gpt-3.5-turbo"
+    with mock.patch.dict(os.environ, {"ALLOWED_LLM_PROVIDERS": "*"}):
+        with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
+            gateway = get_llm_gateway("openai:gpt-3.5-turbo")
+    assert isinstance(gateway, OpenAILLMGateway)
+    assert gateway.model == "gpt-3.5-turbo"
 
 def test_get_llm_gateway_anthropic_explicit() -> None:
-    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
-        gateway = get_llm_gateway("anthropic:claude-3-5-sonnet")
-        assert isinstance(gateway, AnthropicLLMGateway)
-        assert gateway.model == "claude-3-5-sonnet"
+    with mock.patch.dict(os.environ, {"ALLOWED_LLM_PROVIDERS": "*"}):
+        with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
+            gateway = get_llm_gateway("anthropic:claude-3-5-sonnet")
+    assert isinstance(gateway, AnthropicLLMGateway)
+    assert gateway.model == "claude-3-5-sonnet"
 
 def test_get_llm_gateway_google_explicit() -> None:
-    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
-        gateway = get_llm_gateway("google:gemini-1.5-pro")
-        assert isinstance(gateway, GoogleLLMGateway)
-        assert gateway.model == "gemini-1.5-pro"
+    with mock.patch.dict(os.environ, {"ALLOWED_LLM_PROVIDERS": "*"}):
+        with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
+            gateway = get_llm_gateway("google:gemini-1.5-pro")
+    assert isinstance(gateway, GoogleLLMGateway)
+    assert gateway.model == "gemini-1.5-pro"
 
 def test_get_llm_gateway_xai_explicit() -> None:
-    with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
-        gateway = get_llm_gateway("xai:grok-2")
-        assert isinstance(gateway, XAILLMGateway)
-        assert gateway.model == "grok-2"
+    with mock.patch.dict(os.environ, {"ALLOWED_LLM_PROVIDERS": "*"}):
+        with mock.patch("app.compiler.base_gateway.get_secrets_manager"):
+            gateway = get_llm_gateway("xai:grok-2")
+    assert isinstance(gateway, XAILLMGateway)
+    assert gateway.model == "grok-2"
 
 def test_get_llm_gateway_unknown_provider() -> None:
-    with pytest.raises(
-        ValueError, match="Unknown LLM Provider designated: invalid_provider"
-    ):
+    with pytest.raises(ValueError, match="(?i)unknown provider"):
         get_llm_gateway("invalid_provider")
