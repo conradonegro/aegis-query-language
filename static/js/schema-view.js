@@ -1,10 +1,12 @@
 import { API } from './api.js';
+import { RagValuesDrawer } from './rag-values-drawer.js';
 
 export class SchemaView {
     constructor(containerId, onSelectTable) {
         this.container = document.getElementById(containerId);
         this.onSelectTable = onSelectTable;
         this.currentSchema = null;
+        this._drawer = new RagValuesDrawer();
     }
 
     async loadSchema(versionId) {
@@ -90,6 +92,11 @@ export class SchemaView {
                                                 <label>Limit:
                                                     <input type="number" class="col-rag-limit" data-id="${c.column_id}" data-original="${c.rag_limit ?? 10}" value="${c.rag_limit ?? 10}" min="1" max="100" style="width: 55px; background: #1a1b26; color: #c0caf5; border: 1px solid #414868; border-radius: 3px; padding: 2px 4px;" />
                                                 </label>
+                                                <button class="btn-manage-values btn btn-sm"
+                                                    data-col-id="${c.column_id}"
+                                                    style="margin-top: 2px; padding: 3px 8px; font-size: 11px; background: #32344a; border: 1px solid #414868;">
+                                                    ⚙ Values
+                                                </button>
                                             </div>
                                         </td>
                                     </tr>
@@ -243,6 +250,21 @@ export class SchemaView {
                 if (oldVal === newVal) return;
                 e.target.dataset.original = newVal;
                 await API.updateColumn(id, { rag_limit: parseInt(newVal, 10) });
+            });
+        });
+
+        this.container.querySelectorAll('.btn-manage-values').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const colId = btn.dataset.colId;
+                // Find the column and its table from the loaded schema
+                for (const table of this.currentSchema.tables) {
+                    const col = table.columns.find(c => c.column_id === colId);
+                    if (col) {
+                        this._drawer.open(col, table.columns);
+                        return;
+                    }
+                }
             });
         });
     }

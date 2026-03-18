@@ -30,7 +30,7 @@ class MockLLMGateway:
 
     async def generate(self, prompt: PromptEnvelope) -> LLMResult:
         """
-        Takes the immutable PromptEnvelope and simulates returning an AbstractQuery.
+        Takes the frozen PromptEnvelope and simulates returning an AbstractQuery.
         """
         start_time = time.time()
         await asyncio.sleep(0.05)

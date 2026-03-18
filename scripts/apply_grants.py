@@ -39,6 +39,12 @@ _GRANTS: list[str] = [
     "GRANT INSERT, UPDATE ON aegis_meta.metadata_relationships TO role_aegis_steward",
     "GRANT INSERT ON aegis_meta.metadata_versions TO role_aegis_steward",
     "GRANT INSERT ON aegis_meta.metadata_audit TO role_aegis_steward",
+    "GRANT INSERT, UPDATE, DELETE ON aegis_meta.metadata_column_values"
+    " TO role_aegis_steward",
+    # Revoke any spurious direct-user grants that may have been applied manually
+    # (idempotent — REVOKE is a no-op if the privilege doesn't exist)
+    "REVOKE INSERT, UPDATE, DELETE ON aegis_meta.metadata_column_values"
+    " FROM user_aegis_steward",
     # role_aegis_registry_admin — controlled deployment pipeline / senior operator
     "GRANT SELECT ON ALL TABLES IN SCHEMA aegis_meta TO role_aegis_registry_admin",
     "GRANT UPDATE (status, registry_hash, approved_by, approved_at)"

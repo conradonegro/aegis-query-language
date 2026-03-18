@@ -41,7 +41,6 @@ from app.compiler.session_store import SessionStore
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.execution.executor import ExecutionEngine
 from app.rag.builder import RagDivergenceError, build_from_artifact, build_test_store
-from app.rag.store import InMemoryVectorStore
 from app.steward import (
     AbstractColumnDef,
     AbstractRelationshipDef,
@@ -378,6 +377,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
         _ = asyncio.create_task(_boot_rag_index(app, artifact_rows))
+
+    if os.getenv("SCHEMA_HINTS", "").lower() == "on":
+        logger.warning(
+            "[!] SCHEMA_HINTS=on: external caller hints accepted in system prompt. "
+            "Ensure callers are trusted internal services only."
+        )
 
     logger.info("Aegis Semantic Proxy Initialized.")
     yield

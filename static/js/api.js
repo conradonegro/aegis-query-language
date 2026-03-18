@@ -80,5 +80,42 @@ export const API = {
             throw new Error(err.detail || 'Compilation failed.');
         }
         return res.json();
-    }
+    },
+    async listColumnValues(columnId) {
+        const res = await _apiFetch(`/api/v1/metadata/columns/${columnId}/values`);
+        return res.json();
+    },
+    async addColumnValue(columnId, value) {
+        const res = await _apiFetch(`/api/v1/metadata/columns/${columnId}/values`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value })
+        });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Failed to add value.'); }
+        return res.json();
+    },
+    async bulkAddColumnValues(columnId, values) {
+        const res = await _apiFetch(`/api/v1/metadata/columns/${columnId}/values/bulk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ values })
+        });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Bulk import failed.'); }
+        return res.json();
+    },
+    async deleteColumnValue(columnId, valueId) {
+        await _apiFetch(`/api/v1/metadata/columns/${columnId}/values/${valueId}`, {
+            method: 'DELETE'
+        });
+    },
+    async clearColumnValues(columnId) {
+        await _apiFetch(`/api/v1/metadata/columns/${columnId}/values`, {
+            method: 'DELETE'
+        });
+    },
+    async sampleColumnValues(columnId) {
+        const res = await _apiFetch(`/api/v1/metadata/columns/${columnId}/sample`);
+        if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Sample failed.'); }
+        return res.json();
+    },
 };

@@ -108,6 +108,12 @@ class CompilerEngine:
 
             included_cols = RAGIncludedColumns(columns=[])
 
+            # RAG runs on every query — follow-up or not — so value hints are
+            # always available to the LLM even when the schema is reused.
+            self._apply_rag_hints(
+                intent, hints, included_cols, explain_context, tenant_id
+            )
+
             if is_follow_up and prior_context:
                 filtered_schema = prior_context.last_filtered_schema
                 explain_context["schema_filter"] = {
@@ -124,10 +130,6 @@ class CompilerEngine:
                     ],
                 }
             else:
-                self._apply_rag_hints(
-                    intent, hints, included_cols, explain_context, tenant_id
-                )
-
                 filtered_schema = self.schema_filter.filter_schema(
                     intent, schema, included_columns=included_cols
                 )
@@ -341,6 +343,27 @@ class CompilerEngine:
                 "rag_similarity_score": rag_result.match.similarity_score,
             }
             included_cols.columns.append(match_val.abstract_column)
+        elif (
+            rag_result.outcome == RAGOutcome.AMBIGUOUS_MATCH
+            and rag_result.candidates
+        ):
+            # Multiple candidate values matched — surface all of them so the
+            # LLM can choose the right one or use an IN / LIKE clause.
+            abstract_col = rag_result.candidates[0].categorical_value.abstract_column
+            candidate_values = [
+                m.categorical_value.value for m in rag_result.candidates[:10]
+            ]
+            hints.column_hints.append(
+                f"Possible values for column '{abstract_col}':"
+                f" {', '.join(repr(v) for v in candidate_values)}"
+            )
+            hints.rag_provenance = {
+                "rag_outcome": rag_result.outcome.value,
+                "rag_abstract_column": abstract_col,
+                "rag_candidates": candidate_values,
+                "rag_reason": rag_result.reason,
+            }
+            included_cols.columns.append(abstract_col)
         else:
             hints.rag_provenance = {
                 "rag_outcome": rag_result.outcome.value,
@@ -348,21 +371,24 @@ class CompilerEngine:
             }
 
         if hints.rag_provenance:
+            prov = hints.rag_provenance
+            if "rag_matched_value" in prov:
+                matches = [prov["rag_matched_value"]]
+                scores = [prov["rag_similarity_score"]]
+                reason = "Single High Confidence Match Injected"
+            elif "rag_candidates" in prov:
+                matches = prov["rag_candidates"]
+                scores = []
+                reason = prov.get("rag_reason", "Ambiguous candidates injected")
+            else:
+                matches = []
+                scores = []
+                reason = prov.get("rag_reason", "")
             explain_context["rag"] = {
-                "outcome": hints.rag_provenance.get("rag_outcome", "UNKNOWN"),
-                "matches": (
-                    [hints.rag_provenance["rag_matched_value"]]
-                    if "rag_matched_value" in hints.rag_provenance
-                    else []
-                ),
-                "scores": (
-                    [hints.rag_provenance["rag_similarity_score"]]
-                    if "rag_similarity_score" in hints.rag_provenance
-                    else []
-                ),
-                "reason": hints.rag_provenance.get(
-                    "rag_reason", "Single High Confidence Match Injected"
-                ),
+                "outcome": prov.get("rag_outcome", "UNKNOWN"),
+                "matches": matches,
+                "scores": scores,
+                "reason": reason,
             }
 
     # ------------------------------------------------------------------

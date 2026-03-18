@@ -126,8 +126,8 @@ def test_is_follow_up_short_query_no_structural_match_returns_true() -> None:
 
 def test_is_follow_up_structural_match_in_full_schema_forces_fresh() -> None:
     """
-    Even if the token does not match the prior schema, if it matches any
-    table in the full registry the query is treated as a fresh one.
+    When new tables (not in prior schema) score higher than the prior schema,
+    the query is treated as topic drift → fresh query.
     """
     f = DeterministicSchemaFilter()
     # Intent mentions "orders" which is in the full schema but NOT in last_schema
@@ -142,6 +142,50 @@ def test_is_follow_up_structural_match_in_full_schema_forces_fresh() -> None:
         relationships=[],
     )
     assert f.is_follow_up(intent, last_schema=last, full_schema=full) is False
+
+
+def test_is_follow_up_column_refinement_ignores_cross_db_table_alias() -> None:
+    """
+    When a token matches a prior schema column AND a same-named table from a
+    DIFFERENT source database, the cross-db table is ignored and the query is
+    treated as a column-level refinement → follow-up.
+
+    Real-world case: "location can contain city, country" after a users query in
+    codebase_community — 'country' matches a Country table in european_football_2
+    but that cross-database alias is excluded from topic-drift detection.
+    """
+    f = DeterministicSchemaFilter()
+    intent = UserIntent(
+        natural_language_query="location can contain city country format"
+    )
+
+    def _db_table(alias: str, db: str, cols: list | None = None) -> AbstractTableDef:
+        return AbstractTableDef(
+            alias=alias,
+            description="",
+            physical_target=f"phys_{alias}",
+            source_database=db,
+            columns=cols or [_col("id")],
+        )
+
+    last_tables = [_db_table("users", "codebase_community", [_col("location", "")])]
+    from app.compiler.models import FilteredSchema as FS
+    last = FS(
+        version="1",
+        tables=last_tables,
+        relationships=[],
+        omitted_columns={},
+        source_database_used="codebase_community",
+    )
+    full = RegistrySchema(
+        version="1",
+        tables=[
+            _db_table("users", "codebase_community", [_col("location", "")]),
+            _db_table("country", "european_football_2"),  # cross-db — should be ignored
+        ],
+        relationships=[],
+    )
+    assert f.is_follow_up(intent, last_schema=last, full_schema=full) is True
 
 
 def test_is_follow_up_long_query_no_structural_match_returns_false() -> None:

@@ -58,33 +58,6 @@ class DeterministicSchemaFilter:
     # Follow-up detection
     # ------------------------------------------------------------------
 
-    def _tables_have_structural_match(
-        self,
-        intent_tokens: frozenset[str],
-        all_tables: list[AbstractTableDef],
-    ) -> bool:
-        """Returns True if any table or column has a token match with intent."""
-        for table in all_tables:
-            table_tokens = (
-                self._tokenize(table.alias) | self._tokenize(table.description)
-            )
-            if (
-                self.token_match_score(intent_tokens, table_tokens)
-                >= self.cutoff_threshold
-            ):
-                return True
-            for col in table.columns:
-                col_tokens = (
-                    self._tokenize(col.alias)
-                    | self._tokenize(col.description)
-                )
-                if (
-                    self.token_match_score(intent_tokens, col_tokens)
-                    >= self.cutoff_threshold
-                ):
-                    return True
-        return False
-
     def is_follow_up(
         self,
         intent: UserIntent,
@@ -92,9 +65,19 @@ class DeterministicSchemaFilter:
         full_schema: RegistrySchema | None = None,
     ) -> bool:
         """
-        Determines strictly if the intent is a follow-up query relying on prior
-        context. Checks intent tokens against BOTH the prior filtered schema AND
-        the full registry schema to detect topic drift.
+        Determines if the intent is a follow-up query relying on prior context.
+
+        A query is a follow-up when it makes sense only in the context of the prior
+        query — typically a short refinement or a clarification. It is NOT a follow-up
+        when it names a table directly (self-contained request) or drifts to a new
+        table (topic change).
+
+        Logic:
+        1. If any TABLE ALIAS (scoped to the prior database when known) matches an
+           intent token, the query is self-contained or a topic drift → fresh query.
+        2. If a COLUMN alias/description of the prior schema matches → refinement
+           → follow-up.
+        3. No structural match → query length heuristic (< 8 tokens → follow-up).
         """
         if not last_schema:
             return False
@@ -103,16 +86,41 @@ class DeterministicSchemaFilter:
         if len(intent_tokens) == 0:
             return False
 
-        all_tables: list[AbstractTableDef] = list(last_schema.tables)
+        # Build the set of tables to check for direct table-alias references.
+        # Cross-database table aliases are excluded when the prior schema is
+        # database-scoped, to avoid false topic-drift signals from coincidental
+        # word collisions with table names in other databases.
+        prior_aliases = {t.alias for t in last_schema.tables}
+        prior_db = last_schema.source_database_used
+        tables_in_scope: list[AbstractTableDef] = list(last_schema.tables)
         if full_schema:
-            prior_aliases = {t.alias for t in last_schema.tables}
-            for table in full_schema.tables:
-                if table.alias not in prior_aliases:
-                    all_tables.append(table)
+            for t in full_schema.tables:
+                if t.alias in prior_aliases:
+                    continue
+                # Skip cross-database tables when the prior schema has a known db.
+                if prior_db is not None and t.source_database != prior_db:
+                    continue
+                tables_in_scope.append(t)
 
-        if self._tables_have_structural_match(intent_tokens, all_tables):
-            return False
+        # Step 1 — Direct table alias reference → fresh query.
+        for table in tables_in_scope:
+            alias_tokens = self._tokenize(table.alias)
+            if self.token_match_score(intent_tokens, alias_tokens) >= self.cutoff_threshold:
+                return False
 
+        # Step 2 — Column-level match to prior schema → refinement follow-up.
+        for table in last_schema.tables:
+            for col in table.columns:
+                col_tokens = (
+                    self._tokenize(col.alias) | self._tokenize(col.description)
+                )
+                if (
+                    self.token_match_score(intent_tokens, col_tokens)
+                    >= self.cutoff_threshold
+                ):
+                    return True
+
+        # Step 3 — No structural match → rely on query length.
         return len(intent_tokens) < 8
 
     # ------------------------------------------------------------------

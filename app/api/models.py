@@ -12,10 +12,6 @@ class QueryRequest(BaseModel):
     intent: str = Field(
         ..., description="The Natural Language question or request from the user."
     )
-    schema_hints: list[str] = Field(
-        default_factory=list,
-        description="Optional business logic hints for the LLM context.",
-    )
     explain: bool = Field(
         default=False,
         description=(
@@ -48,6 +44,20 @@ class QueryRequest(BaseModel):
         return v
 
 
+class QueryRequestWithHints(QueryRequest):
+    """Extends QueryRequest with optional external hints. frozen=True inherited."""
+
+    schema_hints: list[str] = Field(default_factory=list)
+
+    @field_validator("schema_hints", mode="before")
+    @classmethod
+    def _validate_hints(cls, v: list[str]) -> list[str]:
+        from app.compiler.hints import (
+            validate_hints,  # local import: avoids circular import
+        )
+        return validate_hints(v)
+
+
 class TranslationRepair(BaseModel):
     """
     Formal explainability trace of an AST Alias Normalization resolving orphaned
@@ -73,6 +83,10 @@ class ExplainabilityContext(BaseModel):
     """
     model_config = ConfigDict(frozen=True)
 
+    session: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Session context: session_id, is_follow_up, prior_schema_reused.",
+    )
     rag: dict[str, Any] = Field(
         ..., description="RAG Outcome, scored candidates, and reason."
     )
@@ -198,6 +212,10 @@ class ProtocolColumn(BaseModel):
     rag_enabled: bool = False
     rag_cardinality_hint: Literal["low", "medium", "high"] | None = None
     rag_limit: int | None = None
+    rag_sample_strategy: Literal["distinct", "top_n_by", "most_frequent"] | None = None
+    rag_order_by_column: str | None = None
+    rag_order_direction: Literal["asc", "desc"] | None = None
+    refresh_on_compile: bool = False
 
 
 class ProtocolColumnValue(BaseModel):
@@ -256,6 +274,10 @@ class ColumnUpdateRequest(BaseModel):
     rag_enabled: bool | None = None
     rag_cardinality_hint: Literal["low", "medium", "high"] | None = None
     rag_limit: int | None = None
+    rag_sample_strategy: Literal["distinct", "top_n_by", "most_frequent"] | None = None
+    rag_order_by_column: str | None = None
+    rag_order_direction: Literal["asc", "desc"] | None = None
+    refresh_on_compile: bool | None = None
 
 class VersionCreateRequest(BaseModel):
     baseline_version_id: str | None = None

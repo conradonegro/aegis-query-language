@@ -1,12 +1,13 @@
 import asyncio
 import logging
+import os
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.requests import Request
@@ -54,13 +55,14 @@ from app.api.models import (
     ProtocolTable,
     QueryExecuteResponse,
     QueryGenerateResponse,
-    QueryRequest,
+    QueryRequestWithHints,
     TableUpdateRequest,
     VersionCreateRequest,
     VersionStatusUpdateRequest,
 )
 from app.audit import QueryAuditEvent
 from app.audit.chaining import compute_audit_row_hash, get_canonical_json
+from app.compiler.backend_hints import BackendHintContext, build_backend_hints
 from app.compiler.engine import CompilerEngine
 from app.compiler.models import ChatHistoryItem, PromptHints, UserIntent
 from app.execution import ExecutionContext
@@ -78,6 +80,11 @@ logger = logging.getLogger(__name__)
 _session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 api_router = APIRouter()
+
+
+def get_utc_now() -> datetime:
+    """Injectable clock dependency — override in tests for deterministic timestamps."""
+    return datetime.now(UTC)
 
 
 async def _resolve_session(
@@ -161,11 +168,12 @@ def get_registry(
 
 @api_router.post("/query/generate", response_model=QueryGenerateResponse)
 async def generate_query(
-    payload: QueryRequest,
+    payload: QueryRequestWithHints,
     compiler: Annotated[CompilerEngine, Depends(get_compiler)],
     registry: Annotated[RegistrySchema, Depends(get_registry)],
     session: Annotated[AsyncSession, Depends(get_runtime_db_session)],
     cred: Annotated[ResolvedCredential, Depends(require_query_credential)],
+    now: Annotated[datetime, Depends(get_utc_now)],
 ) -> QueryGenerateResponse:
     """
     Compiles natural language into an ExecutableQuery, strictly omitting
@@ -175,7 +183,10 @@ async def generate_query(
         natural_language_query=payload.intent,
         source_database=payload.source_database,
     )
-    hints = PromptHints(column_hints=payload.schema_hints)
+    ctx = BackendHintContext(tenant_id=cred.tenant_id, now=now)
+    hints = PromptHints(column_hints=build_backend_hints(ctx))
+    if os.getenv("SCHEMA_HINTS", "").lower() == "on":
+        hints.column_hints.extend(payload.schema_hints)
 
     session_id, chat_history = await _resolve_session(
         payload.session_id, session, tenant_id=cred.tenant_id
@@ -253,7 +264,7 @@ async def generate_query(
 
 @api_router.post("/query/execute", response_model=QueryExecuteResponse)
 async def execute_query(
-    payload: QueryRequest,
+    payload: QueryRequestWithHints,
     background_tasks: BackgroundTasks,
     compiler: Annotated[CompilerEngine, Depends(get_compiler)],
     executor: Annotated[ExecutionLayer, Depends(get_executor)],
@@ -261,6 +272,7 @@ async def execute_query(
     registry: Annotated[RegistrySchema, Depends(get_registry)],
     session: Annotated[AsyncSession, Depends(get_runtime_db_session)],
     cred: Annotated[ResolvedCredential, Depends(require_query_credential)],
+    now: Annotated[datetime, Depends(get_utc_now)],
 ) -> QueryExecuteResponse:
     """
     Compiles and executes the query against the physical database.
@@ -270,7 +282,10 @@ async def execute_query(
         natural_language_query=payload.intent,
         source_database=payload.source_database,
     )
-    hints = PromptHints(column_hints=payload.schema_hints)
+    ctx = BackendHintContext(tenant_id=cred.tenant_id, now=now)
+    hints = PromptHints(column_hints=build_backend_hints(ctx))
+    if os.getenv("SCHEMA_HINTS", "").lower() == "on":
+        hints.column_hints.extend(payload.schema_hints)
 
     session_id, chat_history = await _resolve_session(
         payload.session_id, session, tenant_id=cred.tenant_id
@@ -370,11 +385,22 @@ async def execute_query(
         if executable.explainability is not None
         else None
     )
+    def _coerce_row(
+        row: dict[str, object],
+    ) -> dict[str, str | int | float | bool | None]:
+        out: dict[str, str | int | float | bool | None] = {}
+        for k, v in row.items():
+            if v is None or isinstance(v, (str, int, float, bool)):
+                out[k] = v  # type: ignore[assignment]
+            else:
+                out[k] = str(v)
+        return out
+
     return QueryExecuteResponse(
         query_id=executable.query_id or "",
         session_id=str(session_id),
         sql=executable.sql,
-        results=result.rows,
+        results=[_coerce_row(r) for r in result.rows],
         row_count=len(result.rows),
         execution_latency_ms=0.0,
         source_database_used=executable.source_database_used,
@@ -593,6 +619,19 @@ async def compile_metadata_version(
     if version_obj.tenant_id != cred.tenant_id:
         raise HTTPException(
             status_code=403, detail="Version does not belong to your tenant."
+        )
+
+    # Refresh strategy-driven values before compiling
+    async with request.app.state.steward_session_factory() as steward_session:
+        async with request.app.state.runtime_session_factory() as runtime_session:
+            refreshed = await _run_strategy_refresh(
+                steward_session, runtime_session, version_id, cred.tenant_id
+            )
+    if refreshed:
+        logger.info(
+            "compile: refreshed strategy values for %d column(s) in version %s",
+            refreshed,
+            version_id,
         )
 
     try:
@@ -845,6 +884,191 @@ async def deactivate_column_value(
     await session.commit()
 
 
+def _pg_quote(name: str) -> str:
+    """Double-quote a PostgreSQL identifier, escaping any embedded quotes."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _build_sample_sql(
+    table_real_name: str,
+    col_real_name: str,
+    strategy: str,
+    order_by_col: str | None,
+    order_direction: str,
+    limit: int,
+) -> str:
+    """Build a safe sample SQL string. Identifiers come from the trusted registry."""
+    t = _pg_quote(table_real_name)
+    c = _pg_quote(col_real_name)
+    where = f"WHERE {c} IS NOT NULL AND {c}::text <> ''"
+    if strategy == "top_n_by" and order_by_col:
+        o = _pg_quote(order_by_col)
+        direction = "DESC" if order_direction == "desc" else "ASC"
+        return f"SELECT {c} FROM {t} {where} ORDER BY {o} {direction} LIMIT {limit}"
+    if strategy == "most_frequent":
+        return (
+            f"SELECT {c} FROM {t} {where} "
+            f"GROUP BY {c} ORDER BY COUNT(*) DESC LIMIT {limit}"
+        )
+    # default: distinct
+    return f"SELECT DISTINCT {c} FROM {t} {where} LIMIT {limit}"
+
+
+async def _run_strategy_refresh(
+    steward_session: AsyncSession,
+    runtime_session: AsyncSession,
+    version_id: uuid.UUID,
+    tenant_id: str,
+) -> int:
+    """For every refresh_on_compile column in version, re-run its strategy and
+    replace existing values. Returns number of columns refreshed."""
+    from sqlalchemy import delete as sa_delete
+
+    stmt = (
+        select(MetadataColumn, MetadataTable.real_name.label("table_real_name"))
+        .join(MetadataTable, MetadataColumn.table_id == MetadataTable.table_id)
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataColumn.version_id == version_id,
+            MetadataColumn.refresh_on_compile.is_(True),
+            MetadataColumn.rag_enabled.is_(True),
+            MetadataVersion.tenant_id == tenant_id,
+        )
+    )
+    result = await steward_session.execute(stmt)
+    rows = result.all()
+    refreshed = 0
+    for col, table_real_name in rows:
+        strategy = col.rag_sample_strategy or "distinct"
+        limit = col.rag_limit or 100
+        order_by = col.rag_order_by_column
+        order_dir = col.rag_order_direction or "desc"
+
+        sql = _build_sample_sql(
+            table_real_name, col.real_name, strategy, order_by, order_dir, limit
+        )
+        try:
+            sample_res = await runtime_session.execute(text(sql))
+            raw_values: list[str] = [str(r[0]) for r in sample_res.fetchall()]
+        except Exception as exc:
+            logger.warning(
+                "refresh_on_compile: sample query failed for column %s — %s",
+                col.column_id,
+                exc,
+            )
+            continue
+
+        # Replace all existing active values for this column
+        await steward_session.execute(
+            sa_delete(MetadataColumnValue).where(
+                MetadataColumnValue.column_id == col.column_id
+            )
+        )
+        seen: set[str] = set()
+        for raw_val in raw_values:
+            norm_key = raw_val.strip().lower()
+            if not norm_key or norm_key in seen:
+                continue
+            seen.add(norm_key)
+            steward_session.add(
+                MetadataColumnValue(
+                    column_id=col.column_id,
+                    version_id=col.version_id,
+                    value=raw_val.strip(),
+                )
+            )
+        await steward_session.flush()
+        refreshed += 1
+
+    if refreshed:
+        await steward_session.commit()
+    return refreshed
+
+
+@api_router.delete("/metadata/columns/{column_id}/values", status_code=204)
+async def clear_column_values(
+    column_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
+) -> None:
+    """Hard-delete all curated RAG values for a column."""
+    from sqlalchemy import delete as sa_delete
+
+    col_res = await session.execute(
+        select(MetadataColumn)
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataColumn.column_id == column_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
+        )
+    )
+    if col_res.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Column not found.")
+    await session.execute(
+        sa_delete(MetadataColumnValue).where(
+            MetadataColumnValue.column_id == column_id
+        )
+    )
+    await session.commit()
+
+
+@api_router.get(
+    "/metadata/columns/{column_id}/sample",
+    response_model=list[str],
+)
+async def sample_column_values(
+    column_id: uuid.UUID,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_steward_db_session)],
+    cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
+) -> list[str]:
+    """Run the column's sampling strategy against the runtime DB and return results.
+
+    Does NOT persist anything — use the bulk import endpoint to save values.
+    """
+    stmt = (
+        select(MetadataColumn, MetadataTable.real_name.label("table_real_name"))
+        .join(MetadataTable, MetadataColumn.table_id == MetadataTable.table_id)
+        .join(MetadataVersion, MetadataColumn.version_id == MetadataVersion.version_id)
+        .where(
+            MetadataColumn.column_id == column_id,
+            MetadataVersion.tenant_id == cred.tenant_id,
+        )
+    )
+    res = await session.execute(stmt)
+    row = res.one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Column not found.")
+    col, table_real_name = row
+
+    strategy = col.rag_sample_strategy or "distinct"
+    limit = col.rag_limit or 100
+    order_by = col.rag_order_by_column
+    order_dir = col.rag_order_direction or "desc"
+
+    if strategy == "top_n_by" and not order_by:
+        raise HTTPException(
+            status_code=422,
+            detail="top_n_by strategy requires rag_order_by_column to be set.",
+        )
+
+    sql = _build_sample_sql(
+        table_real_name, col.real_name, strategy, order_by, order_dir, limit
+    )
+
+    try:
+        async with request.app.state.runtime_session_factory() as rt_session:
+            sample_res = await rt_session.execute(text(sql))
+            values = [str(r[0]) for r in sample_res.fetchall() if r[0] is not None]
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Sample query failed: {exc}",
+        ) from exc
+
+    return values
+
+
 def _map_col(c: MetadataColumn) -> ProtocolColumn:
     return ProtocolColumn(
         column_id=str(c.column_id),
@@ -863,6 +1087,16 @@ def _map_col(c: MetadataColumn) -> ProtocolColumn:
             c.rag_cardinality_hint,
         ),
         rag_limit=c.rag_limit,
+        rag_sample_strategy=cast(
+            Literal["distinct", "top_n_by", "most_frequent"] | None,
+            c.rag_sample_strategy,
+        ),
+        rag_order_by_column=c.rag_order_by_column,
+        rag_order_direction=cast(
+            Literal["asc", "desc"] | None,
+            c.rag_order_direction,
+        ),
+        refresh_on_compile=c.refresh_on_compile,
     )
 
 def _map_table(t: MetadataTable) -> ProtocolTable:
@@ -973,24 +1207,18 @@ async def update_metadata_column(
     res = await session.execute(stmt)
     col = res.scalar_one_or_none()
     if not col:
-         raise HTTPException(status_code=404, detail="Column not found")
+        raise HTTPException(status_code=404, detail="Column not found")
 
-    if payload.alias is not None:
-        col.alias = payload.alias
-    if payload.description is not None:
-        col.description = payload.description
-    if payload.allowed_in_select is not None:
-        col.allowed_in_select = payload.allowed_in_select
-    if payload.allowed_in_filter is not None:
-        col.allowed_in_filter = payload.allowed_in_filter
-    if payload.allowed_in_join is not None:
-        col.allowed_in_join = payload.allowed_in_join
-    if payload.rag_enabled is not None:
-        col.rag_enabled = payload.rag_enabled
-    if payload.rag_cardinality_hint is not None:
-        col.rag_cardinality_hint = payload.rag_cardinality_hint
-    if payload.rag_limit is not None:
-        col.rag_limit = payload.rag_limit
+    _UPDATABLE = (
+        "alias", "description", "allowed_in_select", "allowed_in_filter",
+        "allowed_in_join", "rag_enabled", "rag_cardinality_hint", "rag_limit",
+        "rag_sample_strategy", "rag_order_by_column", "rag_order_direction",
+        "refresh_on_compile",
+    )
+    for field in _UPDATABLE:
+        val = getattr(payload, field)
+        if val is not None:
+            setattr(col, field, val)
 
     await session.commit()
     return _map_col(col)
@@ -1069,7 +1297,14 @@ async def create_metadata_version(
                     allowed_in_select=old_c.allowed_in_select,
                     allowed_in_filter=old_c.allowed_in_filter,
                     allowed_in_join=old_c.allowed_in_join,
-                    safety_classification=old_c.safety_classification
+                    safety_classification=old_c.safety_classification,
+                    rag_enabled=old_c.rag_enabled,
+                    rag_cardinality_hint=old_c.rag_cardinality_hint,
+                    rag_limit=old_c.rag_limit,
+                    rag_sample_strategy=old_c.rag_sample_strategy,
+                    rag_order_by_column=old_c.rag_order_by_column,
+                    rag_order_direction=old_c.rag_order_direction,
+                    refresh_on_compile=old_c.refresh_on_compile,
                 )
                 session.add(new_c)
                 col_id_map[old_c.column_id] = new_c_id

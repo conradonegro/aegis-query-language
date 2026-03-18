@@ -13,7 +13,8 @@ from app.compiler.models import (
 
 class PromptBuilder:
     """
-    Constructs the secure, immutable PromptEnvelope required by the LLMGateway.
+    Constructs the PromptEnvelope from a fixed template. All dynamic content
+    injected by trusted internal pipeline stages only — never from raw external input.
     Strictly reads static Jinja2 templates.
     """
     def __init__(self, template_dir: str | None = None):
@@ -34,9 +35,10 @@ class PromptBuilder:
         chat_history: list[ChatHistoryItem] | None = None,
     ) -> PromptEnvelope:
         """
-        Renders the static template into an immutable PromptEnvelope.
+        Renders the fixed template into a frozen PromptEnvelope. Template
+        structure is static; content is supplied by trusted internal sources.
         """
-        # 1. Load the immutable static system instruction template
+        # 1. Load the fixed system instruction template (structure is static)
         template = self.env.get_template("system.jinja")
 
         # 2. Render the system block directly

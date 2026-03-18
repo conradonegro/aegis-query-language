@@ -6,20 +6,26 @@ from app.api.models import (
     QueryExecuteResponse,
     QueryGenerateResponse,
     QueryRequest,
+    QueryRequestWithHints,
 )
 from app.execution.models import ExecutionContext, QueryResult
 
 
 def test_api_query_request_validation() -> None:
-    """Test QueryRequest schema validations."""
-    # Valid payload
-    req = QueryRequest(intent="find users", schema_hints=["use active users"])
+    """Test QueryRequest and QueryRequestWithHints schema validations."""
+    # Base model has no schema_hints
+    req = QueryRequest(intent="find users")
     assert req.intent == "find users"
-    assert "use active users" in req.schema_hints
+
+    # Subclass accepts schema_hints
+    req_hints = QueryRequestWithHints(
+        intent="find users", schema_hints=["use active users"]
+    )
+    assert "use active users" in req_hints.schema_hints
 
     # Missing required intent
     with pytest.raises(ValidationError):
-        QueryRequest(schema_hints=[])  # type: ignore[call-arg]
+        QueryRequest()  # type: ignore[call-arg]
 
 def test_api_generate_response_validation() -> None:
     """Test QueryGenerateResponse constraints."""

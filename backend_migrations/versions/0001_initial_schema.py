@@ -178,6 +178,15 @@ def upgrade() -> None:
             nullable=True,
         ),
         sa.Column("rag_limit", sa.Integer(), nullable=True),
+        sa.Column("rag_sample_strategy", sa.Text(), nullable=True),
+        sa.Column("rag_order_by_column", sa.Text(), nullable=True),
+        sa.Column("rag_order_direction", sa.Text(), nullable=True),
+        sa.Column(
+            "refresh_on_compile",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("false"),
+        ),
         sa.ForeignKeyConstraint(
             ["version_id", "table_id"],
             [

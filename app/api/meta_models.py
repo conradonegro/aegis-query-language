@@ -148,6 +148,12 @@ class MetadataColumn(Base):
     )
     rag_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # RAG sampling strategy fields
+    rag_sample_strategy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rag_order_by_column: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rag_order_direction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refresh_on_compile: Mapped[bool] = mapped_column(Boolean, default=False)
+
     __table_args__ = (
         UniqueConstraint("version_id", "table_id", "alias", name="uq_col_alias"),
         UniqueConstraint(
