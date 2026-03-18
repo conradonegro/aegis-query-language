@@ -54,7 +54,10 @@ async def test_mock_gateway() -> None:
     gateway = MockLLMGateway(mock_response_sql="SELECT COUNT(*) FROM users")
     result = await gateway.generate(envelope)
 
-    assert result.raw_text == "SELECT COUNT(*) FROM users"
+    import json as _json
+    parsed = _json.loads(result.raw_text)
+    assert parsed["sql"] == "SELECT COUNT(*) FROM users"
+    assert parsed["refused"] is False
     assert result.model_id == "mock-aegis-v1"
     assert result.latency_ms > 0
     assert result.prompt_tokens > 0

@@ -273,9 +273,10 @@ async def test_compiler_engine_follow_up_failure_preservation(
     # translation error)
     class BrokenGateway(MockLLMGateway):
         async def generate(self, prompt: PromptEnvelope) -> LLMResult:
+            import json as _json
             return LLMResult(
-                raw_text="SELECT * FROM hallucinated_table", model_id="mock",
-                latency_ms=10.0, prompt_tokens=10, completion_tokens=10,
+                raw_text=_json.dumps({"sql": "SELECT * FROM hallucinated_table", "refused": False}),
+                model_id="mock", latency_ms=10.0, prompt_tokens=10, completion_tokens=10,
             )
 
     compiler_engine.llm_gateway = BrokenGateway()
@@ -373,12 +374,12 @@ async def test_compiler_engine_strips_json_code_fence(
 
 
 @pytest.mark.asyncio
-async def test_compiler_engine_handles_plain_sql_fallback(
+async def test_compiler_engine_rejects_non_json_response(
     compiler_engine: CompilerEngine, mock_registry: RegistrySchema
 ) -> None:
     """
-    If the LLM ignores instructions and returns plain SQL (no JSON wrapper),
-    the engine should fall back to using the raw text as the abstract SQL.
+    If a gateway returns plain SQL instead of the required JSON envelope,
+    the engine must reject it with LLMGenerationError — there is no fallback.
     """
     class PlainSQLGateway(MockLLMGateway):
         async def generate(self, prompt: PromptEnvelope) -> LLMResult:
@@ -390,32 +391,33 @@ async def test_compiler_engine_handles_plain_sql_fallback(
     compiler_engine.llm_gateway = PlainSQLGateway()
     intent = UserIntent(natural_language_query="Show all users")
     hints = PromptHints(column_hints=[])
-    executable = await compiler_engine.compile(
-        intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
-    )
-    assert executable is not None
-    assert "users" in executable.sql.lower()
+    with pytest.raises(LLMGenerationError, match="(?i)not valid json"):
+        await compiler_engine.compile(
+            intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
+        )
 
 
 @pytest.mark.asyncio
-async def test_compiler_engine_rejects_multi_statement_in_fallback(
+async def test_compiler_engine_rejects_multi_statement_sql_in_json(
     compiler_engine: CompilerEngine, mock_registry: RegistrySchema
 ) -> None:
     """
-    When the engine falls back to treating raw text as SQL, a multi-statement
-    response must be rejected before reaching the parser.
+    Multi-statement SQL inside the JSON envelope must be caught by the
+    SQLParser downstream — the JSON contract is enforced, then the parser rejects.
     """
+    import json as _json
+
     class MultiStatementGateway(MockLLMGateway):
         async def generate(self, prompt: PromptEnvelope) -> LLMResult:
             return LLMResult(
-                raw_text="SELECT * FROM users; DROP TABLE users;",
+                raw_text=_json.dumps({"sql": "SELECT * FROM users; DROP TABLE users;", "refused": False}),
                 model_id="mock", latency_ms=1.0, prompt_tokens=5, completion_tokens=5
             )
 
     compiler_engine.llm_gateway = MultiStatementGateway()
     intent = UserIntent(natural_language_query="Show all users")
     hints = PromptHints(column_hints=[])
-    with pytest.raises(LLMGenerationError, match="(?i)multi-statement"):
+    with pytest.raises(Exception, match="(?i)(multi.statement|multiple|exactly 1)"):
         await compiler_engine.compile(
             intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
         )

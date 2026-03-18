@@ -41,7 +41,7 @@ async def test_ollama_gateway_success(
     mock_post: MagicMock, prompt_envelope: PromptEnvelope
 ) -> None:
     """Test valid strict JSON generation succeeds and extracts SQL."""
-    gateway = OllamaLLMGateway(strict_json=True)
+    gateway = OllamaLLMGateway()
 
     # Mock Ollama returning exactly what we asked for
     valid_json_response = json.dumps({"sql": "SELECT * FROM users"})
@@ -62,7 +62,7 @@ async def test_ollama_gateway_invalid_json_fails_strictly(
     mock_post: MagicMock, prompt_envelope: PromptEnvelope
 ) -> None:
     """Test the 'never let JSON-mode failure become silent success' rule."""
-    gateway = OllamaLLMGateway(strict_json=True)
+    gateway = OllamaLLMGateway()
 
     # Mock Ollama hallucinating markdown or broken JSON
     broken_json_response = "```json\n { sql: SELECT * FROM users \n```"
@@ -84,7 +84,7 @@ async def test_ollama_gateway_passes_through_non_sql_json(
     is absent.  Structural contract enforcement (sql vs refused) belongs in the
     engine's LLMQueryResponse validator, not in the gateway.
     """
-    gateway = OllamaLLMGateway(strict_json=True)
+    gateway = OllamaLLMGateway()
 
     wrong_schema_response = json.dumps({"query": "SELECT * FROM users"})
     mock_post.return_value = build_mock_response(wrong_schema_response)
@@ -105,7 +105,7 @@ async def test_ollama_gateway_passes_through_multi_statement_json(
     Multi-statement detection is enforced by the SQLParser downstream,
     not by the gateway.
     """
-    gateway = OllamaLLMGateway(strict_json=True)
+    gateway = OllamaLLMGateway()
 
     multi_statement_response = json.dumps({
         "sql": "SELECT * FROM users; DROP TABLE users;"

@@ -42,8 +42,9 @@ class MockLLMGateway:
         prompt_tokens = max(1, prompt_lengths // 4)
         completion_tokens = max(1, len(sql) // 4)
 
+        import json as _json
         return LLMResult(
-            raw_text=sql,
+            raw_text=_json.dumps({"sql": sql, "refused": False}),
             model_id="mock-aegis-v1",
             latency_ms=latency_ms,
             prompt_tokens=prompt_tokens,

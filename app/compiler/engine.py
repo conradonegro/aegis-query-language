@@ -399,7 +399,14 @@ class CompilerEngine:
     def _parse_llm_response(raw_text: str) -> str:
         """
         Extracts abstract SQL from the raw LLM output.
-        Handles JSON responses (with optional markdown fencing) and plain text.
+
+        All supported gateways must return the structured JSON envelope:
+            {"sql": "<abstract SQL>", "refused": false}
+        or
+            {"refused": true, "reason": "<explanation>"}
+
+        Markdown JSON fencing (```json ... ```) is unwrapped before parsing.
+        Non-JSON output is rejected — there is no plain-SQL fallback.
         """
         raw = raw_text.strip()
 
@@ -412,27 +419,31 @@ class CompilerEngine:
 
         try:
             payload = json.loads(raw)
-            if isinstance(payload, dict):
-                try:
-                    llm_response = LLMQueryResponse.model_validate(payload)
-                except ValidationError as e:
-                    raise LLMGenerationError(
-                        f"Invalid LLM response structure: {e}",
-                        raw_response=raw,
-                    ) from e
-                if llm_response.refused:
-                    raise LLMGenerationError(
-                        f"Request refused:"
-                        f" {llm_response.reason or 'destructive or modifying intent'}.",
-                        raw_response=raw,
-                    )
-                return (llm_response.sql or "").strip()
-            return str(payload)
-        except json.JSONDecodeError:
-            # Fallback: LLM returned plain SQL, not JSON
-            if ";" in raw and len([s for s in raw.split(";") if s.strip()]) > 1:
-                raise LLMGenerationError(
-                    "Multi-statement SQL detected in fallback path.",
-                    raw_response=raw,
-                ) from None
-            return raw
+        except json.JSONDecodeError as e:
+            raise LLMGenerationError(
+                "LLM response is not valid JSON. All supported gateways must "
+                "return the structured JSON envelope.",
+                raw_response=raw,
+            ) from e
+
+        if not isinstance(payload, dict):
+            raise LLMGenerationError(
+                f"LLM response JSON must be an object, got {type(payload).__name__}.",
+                raw_response=raw,
+            )
+
+        try:
+            llm_response = LLMQueryResponse.model_validate(payload)
+        except ValidationError as e:
+            raise LLMGenerationError(
+                f"Invalid LLM response structure: {e}",
+                raw_response=raw,
+            ) from e
+
+        if llm_response.refused:
+            raise LLMGenerationError(
+                f"Request refused:"
+                f" {llm_response.reason or 'destructive or modifying intent'}.",
+                raw_response=raw,
+            )
+        return (llm_response.sql or "").strip()

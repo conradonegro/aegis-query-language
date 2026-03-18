@@ -25,18 +25,16 @@ class LLMGenerationError(Exception):
 class OllamaLLMGateway:
     """
     A gateway to a local Ollama instance (e.g. localhost:11434).
-    Enforces strict JSON schema generation.
+    Always enforces structured JSON output via Ollama's native format parameter.
     """
 
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
         model: str = "llama3",
-        strict_json: bool = True
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.strict_json = strict_json
 
         # The JSON schema we require Ollama to output.
         # Both sql and refused are optional at schema level so the LLM can
@@ -86,8 +84,7 @@ class OllamaLLMGateway:
             "stream": False
         }
 
-        if self.strict_json:
-            payload["format"] = self.json_schema
+        payload["format"] = self.json_schema
 
         try:
             response = await _http_client.post(
@@ -111,15 +108,14 @@ class OllamaLLMGateway:
 
         # Validate JSON is well-formed; the engine handles structural validation
         # (including refusal detection and sql/refused contract enforcement).
-        if self.strict_json:
-            try:
-                json.loads(message_content)
-            except json.JSONDecodeError as e:
-                raise LLMGenerationError(
-                    f"Ollama failed to return valid JSON. "
-                    f"Raw output: {message_content[:100]}...",
-                    raw_response=message_content,
-                ) from e
+        try:
+            json.loads(message_content)
+        except json.JSONDecodeError as e:
+            raise LLMGenerationError(
+                f"Ollama failed to return valid JSON. "
+                f"Raw output: {message_content[:100]}...",
+                raw_response=message_content,
+            ) from e
         final_text = message_content
 
         # Ollama telemetry
