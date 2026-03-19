@@ -29,7 +29,6 @@ from app.api.dependencies import (
 from app.api.meta_models import (
     ChatMessage,
     ChatSession,
-    CompiledRegistryArtifact,
     MetadataAudit,
     MetadataColumn,
     MetadataColumnValue,
@@ -654,24 +653,6 @@ async def update_version_status(
     # with no partial state written to the DB.
     existing_active: MetadataVersion | None = None
     if payload.status == "active":
-        # A compiled artifact must exist before a version can be activated.
-        # compile_version() accepts pending_review, so the artifact should be
-        # compiled while the old active version is still serving traffic —
-        # no downtime window.
-        artifact_check = await session.execute(
-            select(CompiledRegistryArtifact).where(
-                CompiledRegistryArtifact.version_id == version_id
-            )
-        )
-        if artifact_check.scalar_one_or_none() is None:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Version {version_id} has no compiled artifact. "
-                    "Compile it first via POST /metadata/compile/{version_id}."
-                ),
-            )
-
         # Locate any currently active version for this tenant so it can be
         # atomically archived in the same transaction below.
         existing_active_res = await session.execute(

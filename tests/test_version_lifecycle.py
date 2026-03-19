@@ -149,8 +149,10 @@ async def test_compile_version_rejects_archived_status() -> None:
 # HTTP-layer tests for update_version_status
 # ------------------------------------------------------------------
 
-def test_activate_without_artifact_returns_422() -> None:
-    """Activating a version that has no compiled artifact must return 422."""
+def test_activate_without_artifact_succeeds() -> None:
+    """Activating a version without a compiled artifact is allowed.
+    Approval (status transition) is independent of compilation; the runtime
+    will only serve the version once a compiled artifact also exists."""
     vid = uuid.uuid4()
     engine = _sync_engine()
 
@@ -164,8 +166,8 @@ def test_activate_without_artifact_returns_422() -> None:
                 f"/api/v1/metadata/versions/{vid}/status",
                 json={"status": "active"},
             )
-        assert response.status_code == 422
-        assert "compiled artifact" in response.json()["detail"].lower()
+        assert response.status_code == 200
+        assert response.json()["status"] == "active"
     finally:
         app.dependency_overrides.pop(require_admin_credential, None)
         engine.dispose()
