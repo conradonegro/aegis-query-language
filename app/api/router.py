@@ -2,12 +2,11 @@ import asyncio
 import logging
 import os
 import uuid
-from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.requests import Request
@@ -79,11 +78,45 @@ from app.vault import VaultMissingSecretError, get_secrets_manager
 
 logger = logging.getLogger(__name__)
 
-# Per-session asyncio locks prevent concurrent requests on the same session from
-# reading the same last_seq value and colliding on uq_session_sequence.
-# A plain defaultdict is safe here: asyncio is single-threaded so dict access is
-# non-preemptive, and asyncio.Lock() requires no running event loop since Python 3.10.
-_session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+async def _persist_chat_turn(
+    session: AsyncSession,
+    session_id: uuid.UUID,
+    user_msg: ChatMessage,
+    assistant_msg: ChatMessage,
+) -> None:
+    """
+    Sequences and persists a user+assistant message pair inside a single DB
+    transaction, using SELECT … FOR UPDATE on the parent ChatSession row to
+    serialise concurrent writers across all workers.
+
+    The FOR UPDATE lock is held until the transaction commits, so no two workers
+    can read the same MAX(sequence_number) for the same session simultaneously.
+    SQLite (used in tests) silently ignores FOR UPDATE, which is fine because
+    tests are single-threaded and the unique constraint still guards correctness.
+    """
+    locked = await session.scalar(
+        select(ChatSession)
+        .where(ChatSession.session_id == session_id)
+        .with_for_update()
+    )
+    if locked is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Chat session row missing unexpectedly; this is a server bug.",
+        )
+
+    last_seq: int = (
+        await session.scalar(
+            select(func.max(ChatMessage.sequence_number)).where(
+                ChatMessage.session_id == session_id
+            )
+        )
+    ) or 0
+
+    user_msg.sequence_number = last_seq + 1
+    assistant_msg.sequence_number = last_seq + 2
+    session.add_all([user_msg, assistant_msg])
+    await session.commit()
 
 
 def _validate_provider_id(raw: str | None, credential_id: str) -> str | None:
@@ -244,32 +277,26 @@ async def generate_query(
         tenant_id=cred.tenant_id,
     )
 
-    async with _session_locks[str(session_id)]:
-        seq_res = await session.execute(
-            select(ChatMessage.sequence_number)
-            .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.sequence_number.desc())
-            .limit(1)
-        )
-        last_seq = seq_res.scalar_one_or_none() or 0
-
-        user_msg = ChatMessage(
+    _llm_expl = (
+        executable.explainability.get("llm", {})
+        if executable.explainability
+        else {}
+    )
+    await _persist_chat_turn(
+        session=session,
+        session_id=session_id,
+        user_msg=ChatMessage(
             message_id=uuid.uuid4(),
             session_id=session_id,
-            sequence_number=last_seq + 1,
+            sequence_number=0,  # overwritten inside _persist_chat_turn
             role="user",
             content=intent.natural_language_query,
             provider_id=provider_id,
-        )
-        _llm_expl = (
-            executable.explainability.get("llm", {})
-            if executable.explainability
-            else {}
-        )
-        assistant_msg = ChatMessage(
+        ),
+        assistant_msg=ChatMessage(
             message_id=uuid.uuid4(),
             session_id=session_id,
-            sequence_number=last_seq + 2,
+            sequence_number=0,  # overwritten inside _persist_chat_turn
             role="assistant",
             content=(
                 executable.abstract_sql
@@ -283,9 +310,8 @@ async def generate_query(
             ),
             prompt_tokens=_llm_expl.get("prompt_tokens"),
             completion_tokens=_llm_expl.get("completion_tokens"),
-        )
-        session.add_all([user_msg, assistant_msg])
-        await session.commit()
+        ),
+    )
 
     explain_ctx = (
         ExplainabilityContext.model_validate(executable.explainability)
@@ -346,32 +372,26 @@ async def execute_query(
         tenant_id=cred.tenant_id,
     )
 
-    async with _session_locks[str(session_id)]:
-        seq_res = await session.execute(
-            select(ChatMessage.sequence_number)
-            .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.sequence_number.desc())
-            .limit(1)
-        )
-        last_seq = seq_res.scalar_one_or_none() or 0
-
-        user_msg = ChatMessage(
+    _exec_llm_expl = (
+        executable.explainability.get("llm", {})
+        if executable.explainability
+        else {}
+    )
+    await _persist_chat_turn(
+        session=session,
+        session_id=session_id,
+        user_msg=ChatMessage(
             message_id=uuid.uuid4(),
             session_id=session_id,
-            sequence_number=last_seq + 1,
+            sequence_number=0,  # overwritten inside _persist_chat_turn
             role="user",
             content=intent.natural_language_query,
             provider_id=provider_id,
-        )
-        _exec_llm_expl = (
-            executable.explainability.get("llm", {})
-            if executable.explainability
-            else {}
-        )
-        assistant_msg = ChatMessage(
+        ),
+        assistant_msg=ChatMessage(
             message_id=uuid.uuid4(),
             session_id=session_id,
-            sequence_number=last_seq + 2,
+            sequence_number=0,  # overwritten inside _persist_chat_turn
             role="assistant",
             # Store abstract_sql (obfuscated aliases) rather than the physical SQL
             # so the LLM cannot learn physical column/table names from its own
@@ -389,9 +409,8 @@ async def execute_query(
             ),
             prompt_tokens=_exec_llm_expl.get("prompt_tokens"),
             completion_tokens=_exec_llm_expl.get("completion_tokens"),
-        )
-        session.add_all([user_msg, assistant_msg])
-        await session.commit()
+        ),
+    )
 
     # Execute
     context = ExecutionContext(
