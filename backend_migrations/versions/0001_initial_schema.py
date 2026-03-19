@@ -421,6 +421,13 @@ def upgrade() -> None:
         " TO user_aegis_registry_admin"
     )
 
+    # Enforce at most one active version per tenant
+    op.execute("""
+        CREATE UNIQUE INDEX uq_one_active_version_per_tenant
+            ON aegis_meta.metadata_versions (tenant_id)
+            WHERE (status = 'active')
+    """)
+
     # WORM audit trigger: prevent UPDATE and DELETE on metadata_audit
     op.execute("""
         CREATE OR REPLACE FUNCTION aegis_meta.prevent_audit_mutation()
@@ -438,6 +445,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "DROP INDEX IF EXISTS aegis_meta.uq_one_active_version_per_tenant"
+    )
     op.execute(
         "DROP TRIGGER IF EXISTS trg_audit_worm ON aegis_meta.metadata_audit"
     )
