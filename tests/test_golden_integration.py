@@ -6,13 +6,14 @@ from fastapi.testclient import TestClient
 
 from app.api.auth import ResolvedCredential, require_query_credential
 from app.main import app
-from tests.conftest import TEST_QUERY_CREDENTIAL_ID
+from tests.conftest import TEST_ADMIN_CREDENTIAL_ID
 
-_FAKE_QUERY_CRED = ResolvedCredential(
-    credential_id=TEST_QUERY_CREDENTIAL_ID,
+# Golden integration tests use explain=True, which requires admin scope.
+_FAKE_ADMIN_CRED = ResolvedCredential(
+    credential_id=TEST_ADMIN_CREDENTIAL_ID,
     tenant_id="test_tenant",
-    user_id="test_user",
-    scope="query",
+    user_id="admin_user",
+    scope="admin",
 )
 
 
@@ -27,7 +28,7 @@ def override_llm_provider(
     # Override the environment variable temporarily
     original = os.environ.get("LLM_PROVIDER")
     os.environ["LLM_PROVIDER"] = request.param
-    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_ADMIN_CRED
 
     # We must force a reload of the app lifespan to pick up the env var change
     with TestClient(app) as client:

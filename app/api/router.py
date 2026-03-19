@@ -259,6 +259,12 @@ async def generate_query(
     """
     provider_id = _validate_provider_id(payload.provider_id, cred.credential_id)
 
+    if payload.explain and cred.scope != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="explain=true requires admin scope.",
+        )
+
     intent = UserIntent(
         natural_language_query=payload.intent,
         source_database=payload.source_database,
@@ -406,6 +412,12 @@ async def execute_query(
     Dispatches an asynchronous audit event for every outcome, including failures.
     """
     provider_id = _validate_provider_id(payload.provider_id, cred.credential_id)
+
+    if payload.explain and cred.scope != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="explain=true requires admin scope.",
+        )
 
     intent = UserIntent(
         natural_language_query=payload.intent,

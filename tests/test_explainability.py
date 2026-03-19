@@ -6,13 +6,20 @@ from app.api.auth import ResolvedCredential, require_query_credential
 from app.api.router import get_executor
 from app.execution.models import QueryResult
 from app.main import app
-from tests.conftest import TEST_QUERY_CREDENTIAL_ID
+from tests.conftest import TEST_ADMIN_CREDENTIAL_ID, TEST_QUERY_CREDENTIAL_ID
 
 _FAKE_QUERY_CRED = ResolvedCredential(
     credential_id=TEST_QUERY_CREDENTIAL_ID,
     tenant_id="test_tenant",
     user_id="test_user",
     scope="query",
+)
+
+_FAKE_ADMIN_CRED = ResolvedCredential(
+    credential_id=TEST_ADMIN_CREDENTIAL_ID,
+    tenant_id="test_tenant",
+    user_id="admin_user",
+    scope="admin",
 )
 
 
@@ -51,11 +58,26 @@ def test_explainability_absence_by_default() -> None:
         app.dependency_overrides.clear()
 
 
+def test_explainability_requires_admin_scope() -> None:
+    """explain=true with a query-scoped credential must return 403."""
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
+    try:
+        with TestClient(app) as test_client:
+            response = test_client.post(
+                "/api/v1/query/execute",
+                json={"intent": "Get user details", "explain": True},
+            )
+        assert response.status_code == 403
+        assert "admin" in response.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_explainability_population_when_requested() -> None:
-    """Submit explain=true, verify payload populates securely with redactions."""
+    """Submit explain=true with admin scope, verify payload populates correctly."""
     spy_engine = SpyExecutionEngine()
     app.dependency_overrides[get_executor] = lambda: spy_engine
-    app.dependency_overrides[require_query_credential] = lambda: _FAKE_QUERY_CRED
+    app.dependency_overrides[require_query_credential] = lambda: _FAKE_ADMIN_CRED
 
     payload = {
         "intent": "Get the record for Alice",
