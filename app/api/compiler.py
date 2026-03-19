@@ -74,9 +74,10 @@ class MetadataCompiler:
         if not version:
             raise ValueError(f"Version {version_id} not found.")
 
-        if version.status != "active":
+        if version.status not in ("active", "pending_review"):
             raise ValueError(
-                f"Cannot compile artifact. Version {version_id} must be 'active'."
+                f"Cannot compile artifact. Version {version_id} must be"
+                f" 'active' or 'pending_review'."
             )
 
         # 1. Build the physical runtime Dictionary Payload mapping

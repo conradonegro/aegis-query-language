@@ -23,7 +23,7 @@ from sqlalchemy.orm import (  # noqa: E402
 
 # SQLite (used in tests) doesn't support schemas. Conditionally strip it.
 _SCHEMA: str | None = None if os.getenv("TESTING") == "true" else "aegis_meta"
-
+_PFX: str = f"{_SCHEMA}." if _SCHEMA else ""
 
 
 class Base(DeclarativeBase):
@@ -35,7 +35,7 @@ class MetadataVersion(Base):
     The Runtime Aegis Engine boots EXCLUSIVELY off the latest 'active' artifact.
     """
     __tablename__ = "metadata_versions"
-    __table_args__ = {"schema": "aegis_meta"}
+    __table_args__ = {"schema": _SCHEMA}
 
     version_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -81,7 +81,7 @@ class MetadataTable(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     version_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("aegis_meta.metadata_versions.version_id")
+        ForeignKey(f"{_PFX}metadata_versions.version_id")
     )
     real_name: Mapped[str] = mapped_column(Text, nullable=False)
     alias: Mapped[str] = mapped_column(Text, nullable=False)
@@ -97,7 +97,7 @@ class MetadataTable(Base):
         UniqueConstraint("version_id", "alias", name="uq_table_alias"),
         UniqueConstraint("version_id", "real_name", name="uq_table_real_name"),
         UniqueConstraint("version_id", "table_id", name="uq_table_composite_id"),
-        {"schema": "aegis_meta"},
+        {"schema": _SCHEMA},
     )
 
     version = relationship("MetadataVersion", back_populates="tables")
@@ -115,7 +115,7 @@ class MetadataColumn(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     version_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("aegis_meta.metadata_versions.version_id")
+        ForeignKey(f"{_PFX}metadata_versions.version_id")
     )
     table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
 
@@ -163,11 +163,11 @@ class MetadataColumn(Base):
         ForeignKeyConstraint(
             ["version_id", "table_id"],
             [
-                "aegis_meta.metadata_tables.version_id",
-                "aegis_meta.metadata_tables.table_id",
+                f"{_PFX}metadata_tables.version_id",
+                f"{_PFX}metadata_tables.table_id",
             ]
         ),
-        {"schema": "aegis_meta"},
+        {"schema": _SCHEMA},
     )
 
     version = relationship(
@@ -193,16 +193,16 @@ class MetadataColumnValue(Base):
         ),
         ForeignKeyConstraint(
             ["version_id"],
-            ["aegis_meta.metadata_versions.version_id"],
+            [f"{_PFX}metadata_versions.version_id"],
         ),
         ForeignKeyConstraint(
             ["version_id", "column_id"],
             [
-                "aegis_meta.metadata_columns.version_id",
-                "aegis_meta.metadata_columns.column_id",
+                f"{_PFX}metadata_columns.version_id",
+                f"{_PFX}metadata_columns.column_id",
             ],
         ),
-        {"schema": "aegis_meta"},
+        {"schema": _SCHEMA},
     )
 
     value_id: Mapped[uuid.UUID] = mapped_column(
@@ -231,7 +231,7 @@ class MetadataRelationship(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     version_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("aegis_meta.metadata_versions.version_id")
+        ForeignKey(f"{_PFX}metadata_versions.version_id")
     )
 
     source_table_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
@@ -261,18 +261,18 @@ class MetadataRelationship(Base):
         ForeignKeyConstraint(
             ["version_id", "source_column_id"],
             [
-                "aegis_meta.metadata_columns.version_id",
-                "aegis_meta.metadata_columns.column_id",
+                f"{_PFX}metadata_columns.version_id",
+                f"{_PFX}metadata_columns.column_id",
             ]
         ),
         ForeignKeyConstraint(
             ["version_id", "target_column_id"],
             [
-                "aegis_meta.metadata_columns.version_id",
-                "aegis_meta.metadata_columns.column_id",
+                f"{_PFX}metadata_columns.version_id",
+                f"{_PFX}metadata_columns.column_id",
             ]
         ),
-        {"schema": "aegis_meta"}
+        {"schema": _SCHEMA}
     )
 
     version = relationship("MetadataVersion", back_populates="edges")
@@ -283,7 +283,7 @@ class MetadataAudit(Base):
     WORM compliant audit logging natively handled by postgres.
     """
     __tablename__ = "metadata_audit"
-    __table_args__ = {"schema": "aegis_meta"}
+    __table_args__ = {"schema": _SCHEMA}
 
     audit_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -322,13 +322,13 @@ class CompiledRegistryArtifact(Base):
     This is what `steward.py` parses securely into runtime instances.
     """
     __tablename__ = "compiled_registry_artifacts"
-    __table_args__ = {"schema": "aegis_meta"}
+    __table_args__ = {"schema": _SCHEMA}
 
     artifact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     version_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("aegis_meta.metadata_versions.version_id"), unique=True
+        ForeignKey(f"{_PFX}metadata_versions.version_id"), unique=True
     )
     tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
     artifact_blob: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

@@ -175,6 +175,52 @@ def seed_memory_db_for_tests() -> Generator[None, None, None]:
         conn.execute(text("INSERT INTO orders VALUES (102, 1, 150.00)"))
         conn.execute(text("INSERT INTO orders VALUES (103, 2, 45.50)"))
 
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS metadata_versions (
+                version_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_by TEXT NOT NULL DEFAULT 'system',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                approved_by TEXT,
+                approved_at TEXT,
+                change_reason TEXT,
+                registry_hash TEXT
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS compiled_registry_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                version_id TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL,
+                artifact_blob TEXT NOT NULL DEFAULT '{}',
+                artifact_hash TEXT NOT NULL DEFAULT 'testhash',
+                compiled_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                compiler_version TEXT NOT NULL DEFAULT '1.0.0',
+                signature TEXT,
+                signature_algo TEXT NOT NULL DEFAULT 'hmac-sha256-v1',
+                signature_key_id TEXT
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS metadata_audit (
+                audit_id TEXT PRIMARY KEY,
+                version_id TEXT,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                timestamp TEXT NOT NULL,
+                previous_hash TEXT,
+                row_hash TEXT NOT NULL UNIQUE,
+                hash_algorithm TEXT NOT NULL DEFAULT 'sha256-v1',
+                key_id TEXT,
+                credential_id TEXT
+            )
+        """))
+        conn.execute(text("DELETE FROM metadata_audit"))
+        conn.execute(text("DELETE FROM compiled_registry_artifacts"))
+        conn.execute(text("DELETE FROM metadata_versions"))
+
     # Do not call dispose here, the executing test lifespan will use this
     # memory pool implicitly
     yield

@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.requests import Request
@@ -28,6 +29,7 @@ from app.api.dependencies import (
 from app.api.meta_models import (
     ChatMessage,
     ChatSession,
+    CompiledRegistryArtifact,
     MetadataAudit,
     MetadataColumn,
     MetadataColumnValue,
@@ -645,28 +647,105 @@ async def update_version_status(
 
     previous_status = version.status
 
+    # ------------------------------------------------------------------
+    # Pre-activation checks (active transition only)
+    # ------------------------------------------------------------------
+    # These must run before any mutations so that failures are clean 422s
+    # with no partial state written to the DB.
+    existing_active: MetadataVersion | None = None
+    if payload.status == "active":
+        # A compiled artifact must exist before a version can be activated.
+        # compile_version() accepts pending_review, so the artifact should be
+        # compiled while the old active version is still serving traffic —
+        # no downtime window.
+        artifact_check = await session.execute(
+            select(CompiledRegistryArtifact).where(
+                CompiledRegistryArtifact.version_id == version_id
+            )
+        )
+        if artifact_check.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Version {version_id} has no compiled artifact. "
+                    "Compile it first via POST /metadata/compile/{version_id}."
+                ),
+            )
+
+        # Locate any currently active version for this tenant so it can be
+        # atomically archived in the same transaction below.
+        existing_active_res = await session.execute(
+            select(MetadataVersion).where(
+                MetadataVersion.tenant_id == cred.tenant_id,
+                MetadataVersion.status == "active",
+                MetadataVersion.version_id != version_id,
+            )
+        )
+        existing_active = existing_active_res.scalars().first()
+
+        # Approval timestamps — only meaningful for the active transition;
+        # placed here to keep both active-only mutations in one branch.
+        version.approved_by = cred.user_id
+        version.approved_at = datetime.now(UTC)
+
     # Apply status change
     version.status = payload.status
     if payload.reason:
         version.change_reason = payload.reason
 
-    # Approval timestamps are populated when a version becomes active
-    if payload.status == "active":
-        version.approved_by = cred.user_id
-        version.approved_at = datetime.now(UTC)
-
-    # Build the WORM audit chain record — must happen in the same transaction
+    # ------------------------------------------------------------------
+    # WORM audit chain
+    # ------------------------------------------------------------------
+    # Fetch the chain tip once; it will be threaded through the optional
+    # implicit archival record and then the main transition record so that
+    # both entries form a valid contiguous chain within this transaction.
     last_audit_res = await session.execute(
         select(MetadataAudit)
         .order_by(MetadataAudit.timestamp.desc(), MetadataAudit.audit_id.desc())
         .limit(1)
     )
     last_row = last_audit_res.scalar_one_or_none()
-    previous_hash = last_row.row_hash if last_row else ""
+    chain_tip = last_row.row_hash if last_row else ""
+
+    secrets_mgr = get_secrets_manager()
+
+    # If an old active version is being superseded, archive it first and add
+    # its own WORM audit entry before the main activation entry.
+    if existing_active is not None:
+        existing_active.status = "archived"
+
+        archive_ts = datetime.now(UTC)
+        archive_payload = {
+            "event": "status_transition",
+            "version_id": str(existing_active.version_id),
+            "from_status": "active",
+            "to_status": "archived",
+            "reason": "Superseded by activation of a newer version",
+            "status": "SUCCESS",
+        }
+        archive_canonical = get_canonical_json(archive_payload)
+        archive_row_hash = compute_audit_row_hash(
+            chain_tip, archive_canonical, archive_ts.isoformat()
+        )
+        session.add(
+            MetadataAudit(
+                version_id=existing_active.version_id,
+                actor=cred.user_id,
+                action="revoke",
+                payload=archive_payload,
+                timestamp=archive_ts,
+                previous_hash=chain_tip,
+                row_hash=archive_row_hash,
+                key_id=secrets_mgr.get_current_signing_key_id(),
+                credential_id=cred.credential_id,
+            )
+        )
+        # Thread the hash forward: the activation record chains from here.
+        chain_tip = archive_row_hash
 
     audit_timestamp = datetime.now(UTC)
     audit_action = _TRANSITION_AUDIT_ACTION[(previous_status, payload.status)]
-    audit_payload = {
+    audit_payload_data = {
         "event": "status_transition",
         "version_id": str(version_id),
         "from_status": previous_status,
@@ -675,28 +754,40 @@ async def update_version_status(
         "status": "SUCCESS",
     }
 
-    audit_canonical = get_canonical_json(audit_payload)
+    audit_canonical = get_canonical_json(audit_payload_data)
     new_row_hash = compute_audit_row_hash(
-        previous_hash, audit_canonical, audit_timestamp.isoformat()
+        chain_tip, audit_canonical, audit_timestamp.isoformat()
     )
 
-    secrets_mgr = get_secrets_manager()
-    audit_event = MetadataAudit(
-        version_id=version_id,
-        actor=cred.user_id,
-        action=audit_action,
-        payload=audit_payload,
-        timestamp=audit_timestamp,
-        previous_hash=previous_hash,
-        row_hash=new_row_hash,
-        key_id=secrets_mgr.get_current_signing_key_id(),
-        credential_id=cred.credential_id,
+    session.add(
+        MetadataAudit(
+            version_id=version_id,
+            actor=cred.user_id,
+            action=audit_action,
+            payload=audit_payload_data,
+            timestamp=audit_timestamp,
+            previous_hash=chain_tip,
+            row_hash=new_row_hash,
+            key_id=secrets_mgr.get_current_signing_key_id(),
+            credential_id=cred.credential_id,
+        )
     )
-    session.add(audit_event)
 
-    # Single atomic commit — status change and audit record together.
-    # If audit chain construction raises, the status change is also rolled back.
-    await session.commit()
+    # Atomic commit: status change(s) + audit record(s) together.
+    # On PostgreSQL, the partial unique index uq_one_active_version_per_tenant
+    # acts as a final backstop against concurrent activations — an IntegrityError
+    # here means two callers raced; return 409 so the client can retry.
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Activation conflict: another version became active concurrently. "
+                "Retry the request after verifying the current active version."
+            ),
+        ) from exc
 
     return ProtocolMetadataVersion(
         version_id=str(version.version_id),
