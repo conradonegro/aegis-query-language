@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -63,7 +63,12 @@ from app.audit import QueryAuditEvent
 from app.audit.chaining import compute_audit_row_hash, get_canonical_json
 from app.compiler.backend_hints import BackendHintContext, build_backend_hints
 from app.compiler.engine import CompilerEngine
-from app.compiler.models import ChatHistoryItem, PromptHints, UserIntent
+from app.compiler.models import (
+    ChatHistoryItem,
+    ExecutableQuery,
+    PromptHints,
+    UserIntent,
+)
 from app.compiler.provider_config import (
     MalformedProviderIdError,
     ProviderNotAllowedError,
@@ -242,6 +247,7 @@ def get_registry(
 async def generate_query(
     payload: QueryRequestWithHints,
     compiler: Annotated[CompilerEngine, Depends(get_compiler)],
+    auditor: Annotated[Any, Depends(get_auditor)],
     registry: Annotated[RegistrySchema, Depends(get_registry)],
     session: Annotated[AsyncSession, Depends(get_runtime_db_session)],
     cred: Annotated[ResolvedCredential, Depends(require_query_credential)],
@@ -262,77 +268,131 @@ async def generate_query(
     if os.getenv("SCHEMA_HINTS", "").lower() == "on":
         hints.column_hints.extend(payload.schema_hints)
 
-    session_id, chat_history = await _resolve_session(
-        payload.session_id, session, tenant_id=cred.tenant_id
-    )
+    # Audit locals — populated as execution proceeds; survive all exception paths.
+    _exec: ExecutableQuery | None = None
+    _llm_expl: dict[str, Any] = {}
+    _audit_status = "SUCCESS"
+    _audit_error_type: str | None = None
+    _audit_error_msg: str | None = None
 
-    executable = await compiler.compile(
-        schema=registry,
-        intent=intent,
-        hints=hints,
-        explain=payload.explain,
-        chat_history=chat_history,
-        provider_id=provider_id,
-        session_id=str(session_id),
-        tenant_id=cred.tenant_id,
-    )
+    try:
+        session_id, chat_history = await _resolve_session(
+            payload.session_id, session, tenant_id=cred.tenant_id
+        )
 
-    _llm_expl = (
-        executable.explainability.get("llm", {})
-        if executable.explainability
-        else {}
-    )
-    await _persist_chat_turn(
-        session=session,
-        session_id=session_id,
-        user_msg=ChatMessage(
-            message_id=uuid.uuid4(),
-            session_id=session_id,
-            sequence_number=0,  # overwritten inside _persist_chat_turn
-            role="user",
-            content=intent.natural_language_query,
+        _exec = await compiler.compile(
+            schema=registry,
+            intent=intent,
+            hints=hints,
+            explain=payload.explain,
+            chat_history=chat_history,
             provider_id=provider_id,
-        ),
-        assistant_msg=ChatMessage(
-            message_id=uuid.uuid4(),
-            session_id=session_id,
-            sequence_number=0,  # overwritten inside _persist_chat_turn
-            role="assistant",
-            content=(
-                executable.abstract_sql
-                if executable.abstract_sql is not None
-                else executable.sql
-            ),
-            provider_id=(
-                _llm_expl.get("provider")
-                if executable.explainability
-                else provider_id
-            ),
-            prompt_tokens=_llm_expl.get("prompt_tokens"),
-            completion_tokens=_llm_expl.get("completion_tokens"),
-        ),
-    )
+            session_id=str(session_id),
+            tenant_id=cred.tenant_id,
+        )
+        _llm_expl = (
+            _exec.explainability.get("llm", {})
+            if _exec.explainability
+            else {}
+        )
 
-    explain_ctx = (
-        ExplainabilityContext.model_validate(executable.explainability)
-        if executable.explainability is not None
-        else None
-    )
-    return QueryGenerateResponse(
-        query_id=executable.query_id or "",
-        session_id=str(session_id),
-        sql=executable.sql,
-        parameters=executable.parameters,
-        latency_ms=executable.compilation_latency_ms or 0.0,
-        source_database_used=executable.source_database_used,
-        explainability=explain_ctx,
-    )
+        await _persist_chat_turn(
+            session=session,
+            session_id=session_id,
+            user_msg=ChatMessage(
+                message_id=uuid.uuid4(),
+                session_id=session_id,
+                sequence_number=0,  # overwritten inside _persist_chat_turn
+                role="user",
+                content=intent.natural_language_query,
+                provider_id=provider_id,
+            ),
+            assistant_msg=ChatMessage(
+                message_id=uuid.uuid4(),
+                session_id=session_id,
+                sequence_number=0,  # overwritten inside _persist_chat_turn
+                role="assistant",
+                content=(
+                    _exec.abstract_sql
+                    if _exec.abstract_sql is not None
+                    else _exec.sql
+                ),
+                provider_id=(
+                    _llm_expl.get("provider")
+                    if _exec.explainability
+                    else provider_id
+                ),
+                prompt_tokens=_llm_expl.get("prompt_tokens"),
+                completion_tokens=_llm_expl.get("completion_tokens"),
+            ),
+        )
+
+        explain_ctx = (
+            ExplainabilityContext.model_validate(_exec.explainability)
+            if _exec.explainability is not None
+            else None
+        )
+        return QueryGenerateResponse(
+            query_id=_exec.query_id or "",
+            session_id=str(session_id),
+            sql=_exec.sql,
+            parameters=_exec.parameters,
+            latency_ms=_exec.compilation_latency_ms or 0.0,
+            source_database_used=_exec.source_database_used,
+            explainability=explain_ctx,
+        )
+
+    except Exception as exc:
+        _audit_status = "FAILURE"
+        _audit_error_type = type(exc).__name__
+        _audit_error_msg = str(exc)
+        raise
+
+    finally:
+        asyncio.create_task(
+            auditor.record(
+                QueryAuditEvent(
+                    query_id=(_exec.query_id or str(uuid.uuid4()))
+                    if _exec else str(uuid.uuid4()),
+                    tenant_id=cred.tenant_id,
+                    user_id=cred.user_id,
+                    credential_id=cred.credential_id,
+                    natural_language_query=payload.intent,
+                    operation="generate",
+                    status=_audit_status,
+                    abstract_query=_exec.sql if _exec else None,
+                    physical_query=_exec.sql if _exec else None,
+                    registry_version=_exec.registry_version if _exec else None,
+                    safety_engine_version=_exec.safety_engine_version
+                    if _exec else None,
+                    abstract_query_hash=_exec.abstract_query_hash if _exec else None,
+                    latency_ms=_exec.compilation_latency_ms or 0.0 if _exec else 0.0,
+                    row_limit_applied=_exec.row_limit_applied if _exec else False,
+                    prompt_tokens=int(_llm_expl.get("prompt_tokens") or 0),
+                    completion_tokens=int(_llm_expl.get("completion_tokens") or 0),
+                    provider_id=_llm_expl.get("provider") or provider_id,
+                    error_type=_audit_error_type,
+                    error_message=_audit_error_msg,
+                )
+            )
+        )
+
+
+def _coerce_row(
+    row: dict[str, object],
+) -> dict[str, str | int | float | bool | None]:
+    out: dict[str, str | int | float | bool | None] = {}
+    for k, v in row.items():
+        if v is None or isinstance(v, (str, int, float, bool)):
+            out[k] = v
+        else:
+            out[k] = str(v)
+    return out
 
 
 @api_router.post("/query/execute", response_model=QueryExecuteResponse)
 async def execute_query(
     payload: QueryRequestWithHints,
-    background_tasks: BackgroundTasks,
     compiler: Annotated[CompilerEngine, Depends(get_compiler)],
     executor: Annotated[ExecutionLayer, Depends(get_executor)],
     auditor: Annotated[Any, Depends(get_auditor)],
@@ -343,7 +403,7 @@ async def execute_query(
 ) -> QueryExecuteResponse:
     """
     Compiles and executes the query against the physical database.
-    Dispatches asynchronous audit sink logging.
+    Dispatches an asynchronous audit event for every outcome, including failures.
     """
     provider_id = _validate_provider_id(payload.provider_id, cred.credential_id)
 
@@ -356,118 +416,127 @@ async def execute_query(
     if os.getenv("SCHEMA_HINTS", "").lower() == "on":
         hints.column_hints.extend(payload.schema_hints)
 
-    session_id, chat_history = await _resolve_session(
-        payload.session_id, session, tenant_id=cred.tenant_id
-    )
+    # Audit locals — populated as execution proceeds; survive all exception paths.
+    _exec: ExecutableQuery | None = None
+    _llm_expl: dict[str, Any] = {}
+    _audit_status = "SUCCESS"
+    _audit_error_type: str | None = None
+    _audit_error_msg: str | None = None
 
-    # Compile
-    executable = await compiler.compile(
-        schema=registry,
-        intent=intent,
-        hints=hints,
-        explain=payload.explain,
-        chat_history=chat_history,
-        provider_id=provider_id,
-        session_id=str(session_id),
-        tenant_id=cred.tenant_id,
-    )
+    try:
+        session_id, chat_history = await _resolve_session(
+            payload.session_id, session, tenant_id=cred.tenant_id
+        )
 
-    _exec_llm_expl = (
-        executable.explainability.get("llm", {})
-        if executable.explainability
-        else {}
-    )
-    await _persist_chat_turn(
-        session=session,
-        session_id=session_id,
-        user_msg=ChatMessage(
-            message_id=uuid.uuid4(),
-            session_id=session_id,
-            sequence_number=0,  # overwritten inside _persist_chat_turn
-            role="user",
-            content=intent.natural_language_query,
+        # Compile
+        _exec = await compiler.compile(
+            schema=registry,
+            intent=intent,
+            hints=hints,
+            explain=payload.explain,
+            chat_history=chat_history,
             provider_id=provider_id,
-        ),
-        assistant_msg=ChatMessage(
-            message_id=uuid.uuid4(),
+            session_id=str(session_id),
+            tenant_id=cred.tenant_id,
+        )
+        _llm_expl = (
+            _exec.explainability.get("llm", {})
+            if _exec.explainability
+            else {}
+        )
+
+        await _persist_chat_turn(
+            session=session,
             session_id=session_id,
-            sequence_number=0,  # overwritten inside _persist_chat_turn
-            role="assistant",
-            # Store abstract_sql (obfuscated aliases) rather than the physical SQL
-            # so the LLM cannot learn physical column/table names from its own
-            # prior responses. abstract_sql is always populated by the compiler
-            # engine regardless of explain flag.
-            content=(
-                executable.abstract_sql
-                if executable.abstract_sql is not None
-                else executable.sql
+            user_msg=ChatMessage(
+                message_id=uuid.uuid4(),
+                session_id=session_id,
+                sequence_number=0,  # overwritten inside _persist_chat_turn
+                role="user",
+                content=intent.natural_language_query,
+                provider_id=provider_id,
             ),
-            provider_id=(
-                _exec_llm_expl.get("provider")
-                if executable.explainability
-                else provider_id
+            assistant_msg=ChatMessage(
+                message_id=uuid.uuid4(),
+                session_id=session_id,
+                sequence_number=0,  # overwritten inside _persist_chat_turn
+                role="assistant",
+                # Store abstract_sql (obfuscated aliases) rather than the physical SQL
+                # so the LLM cannot learn physical column/table names from its own
+                # prior responses. abstract_sql is always populated by the compiler
+                # engine regardless of explain flag.
+                content=(
+                    _exec.abstract_sql
+                    if _exec.abstract_sql is not None
+                    else _exec.sql
+                ),
+                provider_id=(
+                    _llm_expl.get("provider")
+                    if _exec.explainability
+                    else provider_id
+                ),
+                prompt_tokens=_llm_expl.get("prompt_tokens"),
+                completion_tokens=_llm_expl.get("completion_tokens"),
             ),
-            prompt_tokens=_exec_llm_expl.get("prompt_tokens"),
-            completion_tokens=_exec_llm_expl.get("completion_tokens"),
-        ),
-    )
+        )
 
-    # Execute
-    context = ExecutionContext(
-        tenant_id=cred.tenant_id,
-        user_id=cred.user_id,
-    )
-    result = await executor.execute(executable, context=context)
+        # Execute
+        context = ExecutionContext(
+            tenant_id=cred.tenant_id,
+            user_id=cred.user_id,
+        )
+        result = await executor.execute(_exec, context=context)
 
-    # Background audit log mapping
-    event = QueryAuditEvent(
-        query_id=executable.query_id or str(uuid.uuid4()),
-        tenant_id=context.tenant_id,
-        user_id=context.user_id,
-        credential_id=cred.credential_id,
-        natural_language_query=payload.intent,
-        abstract_query=executable.sql,
-        physical_query=executable.sql,
-        registry_version=executable.registry_version,
-        safety_engine_version=executable.safety_engine_version,
-        abstract_query_hash=executable.abstract_query_hash,
-        latency_ms=executable.compilation_latency_ms or 0.0,
-        prompt_tokens=0,
-        completion_tokens=0,
-        status="SUCCESS",
-        error_message=None,
-        row_limit_applied=executable.row_limit_applied,
-    )
+        exec_explain_ctx = (
+            ExplainabilityContext.model_validate(_exec.explainability)
+            if _exec.explainability is not None
+            else None
+        )
+        return QueryExecuteResponse(
+            query_id=_exec.query_id or "",
+            session_id=str(session_id),
+            sql=_exec.sql,
+            results=[_coerce_row(r) for r in result.rows],
+            row_count=len(result.rows),
+            execution_latency_ms=0.0,
+            source_database_used=_exec.source_database_used,
+            explainability=exec_explain_ctx,
+        )
 
-    # Add audit dispatch to non-blocking tasks list
-    background_tasks.add_task(auditor.record, event)
+    except Exception as exc:
+        _audit_status = "FAILURE"
+        _audit_error_type = type(exc).__name__
+        _audit_error_msg = str(exc)
+        raise
 
-    exec_explain_ctx = (
-        ExplainabilityContext.model_validate(executable.explainability)
-        if executable.explainability is not None
-        else None
-    )
-    def _coerce_row(
-        row: dict[str, object],
-    ) -> dict[str, str | int | float | bool | None]:
-        out: dict[str, str | int | float | bool | None] = {}
-        for k, v in row.items():
-            if v is None or isinstance(v, (str, int, float, bool)):
-                out[k] = v
-            else:
-                out[k] = str(v)
-        return out
-
-    return QueryExecuteResponse(
-        query_id=executable.query_id or "",
-        session_id=str(session_id),
-        sql=executable.sql,
-        results=[_coerce_row(r) for r in result.rows],
-        row_count=len(result.rows),
-        execution_latency_ms=0.0,
-        source_database_used=executable.source_database_used,
-        explainability=exec_explain_ctx,
-    )
+    finally:
+        asyncio.create_task(
+            auditor.record(
+                QueryAuditEvent(
+                    query_id=(_exec.query_id or str(uuid.uuid4()))
+                    if _exec else str(uuid.uuid4()),
+                    tenant_id=cred.tenant_id,
+                    user_id=cred.user_id,
+                    credential_id=cred.credential_id,
+                    natural_language_query=payload.intent,
+                    operation="execute",
+                    status=_audit_status,
+                    abstract_query=_exec.sql if _exec else None,
+                    physical_query=_exec.sql if _exec else None,
+                    registry_version=_exec.registry_version if _exec else None,
+                    safety_engine_version=_exec.safety_engine_version
+                    if _exec else None,
+                    abstract_query_hash=_exec.abstract_query_hash if _exec else None,
+                    latency_ms=_exec.compilation_latency_ms or 0.0 if _exec else 0.0,
+                    row_limit_applied=_exec.row_limit_applied if _exec else False,
+                    prompt_tokens=int(_llm_expl.get("prompt_tokens") or 0),
+                    completion_tokens=int(_llm_expl.get("completion_tokens") or 0),
+                    provider_id=_llm_expl.get("provider") or provider_id,
+                    error_type=_audit_error_type,
+                    error_message=_audit_error_msg,
+                )
+            )
+        )
 
 
 @api_router.get("/metadata/versions", response_model=list[ProtocolMetadataVersion])
