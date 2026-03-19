@@ -1,6 +1,8 @@
 import pytest
+import sqlglot
 
 from app.compiler import AbstractQuery
+from app.compiler.models import ValidatedAST
 from app.compiler.parser import SQLParser
 from app.compiler.safety import SafetyEngine, SafetyViolationError
 from app.compiler.translator import DeterministicTranslator, TranslationError
@@ -279,3 +281,98 @@ def test_join_without_on_clause_blocked() -> None:
     ))
     with pytest.raises(SafetyViolationError, match="cross JOIN"):
         safety.validate(ast)
+
+
+# ------------------------------------------------------------------
+# LLM-supplied placeholder regression tests
+# ------------------------------------------------------------------
+
+def _minimal_schema() -> RegistrySchema:
+    """One-table, one-column schema for placeholder regression tests."""
+    return RegistrySchema(
+        version="v1.0.0",
+        tables=[
+            AbstractTableDef(
+                alias="users",
+                description="Users",
+                physical_target="public.users",
+                columns=[
+                    AbstractColumnDef(
+                        alias="name",
+                        description="User name",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            allowed_in_where=True,
+                        ),
+                        physical_target="full_name",
+                    )
+                ],
+            )
+        ],
+        relationships=[],
+    )
+
+
+def test_llm_named_placeholder_rejected_by_safety() -> None:
+    """SQL with :p1 style placeholder from LLM output must be rejected by
+    SafetyEngine with the explicit 'Explicitly denied node type' message."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+
+    # sqlglot parses :p1 as exp.Placeholder
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT name FROM users WHERE name = :p1"
+    ))
+    with pytest.raises(SafetyViolationError, match="(?i)denied"):
+        safety.validate(ast)
+
+
+def test_llm_positional_placeholder_rejected_by_safety() -> None:
+    """SQL with $1 style placeholder from LLM output must be rejected by
+    SafetyEngine with the explicit 'Explicitly denied node type' message."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+
+    # sqlglot parses $1 as exp.Parameter
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT name FROM users WHERE name = $1"
+    ))
+    with pytest.raises(SafetyViolationError, match="(?i)denied"):
+        safety.validate(ast)
+
+
+def test_string_literal_containing_placeholder_text_passes() -> None:
+    """A string literal whose value happens to look like ':p1' is not a
+    bind parameter and must pass safety validation and translate correctly."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _minimal_schema()
+
+    # The value ':p1' is a plain string, not a bind parameter.
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT name FROM users WHERE name = ':p1'"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    # The literal ':p1' must be bound as a parameter value, not treated
+    # as a placeholder reference.
+    assert ":p1" in result.sql
+    assert result.parameters.get("p1") == ":p1"
+
+
+def test_translator_guard_raises_on_placeholder_if_safety_bypassed() -> None:
+    """Belt-and-suspenders: translator must raise TranslationError if a
+    Parameter/Placeholder node somehow reaches it despite SafetyEngine."""
+    translator = DeterministicTranslator()
+    schema = _minimal_schema()
+
+    # Manually construct a ValidatedAST that contains a Placeholder node,
+    # simulating a future scenario where SafetyEngine is bypassed.
+    tree = sqlglot.parse_one("SELECT name FROM users WHERE name = :p1")
+    assert tree is not None
+    validated = ValidatedAST(tree=tree)
+
+    with pytest.raises(TranslationError, match="Pre-translation bind parameter"):
+        translator.translate(validated, schema, abstract_query_hash="h")

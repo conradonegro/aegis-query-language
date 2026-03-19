@@ -152,6 +152,14 @@ class DeterministicTranslator:
 
         for node in tree.walk():
             node_inst = node[0] if isinstance(node, tuple) else node
+            if isinstance(node_inst, (exp.Parameter, exp.Placeholder)):
+                # Belt-and-suspenders: SafetyEngine should have already rejected
+                # these, but guard here in case the engine is bypassed in the future.
+                raise TranslationError(
+                    f"Pre-translation bind parameter found in AST"
+                    f" ({type(node_inst).__name__}). LLM output must not contain"
+                    f" placeholders; literals are parameterized by the translator."
+                )
             if isinstance(node_inst, exp.Table):
                 self._resolve_table_node(node_inst, maps)
             elif isinstance(node_inst, exp.Column):

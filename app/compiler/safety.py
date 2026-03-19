@@ -51,6 +51,12 @@ class SafetyEngine:
         exp.Grant,
         exp.Subquery,     # v1 Blocks subqueries
         exp.CTE,          # v1 Blocks CTEs (With clauses)
+        # LLM output must never contain bind parameters or placeholders.
+        # The translator parameterizes literals itself after safety validation;
+        # a pre-translated Parameter/Placeholder is always LLM-injected and
+        # would produce an unbound parameter at execution time.
+        exp.Parameter,
+        exp.Placeholder,
     )
 
     # Only these structural nodes are allowed beyond column lookups/literals
@@ -67,8 +73,6 @@ class SafetyEngine:
         exp.Identifier,
         exp.Literal,
         exp.Boolean,
-        exp.Parameter,
-        exp.Placeholder,
         exp.Var,
         exp.Table,
         exp.Join,
