@@ -226,6 +226,8 @@ class CompilerEngine:
             )
 
             executable.abstract_sql = abstract_query.sql
+            executable.llm_prompt_tokens = llm_result.prompt_tokens
+            executable.llm_completion_tokens = llm_result.completion_tokens
             executable.query_id = str(uuid.uuid4())
             executable.source_database_used = filtered_schema.source_database_used
             executable.compilation_latency_ms = (

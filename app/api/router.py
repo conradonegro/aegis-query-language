@@ -330,8 +330,8 @@ async def generate_query(
                     if _exec.explainability
                     else provider_id
                 ),
-                prompt_tokens=_llm_expl.get("prompt_tokens"),
-                completion_tokens=_llm_expl.get("completion_tokens"),
+                prompt_tokens=_exec.llm_prompt_tokens,
+                completion_tokens=_exec.llm_completion_tokens,
             ),
         )
 
@@ -368,7 +368,7 @@ async def generate_query(
                     natural_language_query=payload.intent,
                     operation="generate",
                     status=_audit_status,
-                    abstract_query=_exec.sql if _exec else None,
+                    abstract_query=_exec.abstract_sql if _exec else None,
                     physical_query=_exec.sql if _exec else None,
                     registry_version=_exec.registry_version if _exec else None,
                     safety_engine_version=_exec.safety_engine_version
@@ -376,8 +376,8 @@ async def generate_query(
                     abstract_query_hash=_exec.abstract_query_hash if _exec else None,
                     latency_ms=_exec.compilation_latency_ms or 0.0 if _exec else 0.0,
                     row_limit_applied=_exec.row_limit_applied if _exec else False,
-                    prompt_tokens=int(_llm_expl.get("prompt_tokens") or 0),
-                    completion_tokens=int(_llm_expl.get("completion_tokens") or 0),
+                    prompt_tokens=_exec.llm_prompt_tokens if _exec else 0,
+                    completion_tokens=_exec.llm_completion_tokens if _exec else 0,
                     provider_id=_llm_expl.get("provider") or provider_id,
                     error_type=_audit_error_type,
                     error_message=_audit_error_msg,
@@ -489,8 +489,8 @@ async def execute_query(
                     if _exec.explainability
                     else provider_id
                 ),
-                prompt_tokens=_llm_expl.get("prompt_tokens"),
-                completion_tokens=_llm_expl.get("completion_tokens"),
+                prompt_tokens=_exec.llm_prompt_tokens,
+                completion_tokens=_exec.llm_completion_tokens,
             ),
         )
 
@@ -535,7 +535,7 @@ async def execute_query(
                     natural_language_query=payload.intent,
                     operation="execute",
                     status=_audit_status,
-                    abstract_query=_exec.sql if _exec else None,
+                    abstract_query=_exec.abstract_sql if _exec else None,
                     physical_query=_exec.sql if _exec else None,
                     registry_version=_exec.registry_version if _exec else None,
                     safety_engine_version=_exec.safety_engine_version
@@ -543,8 +543,8 @@ async def execute_query(
                     abstract_query_hash=_exec.abstract_query_hash if _exec else None,
                     latency_ms=_exec.compilation_latency_ms or 0.0 if _exec else 0.0,
                     row_limit_applied=_exec.row_limit_applied if _exec else False,
-                    prompt_tokens=int(_llm_expl.get("prompt_tokens") or 0),
-                    completion_tokens=int(_llm_expl.get("completion_tokens") or 0),
+                    prompt_tokens=_exec.llm_prompt_tokens if _exec else 0,
+                    completion_tokens=_exec.llm_completion_tokens if _exec else 0,
                     provider_id=_llm_expl.get("provider") or provider_id,
                     error_type=_audit_error_type,
                     error_message=_audit_error_msg,

@@ -110,3 +110,6 @@ class ExecutableQuery(BaseModel):
     explainability: dict[str, Any] | None = None
     translation_repairs: list[TranslationRepair] = Field(default_factory=list)
     source_database_used: str | None = None
+    # LLM usage metrics — always populated regardless of the explain flag.
+    llm_prompt_tokens: int = 0
+    llm_completion_tokens: int = 0
