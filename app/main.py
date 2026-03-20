@@ -122,14 +122,20 @@ async def _load_tenant_registries(
         result = await session.execute(stmt)
         artifact_rows = result.all()
 
+    # Hydrate each registry directly from the already-fetched artifact snapshot.
+    # This avoids a second DB query per tenant that could race with a concurrent
+    # compile and load a different version than the one used by _boot_rag_index.
     registries: dict[str, RegistrySchema] = {}
     loaded_hashes: dict[str, str] = {}
-    async with app.state.registry_runtime_session_factory() as session:
-        for artifact, tid in artifact_rows:
-            loaded = await RegistryLoader.load_active_schema(session, tid)
-            if loaded:
-                registries[tid] = loaded
-                loaded_hashes[tid] = artifact.artifact_hash
+    for artifact, tid in artifact_rows:
+        try:
+            registries[tid] = RegistryLoader.load_schema_from_artifact(artifact)
+            loaded_hashes[tid] = artifact.artifact_hash
+        except Exception:
+            logger.exception(
+                "Registry boot: failed to load artifact for tenant '%s' — skipped",
+                tid,
+            )
 
     if not registries:
         logger.warning(

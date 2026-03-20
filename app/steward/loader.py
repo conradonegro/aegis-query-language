@@ -31,31 +31,16 @@ class RegistryLoader:
     """
 
     @staticmethod
-    async def load_active_schema(
-        session: AsyncSession, tenant_id: str
-    ) -> RegistrySchema | None:
-        # Load the most recent artifact whose parent version is still active
-        # and belongs to the given tenant.
-        stmt = (
-            select(CompiledRegistryArtifact)
-            .join(
-                MetadataVersion,
-                CompiledRegistryArtifact.version_id == MetadataVersion.version_id,
-            )
-            .where(
-                MetadataVersion.status == "active",
-                MetadataVersion.tenant_id == tenant_id,
-            )
-            .order_by(CompiledRegistryArtifact.compiled_at.desc())
-            .limit(1)
-        )
+    def load_schema_from_artifact(
+        artifact: CompiledRegistryArtifact,
+    ) -> RegistrySchema:
+        """Verify and hydrate a RegistrySchema from an already-fetched artifact.
 
-        result = await session.execute(stmt)
-        artifact = result.scalar_one_or_none()
-
-        if not artifact:
-            return None
-
+        Performs the same HMAC + hash checks as load_active_schema but accepts
+        an artifact object directly instead of querying the DB. Use this when
+        the caller already holds a consistent artifact snapshot (e.g. at boot)
+        to avoid a second DB round-trip that could see a newer version.
+        """
         # --- Cryptographic Native Tampering Detection (Phase 18) ---
         canonical_payload = get_canonical_json(artifact.artifact_blob)
         computed_hash = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
@@ -179,3 +164,36 @@ class RegistryLoader:
             tables=tables_def,
             relationships=relationships_def
         )
+
+    @staticmethod
+    async def load_active_schema(
+        session: AsyncSession, tenant_id: str
+    ) -> RegistrySchema | None:
+        """Query the DB for the latest active artifact and hydrate it.
+
+        For callers that already hold a consistent artifact snapshot, prefer
+        load_schema_from_artifact() to avoid a redundant DB query.
+        """
+        # Load the most recent artifact whose parent version is still active
+        # and belongs to the given tenant.
+        stmt = (
+            select(CompiledRegistryArtifact)
+            .join(
+                MetadataVersion,
+                CompiledRegistryArtifact.version_id == MetadataVersion.version_id,
+            )
+            .where(
+                MetadataVersion.status == "active",
+                MetadataVersion.tenant_id == tenant_id,
+            )
+            .order_by(CompiledRegistryArtifact.compiled_at.desc())
+            .limit(1)
+        )
+
+        result = await session.execute(stmt)
+        artifact = result.scalar_one_or_none()
+
+        if not artifact:
+            return None
+
+        return RegistryLoader.load_schema_from_artifact(artifact)
