@@ -80,22 +80,26 @@ def _mask_redis_url(redis_url: str) -> str:
     return redis_url
 
 
-async def _connect_redis(redis_url: str) -> "aioredis.Redis | None":
-    """Probe Redis at startup; return client on success, None on failure."""
+async def _connect_redis(redis_url: str) -> "aioredis.Redis":
+    """Create a Redis client and probe it at startup.
+
+    Always returns the client regardless of whether the startup ping succeeds.
+    aioredis manages a connection pool internally and reconnects automatically
+    on subsequent operations, so discarding the client on a startup failure
+    would prevent self-healing when Redis becomes available later.
+    """
     client = aioredis.from_url(redis_url, decode_responses=True)
     try:
         await cast(Awaitable[bool], client.ping())
-        logger.info("Session store: Redis (%s)", _mask_redis_url(redis_url))
-        return client
+        logger.info("Session store: Redis (%s) — connected", _mask_redis_url(redis_url))
     except Exception as exc:
-        await client.aclose()
         logger.warning(
             "Session store: Redis (%s) unreachable at startup (%s) — "
-            "falling back to in-memory. Multi-worker session continuity is broken.",
+            "will retry on each operation.",
             _mask_redis_url(redis_url),
             exc,
         )
-        return None
+    return client
 
 
 async def _load_tenant_registries(

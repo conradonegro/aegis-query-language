@@ -5,14 +5,18 @@ Covers:
 - Local (in-memory) backend: get/set/delete/close, backend property
 - Eviction when at _LOCAL_MAX capacity
 - Redis backend: setex, get, delete, close
+- Circuit breaker: failure opens circuit, log suppression, recovery
 """
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redis.exceptions import ConnectionError as RedisConnError
 
+import app.compiler.session_store as ss_mod
 from app.compiler.models import FilteredSchema, SessionQueryContext
-from app.compiler.session_store import _LOCAL_MAX, SessionStore
+from app.compiler.session_store import _DEGRADED_COOLDOWN, _LOCAL_MAX, SessionStore
 
 
 def _ctx(sql: str = "SELECT 1", ts: float | None = None) -> SessionQueryContext:
@@ -146,3 +150,65 @@ async def test_redis_close_calls_aclose() -> None:
     redis = AsyncMock()
     await SessionStore(redis_client=redis).close()
     redis.aclose.assert_called_once()
+
+
+# ─── Circuit breaker ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_opens_on_failure_and_suppresses_repeated_logs(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First Redis failure opens the circuit and logs once; subsequent calls
+    within the cooldown window use local silently (no extra warnings)."""
+    fake_now = [0.0]
+    fake_time = MagicMock()
+    fake_time.monotonic = lambda: fake_now[0]
+    monkeypatch.setattr(ss_mod, "time", fake_time)
+
+    redis_mock = AsyncMock()
+    redis_mock.get.side_effect = RedisConnError("down")
+    store = SessionStore(redis_client=redis_mock)
+
+    with caplog.at_level(logging.WARNING, logger="app.compiler.session_store"):
+        await store.get("s1")  # First failure — opens circuit, logs warning
+        n_after_first = sum(1 for r in caplog.records if r.levelno == logging.WARNING)
+
+        await store.get("s1")  # Within cooldown — suppressed
+        n_after_second = sum(1 for r in caplog.records if r.levelno == logging.WARNING)
+
+    assert n_after_first == 1
+    assert n_after_second == 1  # No additional log emitted
+    assert store.backend == "redis-degraded"
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_recovers_after_cooldown(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the cooldown window expires the store retries Redis; on success it
+    logs 'Redis recovered', resets _degraded_until, and backend returns 'redis'."""
+    fake_now = [0.0]
+    fake_time = MagicMock()
+    fake_time.monotonic = lambda: fake_now[0]
+    monkeypatch.setattr(ss_mod, "time", fake_time)
+
+    redis_mock = AsyncMock()
+    redis_mock.get.side_effect = RedisConnError("down")
+    store = SessionStore(redis_client=redis_mock)
+
+    await store.get("s1")  # Opens circuit
+    assert store.backend == "redis-degraded"
+
+    # Advance clock past the cooldown; Redis is now healthy
+    fake_now[0] = _DEGRADED_COOLDOWN + 1.0
+    redis_mock.get.side_effect = None
+    redis_mock.get.return_value = None  # Cache miss, but Redis is up
+
+    with caplog.at_level(logging.INFO, logger="app.compiler.session_store"):
+        await store.get("s1")  # Should probe Redis, succeed, close circuit
+
+    assert store.backend == "redis"
+    assert store._degraded_until == 0.0
+    assert any("recovered" in r.getMessage().lower() for r in caplog.records)
