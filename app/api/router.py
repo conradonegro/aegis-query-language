@@ -168,6 +168,7 @@ async def _resolve_session(
     payload_session_id: str | None,
     session: AsyncSession,
     tenant_id: str,
+    user_id: str,
 ) -> tuple[uuid.UUID, list[ChatHistoryItem]]:
     """
     Resolve or create a chat session, scoped to the requesting tenant.
@@ -210,7 +211,9 @@ async def _resolve_session(
 
     if not session_id:
         session_id = uuid.uuid4()
-        new_session = ChatSession(session_id=session_id, tenant_id=tenant_id)
+        new_session = ChatSession(
+            session_id=session_id, tenant_id=tenant_id, user_id=user_id
+        )
         session.add(new_session)
         # Commit to ensure the PK exists before messages are flushed.
         await session.commit()
@@ -285,7 +288,7 @@ async def generate_query(
 
     try:
         session_id, chat_history = await _resolve_session(
-            payload.session_id, session, tenant_id=cred.tenant_id
+            payload.session_id, session, tenant_id=cred.tenant_id, user_id=cred.user_id
         )
 
         _exec = await compiler.compile(
@@ -439,7 +442,7 @@ async def execute_query(
 
     try:
         session_id, chat_history = await _resolve_session(
-            payload.session_id, session, tenant_id=cred.tenant_id
+            payload.session_id, session, tenant_id=cred.tenant_id, user_id=cred.user_id
         )
 
         # Compile
