@@ -13,17 +13,22 @@ Usage:
         --api-key <key> \\
         [--api-url http://localhost:8000] \\
         [--db-url postgresql+asyncpg://user:pass@host:5432/db] \\
+        [--concurrency 5] \\
         [--limit 50] \\
         [--db-filter financial] \\
-        [--output results.json]
+        [--output results.json] \\
+        [--store benchmarks/results.db]
 """
 
 import argparse
 import asyncio
 import json
+import sqlite3
+import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +111,7 @@ async def _evaluate_question(
         "gold_sql": gold_sql,
         "generated_sql": None,
         "source_database_used": None,
-        "status": "error",
+        "status": "exception",
         "match": False,
         "error": None,
         "latency_ms": None,
@@ -220,6 +225,162 @@ def _print_summary(results: list[dict[str, Any]], output: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Run metadata + persistence
+# ---------------------------------------------------------------------------
+
+def _get_git_metadata(repo_root: Path) -> tuple[str | None, int | None]:
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return None, None
+
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return commit, None
+
+    dirty = 1 if status else 0
+    return commit, dirty
+
+
+def _utc_timestamp() -> tuple[str, str]:
+    now = datetime.now(timezone.utc)
+    run_id_ts = now.strftime("%Y%m%d-%H%M%S")
+    iso_ts = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return run_id_ts, iso_ts
+
+
+def _redacted_args(args: argparse.Namespace) -> str:
+    payload = dict(vars(args))
+    if "api_key" in payload:
+        payload["api_key"] = "<redacted>"
+    return json.dumps(payload, sort_keys=True)
+
+
+def _init_store(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_runs(
+            run_id TEXT PRIMARY KEY,
+            commit_hash TEXT,
+            dirty INTEGER,
+            timestamp TEXT,
+            provider_id TEXT,
+            total INTEGER,
+            matched INTEGER,
+            errored INTEGER,
+            accuracy_pct REAL,
+            args_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_results(
+            run_id TEXT,
+            question_id TEXT,
+            db_id TEXT,
+            question TEXT,
+            gold_sql TEXT,
+            generated_sql TEXT,
+            source_database_used TEXT,
+            status TEXT,
+            match INTEGER,
+            error TEXT,
+            latency_ms REAL
+        )
+        """
+    )
+
+
+def _persist_results(
+    store_path: Path,
+    run_record: dict[str, Any],
+    results: list[dict[str, Any]],
+) -> None:
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(store_path)
+    try:
+        _init_store(conn)
+        conn.execute(
+            """
+            INSERT INTO benchmark_runs(
+                run_id,
+                commit_hash,
+                dirty,
+                timestamp,
+                provider_id,
+                total,
+                matched,
+                errored,
+                accuracy_pct,
+                args_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_record["run_id"],
+                run_record["commit_hash"],
+                run_record["dirty"],
+                run_record["timestamp"],
+                run_record["provider_id"],
+                run_record["total"],
+                run_record["matched"],
+                run_record["errored"],
+                run_record["accuracy_pct"],
+                run_record["args_json"],
+            ),
+        )
+
+        result_rows = [
+            (
+                run_record["run_id"],
+                str(r.get("question_id", "")),
+                r.get("db_id", ""),
+                r.get("question", ""),
+                r.get("gold_sql", ""),
+                r.get("generated_sql"),
+                r.get("source_database_used"),
+                r.get("status", "exception"),
+                1 if r.get("match") else 0,
+                r.get("error"),
+                r.get("latency_ms"),
+            )
+            for r in results
+        ]
+        conn.executemany(
+            """
+            INSERT INTO benchmark_results(
+                run_id,
+                question_id,
+                db_id,
+                question,
+                gold_sql,
+                generated_sql,
+                source_database_used,
+                status,
+                match,
+                error,
+                latency_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            result_rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Main evaluation loop
 # ---------------------------------------------------------------------------
 
@@ -238,29 +399,73 @@ async def main(args: argparse.Namespace) -> None:
     if args.limit:
         dataset = dataset[: args.limit]
 
+    if args.concurrency < 1:
+        print("ERROR: --concurrency must be >= 1", file=sys.stderr)
+        sys.exit(1)
+
     print(
         f"Evaluating {len(dataset)} questions"
         + (f" (db_filter={args.db_filter})" if args.db_filter else "")
         + (f" (limit={args.limit})" if args.limit else "")
     )
 
+    repo_root = Path(__file__).resolve().parents[1]
+    commit_hash, dirty = _get_git_metadata(repo_root)
+    run_id_ts, timestamp = _utc_timestamp()
+    if commit_hash:
+        run_id = f"{run_id_ts}-{commit_hash[:7]}"
+    else:
+        run_id = f"{run_id_ts}-nogit"
+
     engine = create_async_engine(args.db_url, echo=False)
 
     async with httpx.AsyncClient() as client:
         results: list[dict[str, Any]] = []
-        for i, entry in enumerate(dataset, 1):
-            res = await _evaluate_question(
-                client,
-                engine,
-                args.api_url,
-                args.api_key,
-                entry,
-                args.provider_id,
-            )
+        semaphore = asyncio.Semaphore(args.concurrency)
+
+        async def _bound_eval(entry: dict[str, Any]) -> dict[str, Any]:
+            async with semaphore:
+                return await _evaluate_question(
+                    client,
+                    engine,
+                    args.api_url,
+                    args.api_key,
+                    entry,
+                    args.provider_id,
+                )
+
+        tasks = [asyncio.create_task(_bound_eval(entry)) for entry in dataset]
+        for i, task in enumerate(asyncio.as_completed(tasks), 1):
+            res = await task
             results.append(res)
             _print_progress(i, len(dataset), res)
 
     await engine.dispose()
+
+    total = len(results)
+    matched = sum(1 for r in results if r["match"])
+    errored = sum(1 for r in results if r["status"] != "success")
+    accuracy = matched / total * 100 if total else 0.0
+
+    store_path = Path(args.store)
+    if store_path.as_posix() != "/dev/null":
+        run_record = {
+            "run_id": run_id,
+            "commit_hash": commit_hash,
+            "dirty": dirty,
+            "timestamp": timestamp,
+            "provider_id": args.provider_id,
+            "total": total,
+            "matched": matched,
+            "errored": errored,
+            "accuracy_pct": round(accuracy, 2),
+            "args_json": _redacted_args(args),
+        }
+        try:
+            _persist_results(store_path, run_record, results)
+            print(f"\nStored run {run_id} in {store_path}")
+        except Exception as exc:
+            print(f"\nWARNING: Failed to persist results: {exc}", file=sys.stderr)
 
     _print_summary(results, args.output)
 
@@ -298,6 +503,12 @@ def _parse_args() -> argparse.Namespace:
         help="LLM provider override (e.g. 'anthropic:claude-sonnet-4-6')",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help="Max in-flight questions (default: 5)",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
@@ -312,6 +523,11 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         default=None,
         help="Optional path to write detailed JSON results",
+    )
+    parser.add_argument(
+        "--store",
+        default="benchmarks/results.db",
+        help="SQLite DB path to store results (use /dev/null to disable)",
     )
     return parser.parse_args()
 

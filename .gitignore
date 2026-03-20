@@ -171,3 +171,6 @@ cython_debug/
 # Data artifacts
 data/
 docker/initdb/01_BIRD_dev.sql
+
+# Benchmark results — local store, changes every run
+benchmarks/results.db
