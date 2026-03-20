@@ -41,6 +41,7 @@ from app.compiler.session_store import SessionStore
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.execution.executor import ExecutionEngine
 from app.rag.builder import RagDivergenceError, build_from_artifact, build_test_store
+from app.reload import start_reload_listener
 from app.steward import (
     AbstractColumnDef,
     AbstractRelationshipDef,
@@ -51,6 +52,23 @@ from app.steward import (
 from app.vault import get_secrets_manager
 
 load_dotenv()
+
+
+async def _start_reload_tasks(
+    app: FastAPI, redis_url: str | None, redis_client: Any | None
+) -> "list[asyncio.Task[None]]":
+    """Start cross-worker reload listener if Redis is available."""
+    if not redis_url or redis_client is None:
+        return []
+    return await start_reload_listener(app, redis_url)
+
+
+async def _cancel_reload_tasks(tasks: "list[asyncio.Task[None]]") -> None:
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _mask_redis_url(redis_url: str) -> str:
@@ -105,11 +123,13 @@ async def _load_tenant_registries(
         artifact_rows = result.all()
 
     registries: dict[str, RegistrySchema] = {}
+    loaded_hashes: dict[str, str] = {}
     async with app.state.registry_runtime_session_factory() as session:
-        for _artifact, tid in artifact_rows:
+        for artifact, tid in artifact_rows:
             loaded = await RegistryLoader.load_active_schema(session, tid)
             if loaded:
                 registries[tid] = loaded
+                loaded_hashes[tid] = artifact.artifact_hash
 
     if not registries:
         logger.warning(
@@ -117,6 +137,7 @@ async def _load_tenant_registries(
         )
 
     app.state.registries = registries
+    app.state.loaded_artifact_hashes = loaded_hashes
     return list(artifact_rows)
 
 
@@ -331,6 +352,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     redis_client = await _connect_redis(redis_url) if redis_url else None
     if not redis_url:
         logger.info("Session store: in-memory (set REDIS_URL to enable Redis)")
+        logger.warning(
+            "reload: REDIS_URL not configured — hot-reload is single-worker only. "
+            "Set REDIS_URL to enable cross-worker schema propagation."
+        )
+    app.state.redis_client = redis_client
     session_store = SessionStore(redis_client=redis_client)
 
     app.state.auditor = JSONAuditLogger()
@@ -351,6 +377,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         translator=DeterministicTranslator(),
     )
     app.state.compiler.session_store = session_store
+
+    # Cross-worker hot-reload state
+    app.state.loaded_artifact_hashes = {}
+    app.state.reload_locks = {}
 
     # Initialize per-tenant registry and RAG stores
     if os.getenv("TESTING") == "true":
@@ -384,8 +414,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Ensure callers are trusted internal services only."
         )
 
+    reload_tasks = await _start_reload_tasks(app, redis_url, redis_client)
+
     logger.info("Aegis Semantic Proxy Initialized.")
     yield
+
+    await _cancel_reload_tasks(reload_tasks)
     await session_store.close()
     await app.state.executor.close()
     logger.info("Aegis Semantic Proxy Shutting down.")

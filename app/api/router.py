@@ -79,6 +79,7 @@ from app.compiler.provider_config import (
 from app.execution import ExecutionContext
 from app.execution.interfaces import ExecutionLayer
 from app.rag.normalizer import normalize as normalize_rag_value
+from app.reload import publish_reload
 from app.steward import RegistrySchema
 from app.vault import VaultMissingSecretError, get_secrets_manager
 
@@ -862,6 +863,15 @@ async def compile_metadata_version(
     async with request.app.state.registry_runtime_session_factory() as rt_session:
         schema = await RegistryLoader.load_active_schema(rt_session, cred.tenant_id)
     request.app.state.registries[cred.tenant_id] = schema
+    request.app.state.loaded_artifact_hashes[cred.tenant_id] = artifact.artifact_hash
+
+    # Notify all other workers — always publish regardless of local state so
+    # workers that haven't loaded this artifact yet receive the signal.
+    await publish_reload(
+        request.app.state.redis_client,
+        cred.tenant_id,
+        artifact.artifact_hash,
+    )
 
     # Fetch column values for RAG builder
     async with request.app.state.registry_admin_session_factory() as val_session:
