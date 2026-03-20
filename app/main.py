@@ -363,7 +363,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Set REDIS_URL to enable cross-worker schema propagation."
         )
     app.state.redis_client = redis_client
-    session_store = SessionStore(redis_client=redis_client)
+    _session_ttl = int(os.getenv("SESSION_TTL_SECONDS", "3600"))
+    session_store = SessionStore(redis_client=redis_client, ttl=_session_ttl)
 
     app.state.auditor = JSONAuditLogger()
 

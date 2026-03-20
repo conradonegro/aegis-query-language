@@ -158,6 +158,8 @@ def _validate_provider_id(raw: str | None, credential_id: str) -> str | None:
 
 api_router = APIRouter()
 
+_STATEMENT_TIMEOUT_MS = int(os.getenv("STATEMENT_TIMEOUT_MS", "5000"))
+
 
 def get_utc_now() -> datetime:
     """Injectable clock dependency — override in tests for deterministic timestamps."""
@@ -501,6 +503,7 @@ async def execute_query(
         context = ExecutionContext(
             tenant_id=cred.tenant_id,
             user_id=cred.user_id,
+            statement_timeout_ms=_STATEMENT_TIMEOUT_MS,
         )
         result = await executor.execute(_exec, context=context)
 
