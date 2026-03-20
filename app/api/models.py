@@ -115,7 +115,17 @@ class ExplainabilityContext(BaseModel):
 
 class QueryGenerateResponse(BaseModel):
     """
-    Response schema for the `/generate` endpoint exposing only the compiled intent.
+    Response schema for the `/generate` endpoint.
+
+    Design trade-off — physical SQL is intentionally included in this response:
+    the two-endpoint model (generate → execute) requires the client to hold the
+    compiled query between calls, so the physical SQL and bind parameters must be
+    round-tripped through the caller. Callers are therefore able to see physical
+    table and column names. This is an accepted design decision: Aegis users are
+    permitted to know the underlying schema. If true physical-schema opacity were
+    required the architecture would need a server-side query cache keyed by
+    query_id so that /execute could re-run a query without the client ever
+    receiving the SQL.
     """
     model_config = ConfigDict(frozen=True)
 
@@ -126,7 +136,13 @@ class QueryGenerateResponse(BaseModel):
         default=None,
         description="The Chat Session UUID holding this interaction.",
     )
-    sql: str = Field(..., description="The fully parameterized SQL string.")
+    sql: str = Field(
+        ...,
+        description=(
+            "The fully parameterized physical SQL string. Contains real table and"
+            " column names — see class docstring for the accepted trade-off."
+        ),
+    )
     parameters: dict[str, str | int | float | bool] = Field(
         ..., description="Bind parameters for the query."
     )
