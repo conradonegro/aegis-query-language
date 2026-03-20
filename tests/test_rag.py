@@ -1,5 +1,13 @@
 import pytest
 
+from app.compiler.engine import CompilerEngine, RAGUncertaintyError
+from app.compiler.filter import DeterministicSchemaFilter
+from app.compiler.gateway import MockLLMGateway
+from app.compiler.models import PromptHints, RAGIncludedColumns, UserIntent
+from app.compiler.parser import SQLParser
+from app.compiler.prompting import PromptBuilder
+from app.compiler.safety import SafetyEngine
+from app.compiler.translator import DeterministicTranslator
 from app.rag.models import CategoricalValue, RAGOutcome
 from app.rag.store import InMemoryVectorStore
 
@@ -111,3 +119,103 @@ def test_rag_substring_match_scores_0_9() -> None:
     assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
     assert res.match is not None
     assert res.match.similarity_score == 0.9
+
+
+# ------------------------------------------------------------------
+# RAG_STRICT_MODE tests
+# ------------------------------------------------------------------
+
+def _make_engine(store: InMemoryVectorStore) -> CompilerEngine:
+    engine = CompilerEngine(
+        schema_filter=DeterministicSchemaFilter(),
+        prompt_builder=PromptBuilder(),
+        llm_gateway=MockLLMGateway(),
+        parser=SQLParser(),
+        safety_engine=SafetyEngine(),
+        translator=DeterministicTranslator(),
+    )
+    engine.set_vector_store(store, "t1")
+    return engine
+
+
+def test_strict_mode_raises_on_ambiguous_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RAG_STRICT_MODE=true must raise RAGUncertaintyError on AMBIGUOUS_MATCH."""
+    monkeypatch.setenv("RAG_STRICT_MODE", "true")
+
+    store = InMemoryVectorStore()
+    store.index_value(
+        CategoricalValue(value="Nvidia", abstract_column="companies", tenant_id="t1")
+    )
+    store.index_value(
+        CategoricalValue(
+            value="Nvidia Corporation", abstract_column="companies", tenant_id="t1"
+        )
+    )
+    engine = _make_engine(store)
+
+    with pytest.raises(RAGUncertaintyError, match="Ambiguous RAG match"):
+        engine._apply_rag_hints(
+            intent=UserIntent(
+                natural_language_query="Show me Nvidia or Nvidia Corporation"
+            ),
+            hints=PromptHints(column_hints=[]),
+            included_cols=RAGIncludedColumns(columns=[]),
+            explain_context={},
+            tenant_id="t1",
+        )
+
+
+def test_strict_mode_raises_on_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RAG_STRICT_MODE=true must raise RAGUncertaintyError on NO_MATCH."""
+    monkeypatch.setenv("RAG_STRICT_MODE", "true")
+
+    store = InMemoryVectorStore()
+    store.index_value(
+        CategoricalValue(value="Nvidia", abstract_column="companies", tenant_id="t1")
+    )
+    engine = _make_engine(store)
+
+    with pytest.raises(RAGUncertaintyError, match="No RAG match"):
+        engine._apply_rag_hints(
+            intent=UserIntent(natural_language_query="Tell me about Microsoft"),
+            hints=PromptHints(column_hints=[]),
+            included_cols=RAGIncludedColumns(columns=[]),
+            explain_context={},
+            tenant_id="t1",
+        )
+
+
+def test_strict_mode_off_allows_ambiguous_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without RAG_STRICT_MODE, ambiguous matches proceed and surface candidates."""
+    monkeypatch.delenv("RAG_STRICT_MODE", raising=False)
+
+    store = InMemoryVectorStore()
+    store.index_value(
+        CategoricalValue(value="Nvidia", abstract_column="companies", tenant_id="t1")
+    )
+    store.index_value(
+        CategoricalValue(
+            value="Nvidia Corporation", abstract_column="companies", tenant_id="t1"
+        )
+    )
+    engine = _make_engine(store)
+    hints = PromptHints(column_hints=[])
+
+    # Must not raise
+    engine._apply_rag_hints(
+        intent=UserIntent(
+            natural_language_query="Show me Nvidia or Nvidia Corporation"
+        ),
+        hints=hints,
+        included_cols=RAGIncludedColumns(columns=[]),
+        explain_context={},
+        tenant_id="t1",
+    )
+    assert len(hints.column_hints) == 1
+    assert "Nvidia" in hints.column_hints[0]

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -320,10 +321,21 @@ class CompilerEngine:
         explain_context: dict[str, Any],
         tenant_id: str,
     ) -> None:
-        """Runs RAG lookup and injects matching column hints into PromptHints."""
+        """Runs RAG lookup and injects matching column hints into PromptHints.
+
+        By default RAG is a best-effort hint enrichment step: ambiguous or
+        no-match outcomes let the query proceed without hints.
+
+        When RAG_STRICT_MODE=true the engine fails closed: ambiguous and
+        no-match outcomes raise RAGUncertaintyError (→ HTTP 400) so that
+        queries whose categorical values cannot be confidently resolved are
+        rejected rather than silently passed to the LLM with incomplete hints.
+        """
         store = self._vector_stores.get(tenant_id)
         if not store:
             return
+
+        strict = os.getenv("RAG_STRICT_MODE", "").lower() == "true"
 
         rag_result = store.search(
             intent.natural_language_query, tenant_id=tenant_id, limit=5
@@ -349,6 +361,12 @@ class CompilerEngine:
             rag_result.outcome == RAGOutcome.AMBIGUOUS_MATCH
             and rag_result.candidates
         ):
+            if strict:
+                raise RAGUncertaintyError(
+                    f"Ambiguous RAG match for query — "
+                    f"{len(rag_result.candidates)} candidate values found. "
+                    "Refine your query or disable RAG_STRICT_MODE."
+                )
             # Multiple candidate values matched — surface all of them so the
             # LLM can choose the right one or use an IN / LIKE clause.
             abstract_col = rag_result.candidates[0].categorical_value.abstract_column
@@ -367,6 +385,12 @@ class CompilerEngine:
             }
             included_cols.columns.append(abstract_col)
         else:
+            if strict:
+                raise RAGUncertaintyError(
+                    f"No RAG match for query — "
+                    f"{rag_result.reason or 'no categorical values found'}. "
+                    "Refine your query or disable RAG_STRICT_MODE."
+                )
             hints.rag_provenance = {
                 "rag_outcome": rag_result.outcome.value,
                 "rag_reason": rag_result.reason,
