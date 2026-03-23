@@ -1,5 +1,8 @@
+import asyncio
 import json
 import logging
+import os
+import random
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -15,6 +18,10 @@ logger = logging.getLogger(__name__)
 # Shared client — reuses the connection pool across all remote LLM calls instead
 # of creating and tearing down a new pool on every request.
 _http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=60.0)
+
+# Retry configuration — overridable via environment variables.
+_LLM_RETRY_COUNT = int(os.getenv("LLM_RETRY_COUNT", "3"))
+_LLM_RETRY_BASE_DELAY = float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0"))
 
 
 class RemoteLLMGateway(ABC):
@@ -72,45 +79,85 @@ class RemoteLLMGateway(ABC):
                 "Check Vault/Env configuration.",
                 raw_response="",
             )
-        start_time = time.perf_counter()
 
-        try:
-            response = await _http_client.post(
-                self._endpoint_url,
-                json=self._build_payload(prompt),
-                headers=self._build_headers(api_key),
-            )
-            response.raise_for_status()
-            data = response.json()
-        except httpx.HTTPError as e:
-            raise LLMGenerationError(
-                f"HTTP error communicating with {self._provider_name}: {e}"
-            ) from e
-        except Exception as e:
-            raise LLMGenerationError(
-                f"Unexpected error with {self._provider_name}: {e}"
-            ) from e
+        for attempt in range(_LLM_RETRY_COUNT + 1):
+            start_time = time.perf_counter()
 
-        latency_ms = (time.perf_counter() - start_time) * 1000.0
-        message_content = self._extract_content(data)
-
-        if self.strict_json:
             try:
-                json.loads(message_content)
-            except json.JSONDecodeError as e:
+                response = await _http_client.post(
+                    self._endpoint_url,
+                    json=self._build_payload(prompt),
+                    headers=self._build_headers(api_key),
+                )
+            except httpx.HTTPError as e:
                 raise LLMGenerationError(
-                    f"{self._provider_name} returned invalid JSON. "
-                    f"Raw: {message_content[:100]}...",
-                    raw_response=message_content,
+                    f"HTTP error communicating with {self._provider_name}: {e}"
+                ) from e
+            except Exception as e:
+                raise LLMGenerationError(
+                    f"Unexpected error with {self._provider_name}: {e}"
                 ) from e
 
-        prompt_tokens, completion_tokens = self._extract_usage(data)
-        return LLMResult(
-            raw_text=message_content,
-            model_id=self.model,
-            latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+            if response.status_code == 429:
+                if attempt == _LLM_RETRY_COUNT:
+                    raise LLMGenerationError(
+                        f"Rate limited by {self._provider_name} after"
+                        f" {_LLM_RETRY_COUNT} retries.",
+                        raw_response=response.text,
+                    )
+                retry_after_hdr = response.headers.get("Retry-After")
+                if retry_after_hdr:
+                    try:
+                        delay = float(retry_after_hdr)
+                    except ValueError:
+                        delay = _LLM_RETRY_BASE_DELAY * (2 ** attempt)
+                else:
+                    delay = _LLM_RETRY_BASE_DELAY * (2 ** attempt)
+                delay += random.uniform(0.0, 1.0)  # jitter
+                logger.warning(
+                    "Rate limited (429) by %s — retrying in %.1fs"
+                    " (attempt %d/%d)",
+                    self._provider_name,
+                    delay,
+                    attempt + 1,
+                    _LLM_RETRY_COUNT,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            try:
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as e:
+                raise LLMGenerationError(
+                    f"HTTP error communicating with {self._provider_name}: {e}"
+                ) from e
+
+            latency_ms = (time.perf_counter() - start_time) * 1000.0
+            message_content = self._extract_content(data)
+
+            if self.strict_json:
+                try:
+                    json.loads(message_content)
+                except json.JSONDecodeError as e:
+                    raise LLMGenerationError(
+                        f"{self._provider_name} returned invalid JSON. "
+                        f"Raw: {message_content[:100]}...",
+                        raw_response=message_content,
+                    ) from e
+
+            prompt_tokens, completion_tokens = self._extract_usage(data)
+            return LLMResult(
+                raw_text=message_content,
+                model_id=self.model,
+                latency_ms=latency_ms,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+
+        # Unreachable — the loop always returns or raises before exhaustion.
+        raise LLMGenerationError(  # pragma: no cover
+            f"Exhausted retries for {self._provider_name}."
         )
 
 

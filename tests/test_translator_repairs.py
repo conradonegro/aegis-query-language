@@ -209,9 +209,10 @@ def test_where_aggregation_relocated_to_having(
     executable = translator.translate(ast, mock_schema)
     sql = executable.sql.upper()
 
-    # Assert WHERE has the non-aggregate and HAVING has the aggregate
-    assert "WHERE U.ID > :P1" in sql
-    assert "HAVING SUM(O.TOTAL_AMOUNT) > :P2" in sql
+    # Assert WHERE has the non-aggregate and HAVING has the aggregate.
+    # Numeric literals are left inline (not parameterized).
+    assert "WHERE U.ID > 1" in sql
+    assert "HAVING SUM(O.TOTAL_AMOUNT) > 100" in sql
     assert "SUM(" not in sql.split("GROUP BY")[0] # Double check it didn't stay in WHERE
 
     assert len(executable.translation_repairs) == 1
@@ -229,7 +230,7 @@ def test_where_aggregation_skipped_for_subqueries(
     executable = translator.translate(ast, mock_schema)
     sql = executable.sql.upper()
 
-    assert "WHERE SUM(U.ID) > (SELECT :P1)" in sql
+    assert "WHERE SUM(U.ID) > (SELECT 5)" in sql
     assert "HAVING" not in sql
 
 def test_where_aggregation_skipped_for_windows(
@@ -245,7 +246,7 @@ def test_where_aggregation_skipped_for_windows(
     executable = translator.translate(ast, mock_schema)
     sql = executable.sql.upper()
 
-    assert "WHERE SUM(U.ID) OVER (PARTITION BY U.NAME) > :P1" in sql
+    assert "WHERE SUM(U.ID) OVER (PARTITION BY U.NAME) > 5" in sql
     assert "HAVING" not in sql
 
 def test_where_aggregation_skipped_for_or(
@@ -261,7 +262,7 @@ def test_where_aggregation_skipped_for_or(
     executable = translator.translate(ast, mock_schema)
     sql = executable.sql.upper()
 
-    assert "WHERE SUM(U.ID) > :P1 OR U.ID = :P2" in sql
+    assert "WHERE SUM(U.ID) > 100 OR U.ID = 5" in sql
     assert "HAVING" not in sql
     assert len(executable.translation_repairs) == 0
 
@@ -686,8 +687,8 @@ def test_row_limit_not_applied_when_safe_limit_already_exists(
     assert result.row_limit_applied is False
     # Verify there is exactly one LIMIT in the output (no duplication)
     assert result.sql.upper().count("LIMIT") == 1
-    # The value 5 is parameterized by the pipeline; confirm it is preserved
-    assert 5 in result.parameters.values()
+    # Numeric literals are left inline (not parameterized)
+    assert "LIMIT 5" in result.sql
 
 
 def test_row_limit_clamped_when_explicit_limit_exceeds_cap(

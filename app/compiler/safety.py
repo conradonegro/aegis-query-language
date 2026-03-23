@@ -28,8 +28,7 @@ class SafetyPolicyViolationError(SafetyViolationError):
 class SafetyEngine:
     """
     Implements a strict allow-list based structural validation on SQL.
-    - Ensures root node is Select.
-    - Blocks Subqueries and CTEs.
+    - Ensures root node is SELECT or UNION (of SELECTs).
     - Enforces explicit DENY-LIST on dangerous AST nodes.
     - Allows only approved scalar functions.
     """
@@ -49,8 +48,9 @@ class SafetyEngine:
         exp.Update,
         exp.Delete,
         exp.Grant,
-        exp.Subquery,     # v1 Blocks subqueries
-        exp.CTE,          # v1 Blocks CTEs (With clauses)
+        # Subqueries and CTEs were blocked in v1 but are now permitted.
+        # Resource exhaustion (the original concern for recursive CTEs) is
+        # mitigated by the statement_timeout enforced at execution time.
         # LLM output must never contain bind parameters or placeholders.
         # The translator parameterizes literals itself after safety validation;
         # a pre-translated Parameter/Placeholder is always LLM-injected and
@@ -89,6 +89,19 @@ class SafetyEngine:
         exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max,
         exp.Distinct,
         exp.Coalesce, exp.Cast,
+        # Arithmetic
+        exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod, exp.Neg,
+        # CASE / conditional
+        exp.Case, exp.If,
+        # String functions
+        exp.Upper, exp.Lower, exp.Trim, exp.Concat, exp.Substring, exp.Length,
+        # Math functions
+        exp.Round, exp.Floor, exp.Ceil, exp.Abs,
+        # Null / comparison utilities
+        exp.Nullif, exp.Greatest, exp.Least,
+        # Subqueries and CTEs — resource limits enforced by statement_timeout
+        exp.Subquery, exp.Exists,
+        exp.With, exp.CTE, exp.Union,
         # Types
         exp.DataType,
         exp.Interval,
@@ -104,9 +117,9 @@ class SafetyEngine:
         if tree is None:
             raise SafetyViolationError("AST tree is empty.")
 
-        if not isinstance(tree, exp.Select):
+        if not isinstance(tree, (exp.Select, exp.Union)):
             raise SafetyViolationError(
-                f"Root node must be SELECT, found {type(tree).__name__}"
+                f"Root node must be SELECT or UNION, found {type(tree).__name__}"
             )
 
         # Walk the entire tree and check every node

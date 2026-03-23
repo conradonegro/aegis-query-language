@@ -218,8 +218,16 @@ class DeterministicSchemaFilter:
         augmented_tables: set[str],
         rel_columns: set[str],
         forced_columns: set[str],
+        db_scoped: bool = False,
     ) -> tuple[list[AbstractTableDef], dict[str, str]]:
-        """Filters tables/columns down to those relevant to the intent."""
+        """Filters tables/columns down to those relevant to the intent.
+
+        When db_scoped=True (database boundary already established by explicit
+        or auto-detected source_database), every table in augmented_tables is
+        treated as directly matched: all its columns are included regardless of
+        token overlap. Column scoring is still used to populate omitted_columns
+        for observability, but never causes a column to be dropped.
+        """
         allowed_tables: list[AbstractTableDef] = []
         rejected_columns: dict[str, str] = {}
 
@@ -239,7 +247,8 @@ class DeterministicSchemaFilter:
                 col_overlap = self.token_match_score(intent_tokens, col_tokens)
                 full_col_name = f"{table.alias}.{col.alias}"
                 if (
-                    col_overlap >= self.cutoff_threshold
+                    db_scoped
+                    or col_overlap >= self.cutoff_threshold
                     or table_overlap >= self.cutoff_threshold
                     or full_col_name in rel_columns
                     or full_col_name in forced_columns
@@ -371,15 +380,30 @@ class DeterministicSchemaFilter:
                 resolved_db = detected
                 source_database_mode = "auto_detected"
 
-        matched_tables = self._find_matched_table_aliases(
-            schema, intent_tokens, forced_columns
-        )
+        # When a database boundary is already established (explicit or auto-detected)
+        # the schema is already narrowed to a small, coherent set of related tables.
+        # Token scoring inside that boundary is counterproductive: queries like
+        # "who had the least consumption in LAM?" correctly scope to
+        # `debit_card_specializing` but "LAM"/"who" don't match column names in
+        # `customers` — so token scoring would silently drop tables the LLM needs
+        # for JOINs. Include all tables in the scoped database; only filter columns.
+        #
+        # Token scoring remains active when no database is resolved (`none`) because
+        # there we must prune across the full multi-tenant schema.
+        if source_database_mode in ("explicit", "auto_detected"):
+            matched_tables = {t.alias for t in schema.tables}
+        else:
+            matched_tables = self._find_matched_table_aliases(
+                schema, intent_tokens, forced_columns
+            )
         augmented_tables = self._augment_with_relationships(
             schema, matched_tables
         )
         rel_columns = self._compute_rel_columns(schema, augmented_tables)
+        db_scoped = source_database_mode in ("explicit", "auto_detected")
         allowed_tables, rejected_columns = self._build_filtered_tables(
-            schema, intent_tokens, augmented_tables, rel_columns, forced_columns
+            schema, intent_tokens, augmented_tables, rel_columns, forced_columns,
+            db_scoped=db_scoped,
         )
 
         allowed_table_aliases = {t.alias for t in allowed_tables}

@@ -127,6 +127,7 @@ class MetadataCompiler:
                     "rag_cardinality_hint": col.rag_cardinality_hint,
                     "rag_limit": col.rag_limit,
                     "rag_values_hash": _compute_rag_values_hash(active_values),
+                    "sample_values": col.sample_values or [],
                 })
 
             table_idx_map[tbl.table_id] = tbl_dict

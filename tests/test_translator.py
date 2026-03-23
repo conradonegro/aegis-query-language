@@ -376,3 +376,322 @@ def test_translator_guard_raises_on_placeholder_if_safety_bypassed() -> None:
 
     with pytest.raises(TranslationError, match="Pre-translation bind parameter"):
         translator.translate(validated, schema, abstract_query_hash="h")
+
+
+# ------------------------------------------------------------------
+# Fix 1 — Numeric literal parameterization
+# ------------------------------------------------------------------
+
+def test_integer_literals_remain_inline() -> None:
+    """Integer literals must not be parameterized.
+
+    asyncpg sends Python int for bound integer parameters, but PostgreSQL
+    can infer TEXT from context (e.g. THEN 1 inside a CASE expression)
+    and raises DataError. Leaving integers inline avoids this entirely.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT CASE WHEN salary > 0 THEN 1 ELSE 0 END FROM users"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "1" in result.sql
+    assert "0" in result.sql
+    assert not any(isinstance(v, int) for v in result.parameters.values())
+
+
+def test_string_literals_still_parameterized() -> None:
+    """String literals must still be bound as parameters for injection safety."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _minimal_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT name FROM users WHERE name = 'alice'"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'alice'" not in result.sql
+    assert result.parameters.get("p1") == "alice"
+
+
+# ------------------------------------------------------------------
+# Fix 3 — CTE-aware translator
+# ------------------------------------------------------------------
+
+def test_cte_virtual_table_resolves_without_error() -> None:
+    """A CTE alias used as a FROM target must not raise TranslationError."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql="WITH top_users AS (SELECT id FROM users) SELECT id FROM top_users"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+
+
+def test_cte_column_prefix_resolves_without_error() -> None:
+    """CTE-prefixed column reference in outer query must not raise TranslationError."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "WITH top_users AS (SELECT id FROM users) "
+            "SELECT top_users.id FROM top_users"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+
+
+# ------------------------------------------------------------------
+# BUG-1 — Temporal literal parameterization
+# ------------------------------------------------------------------
+
+def _make_schema_with_dates() -> RegistrySchema:
+    """Schema with a date column and a timestamp column for temporal tests."""
+    return RegistrySchema(
+        version="v1.0.0",
+        tables=[
+            AbstractTableDef(
+                alias="events",
+                description="Events",
+                physical_target="public.events",
+                columns=[
+                    AbstractColumnDef(
+                        alias="event_date",
+                        description="Event date",
+                        data_type="date",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True
+                        ),
+                        physical_target="event_date",
+                    ),
+                    AbstractColumnDef(
+                        alias="created_at",
+                        description="Created at",
+                        data_type="timestamp",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True
+                        ),
+                        physical_target="created_at",
+                    ),
+                    AbstractColumnDef(
+                        alias="label",
+                        description="Label",
+                        data_type="text",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True
+                        ),
+                        physical_target="label",
+                    ),
+                ],
+            )
+        ],
+        relationships=[],
+    )
+
+
+def test_date_literal_in_equality_left_inline() -> None:
+    """A string literal compared to a DATE column must not be parameterized.
+
+    asyncpg infers the bind parameter type from the column being compared.
+    For DATE columns it expects a Python datetime.date and calls .toordinal(),
+    crashing with AttributeError when given a plain string. Leaving the
+    literal inline lets PostgreSQL parse it directly.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_dates()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT event_date FROM events WHERE event_date = '2024-01-15'"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'2024-01-15'" in result.sql
+    assert not any(v == "2024-01-15" for v in result.parameters.values())
+
+
+def test_timestamp_literal_in_comparison_left_inline() -> None:
+    """A string literal compared to a TIMESTAMP column must not be parameterized."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_dates()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT created_at FROM events WHERE created_at > '2024-01-15 10:00:00'"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'2024-01-15 10:00:00'" in result.sql
+    assert not any(v == "2024-01-15 10:00:00" for v in result.parameters.values())
+
+
+def test_date_literal_in_between_left_inline() -> None:
+    """Both bounds of a BETWEEN against a DATE column must stay inline."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_dates()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT event_date FROM events"
+            " WHERE event_date BETWEEN '2024-01-01' AND '2024-12-31'"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'2024-01-01'" in result.sql
+    assert "'2024-12-31'" in result.sql
+    assert len(result.parameters) == 0
+
+
+def test_text_literal_still_parameterized_despite_date_column_in_scope() -> None:
+    """A string literal compared to a TEXT column must still be parameterized,
+    even when a temporal column exists elsewhere in the same query.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_dates()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT label FROM events WHERE label = 'conference'"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'conference'" not in result.sql
+    assert result.parameters.get("p1") == "conference"
+
+
+def test_cte_join_on_condition_resolves_without_error() -> None:
+    """JOIN ON referencing a CTE virtual table must not raise TranslationError."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_relationship()
+
+    # CTE wraps users; outer query JOINs orders using the CTE alias.
+    # The JOIN ON condition references the CTE alias (user_ids.id) — this
+    # side of the condition must be exempt from edge-index validation.
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "WITH user_ids AS (SELECT id FROM users) "
+            "SELECT user_ids.id, orders.total "
+            "FROM user_ids JOIN orders ON user_ids.id = orders.user_id"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(
+        validated, schema,
+        abstract_query_hash="h",
+        relationships=schema.relationships,
+    )
+    assert result is not None
+
+
+# ------------------------------------------------------------------
+# BUG-3 — CTE output column alias bypass
+# ------------------------------------------------------------------
+
+def test_cte_output_alias_in_order_by_resolves() -> None:
+    """A bare CTE-derived alias referenced in ORDER BY must not raise
+    TranslationError.
+
+    The LLM commonly writes aggregation CTEs like:
+        WITH agg AS (SELECT SUM(x) AS total FROM t GROUP BY ...)
+        SELECT col FROM agg ORDER BY total DESC
+    'total' is not a schema column — it is the AS-declared output of the CTE.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "WITH agg AS (SELECT id, salary AS total_salary FROM users)"
+            " SELECT id FROM agg ORDER BY total_salary DESC"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+
+
+def test_cte_output_alias_in_select_resolves() -> None:
+    """A bare CTE-derived alias referenced in the outer SELECT must not raise."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "WITH agg AS (SELECT id, salary AS earnings FROM users)"
+            " SELECT id, earnings FROM agg"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+
+
+def test_cte_output_alias_in_where_resolves() -> None:
+    """A bare CTE-derived alias used in WHERE must not raise."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "WITH agg AS (SELECT id, salary AS total_salary FROM users)"
+            " SELECT id FROM agg WHERE total_salary > 0"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+
+
+def test_real_schema_column_still_raises_when_not_in_scope() -> None:
+    """A column that genuinely does not exist in the schema must still raise,
+    even when CTE column aliases are present."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "WITH agg AS (SELECT id FROM users)"
+            " SELECT ghost_column FROM agg"
+        )
+    ))
+    validated = safety.validate(ast)
+    with pytest.raises(TranslationError, match="does not exist in the schema context"):
+        translator.translate(validated, schema, abstract_query_hash="h")

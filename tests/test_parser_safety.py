@@ -28,9 +28,9 @@ def test_safety_engine_allow_simple_select() -> None:
     "DROP TABLE tab1",
     "GRANT ALL PRIVILEGES ON tab1 TO user",
     "SELECT * FROM tab1; DROP TABLE tab2",
-    "SELECT * FROM tab1 WHERE col1 = 1 UNION SELECT password FROM users",
-    "WITH cte AS (SELECT * FROM tab1) SELECT * FROM cte",
-    "SELECT (SELECT col1 FROM tab2) FROM tab1",
+    # Note: UNION at the root is now permitted (BUG-2 fix). A UNION that
+    # references sensitive columns is blocked by column-level SafetyClassification,
+    # not by the root-node check.
     "INSERT INTO tab1 (col1) VALUES ('val')",
 ])
 def test_safety_engine_blocks_dangerous_payloads(malicious_query: str) -> None:
@@ -80,11 +80,11 @@ def test_safety_engine_rejects_null_ast() -> None:
 
 
 def test_safety_engine_rejects_non_select_root() -> None:
-    """Any root node that is not SELECT must be rejected."""
+    """Any root node that is not SELECT or UNION must be rejected."""
     safety = SafetyEngine()
     # Manually construct an UPDATE node — bypasses the parser deliberately
     update_tree = exp.update("users", {"name": exp.Literal.string("x")})
-    with pytest.raises(SafetyViolationError, match="(?i)root node must be SELECT"):
+    with pytest.raises(SafetyViolationError, match="(?i)root node must be"):
         safety.validate(SQLAst(tree=update_tree))
 
 
@@ -174,3 +174,115 @@ def test_safety_engine_allows_join_using() -> None:
     )
     validated = safety.validate(ast)
     assert validated.tree is not None
+
+
+@pytest.mark.parametrize("query", [
+    "SELECT a / b FROM t",
+    "SELECT a + b FROM t",
+    "SELECT a - b FROM t",
+    "SELECT a * b FROM t",
+    "SELECT a % b FROM t",
+    "SELECT -a FROM t",
+])
+def test_safety_engine_allows_arithmetic(query: str) -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql=query))
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_case_expression() -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT CASE WHEN a > 1 THEN 'high' ELSE 'low' END FROM t"
+    ))
+    assert safety.validate(ast).tree is not None
+
+
+@pytest.mark.parametrize("query", [
+    "SELECT UPPER(name) FROM t",
+    "SELECT LOWER(name) FROM t",
+    "SELECT TRIM(name) FROM t",
+    "SELECT CONCAT(a, b) FROM t",
+    "SELECT SUBSTRING(name, 1, 3) FROM t",
+    "SELECT LENGTH(name) FROM t",
+    "SELECT ROUND(val, 2) FROM t",
+    "SELECT FLOOR(val) FROM t",
+    "SELECT CEIL(val) FROM t",
+    "SELECT ABS(val) FROM t",
+    "SELECT NULLIF(val, 0) FROM t",
+    "SELECT GREATEST(a, b) FROM t",
+    "SELECT LEAST(a, b) FROM t",
+])
+def test_safety_engine_allows_scalar_functions(query: str) -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql=query))
+    assert safety.validate(ast).tree is not None
+
+
+# ─── CTEs and subqueries ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("query", [
+    # Non-recursive CTE
+    "WITH cte AS (SELECT id FROM t) SELECT * FROM cte",
+    # Recursive CTE — allowed; statement_timeout caps resource use
+    (
+        "WITH RECURSIVE cte(n) AS "
+        "(SELECT 1 UNION ALL SELECT n + 1 FROM cte WHERE n < 10) "
+        "SELECT n FROM cte"
+    ),
+    # Inline subquery in FROM
+    "SELECT sub.id FROM (SELECT id FROM t) AS sub",
+    # Subquery in WHERE with IN
+    "SELECT id FROM t WHERE id IN (SELECT id FROM t2)",
+    # EXISTS subquery
+    "SELECT id FROM t WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.id = t.id)",
+])
+def test_safety_engine_allows_ctes_and_subqueries(query: str) -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql=query))
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_top_level_union() -> None:
+    """UNION of two SELECTs must be accepted — the LLM legitimately uses UNION
+    to answer 'biggest AND lowest' style questions in a single result set."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(
+        AbstractQuery(sql="SELECT id FROM users UNION ALL SELECT id FROM users")
+    )
+    result = safety.validate(ast)
+    assert result is not None
+
+
+def test_safety_engine_union_deny_list_enforced_in_branch() -> None:
+    """The deny-list must still be checked inside each UNION branch.
+    An INSERT hidden inside a UNION should never reach the executor."""
+    safety = SafetyEngine()
+    import sqlglot
+    # Manually craft a Union whose right branch is an Insert to bypass the parser
+    left = sqlglot.parse_one("SELECT 1")
+    right = sqlglot.parse_one("INSERT INTO t VALUES (1)")
+    assert left is not None and right is not None
+    union_tree = exp.Union(this=left, expression=right)
+    with pytest.raises(SafetyViolationError):
+        safety.validate(SQLAst(tree=union_tree))
+
+
+def test_safety_engine_union_cross_join_blocked_in_branch() -> None:
+    """A cross JOIN inside a UNION branch must still be rejected."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT id FROM users"
+            " UNION ALL"
+            " SELECT id FROM users CROSS JOIN orders"
+        )
+    ))
+    with pytest.raises(SafetyViolationError, match="(?i)cross JOIN"):
+        safety.validate(ast)

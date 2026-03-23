@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -254,7 +254,7 @@ def _get_git_metadata(repo_root: Path) -> tuple[str | None, int | None]:
 
 
 def _utc_timestamp() -> tuple[str, str]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     run_id_ts = now.strftime("%Y%m%d-%H%M%S")
     iso_ts = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return run_id_ts, iso_ts
@@ -505,8 +505,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=5,
-        help="Max in-flight questions (default: 5)",
+        default=2,
+        help="Max in-flight questions (default: 2; keep low for multi-database runs to avoid 429s)",
     )
     parser.add_argument(
         "--limit",

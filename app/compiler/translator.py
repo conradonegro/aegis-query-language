@@ -51,18 +51,26 @@ class DeterministicTranslator:
         tree = ast.tree.copy()
         repairs: list[TranslationRepair] = []
 
+        cte_aliases = self._collect_cte_aliases(tree)
+        cte_col_aliases = self._collect_cte_column_aliases(tree)
+
         if relationships:
-            self._validate_join_graph(tree, relationships)
+            self._validate_join_graph(tree, relationships, cte_aliases)
 
         self._repair_where_aggregations(tree, repairs)
 
         maps = self._build_schema_maps(schema)
         scope = self._collect_table_scope(tree)
         literals, column_datatypes = self._walk_tree_nodes(
-            tree, maps, scope, repairs
+            tree, maps, scope, repairs, cte_aliases, cte_col_aliases
         )
         self._validate_temporal_expressions(tree, column_datatypes)
-        parameters = self._parameterize_literals(tree, literals)
+        temporal_literal_ids = self._collect_temporal_literal_ids(
+            tree, column_datatypes
+        )
+        parameters = self._parameterize_literals(
+            tree, literals, temporal_literal_ids
+        )
         row_limit_applied = self._apply_row_limit(tree, row_limit, parameters)
 
         final_sql = tree.sql(dialect="postgres")
@@ -145,6 +153,8 @@ class DeterministicTranslator:
         maps: _SchemaLookupMaps,
         scope: _TableScope,
         repairs: list[TranslationRepair],
+        cte_aliases: set[str],
+        cte_col_aliases: set[str],
     ) -> tuple[list[exp.Literal], dict[int, str]]:
         """Walks the copied AST, mutating table/column nodes in-place."""
         literals_to_replace: list[exp.Literal] = []
@@ -161,18 +171,19 @@ class DeterministicTranslator:
                     f" placeholders; literals are parameterized by the translator."
                 )
             if isinstance(node_inst, exp.Table):
-                self._resolve_table_node(node_inst, maps)
+                self._resolve_table_node(node_inst, maps, cte_aliases)
             elif isinstance(node_inst, exp.Column):
                 c_name = node_inst.name.lower()
                 t_prefix = node_inst.table.lower() if node_inst.table else ""
                 if t_prefix:
                     self._resolve_column_with_prefix(
                         node_inst, c_name, t_prefix,
-                        maps, scope, repairs, column_datatypes,
+                        maps, scope, repairs, column_datatypes, cte_aliases,
                     )
                 else:
                     self._resolve_column_without_prefix(
-                        node_inst, c_name, maps, scope, column_datatypes
+                        node_inst, c_name, maps, scope, column_datatypes,
+                        cte_col_aliases,
                     )
             elif isinstance(node_inst, exp.Literal):
                 literals_to_replace.append(node_inst)
@@ -180,9 +191,12 @@ class DeterministicTranslator:
         return literals_to_replace, column_datatypes
 
     def _resolve_table_node(
-        self, node_inst: exp.Table, maps: _SchemaLookupMaps
+        self, node_inst: exp.Table, maps: _SchemaLookupMaps, cte_aliases: set[str]
     ) -> None:
         t_name = node_inst.name.lower()
+        if t_name in cte_aliases:
+            # CTE virtual table — leave identifier as-is; no physical resolution.
+            return
         if t_name in maps.alias_to_physical_table:
             node_inst.set(
                 "this",
@@ -223,9 +237,14 @@ class DeterministicTranslator:
         scope: _TableScope,
         repairs: list[TranslationRepair],
         column_datatypes: dict[int, str],
+        cte_aliases: set[str],
     ) -> None:
         if t_prefix in scope.dynamic_table_aliases or t_prefix in scope.tables_in_scope:
             resolved_table = scope.dynamic_table_aliases.get(t_prefix, t_prefix)
+            if resolved_table in cte_aliases:
+                # CTE virtual table — column was validated inside the CTE body;
+                # leave identifier as-is, no physical resolution or safety checks.
+                return
             if resolved_table not in maps.alias_to_physical_table:
                 raise TranslationError(
                     f"Table '{resolved_table}' does not exist in schema context."
@@ -339,7 +358,13 @@ class DeterministicTranslator:
         maps: _SchemaLookupMaps,
         scope: _TableScope,
         column_datatypes: dict[int, str],
+        cte_col_aliases: set[str],
     ) -> None:
+        if c_name in cte_col_aliases:
+            # CTE-derived output column (declared with AS inside a CTE's SELECT).
+            # It was validated when the CTE body was processed; no physical
+            # resolution or safety check applies in the outer query.
+            return
         owning_tables = maps.column_ownership.get(c_name, set())
         scoped_owning_tables = owning_tables.intersection(scope.tables_in_scope)
         if len(scoped_owning_tables) > 1:
@@ -412,24 +437,121 @@ class DeterministicTranslator:
     # Literal parameterization and row-limit enforcement
     # ------------------------------------------------------------------
 
+    _TEMPORAL_TYPES: frozenset[str] = frozenset(
+        {"date", "time", "timestamp", "timestamptz", "datetime", "interval"}
+    )
+
+    def _collect_temporal_literal_ids(
+        self, tree: exp.Expression, column_datatypes: dict[int, str]
+    ) -> set[int]:
+        """Returns id()s of literals that must be left inline due to temporal context.
+
+        asyncpg infers bind parameter types from the column being compared. When
+        a string literal like '2012/8/24' is parameterized and compared to a DATE
+        column, asyncpg expects a Python datetime.date object and crashes with
+        ``AttributeError: 'str' object has no attribute 'toordinal'``.
+
+        This pass runs after _walk_tree_nodes has populated column_datatypes, so
+        the datatype of every resolved Column node is already known. Skipping
+        parameterization for temporal literals is safe for the same reason
+        numeric literals are left inline: the values are LLM-generated and
+        PostgreSQL will reject malformed date strings at parse time.
+
+        Covered comparison forms: binary (EQ/NEQ/GT/GTE/LT/LTE), BETWEEN, IN.
+        """
+        ids: set[int] = set()
+        ids |= self._temporal_ids_from_binary(tree, column_datatypes)
+        ids |= self._temporal_ids_from_between(tree, column_datatypes)
+        ids |= self._temporal_ids_from_in(tree, column_datatypes)
+        return ids
+
+    def _col_is_temporal(
+        self, col: exp.Column, column_datatypes: dict[int, str]
+    ) -> bool:
+        dtype = column_datatypes.get(id(col), "")
+        return any(t in dtype for t in self._TEMPORAL_TYPES)
+
+    def _temporal_ids_from_binary(
+        self, tree: exp.Expression, column_datatypes: dict[int, str]
+    ) -> set[int]:
+        """Marks literals in binary comparisons against temporal columns."""
+        result: set[int] = set()
+        for cmp in tree.find_all(exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE):
+            left, right = cmp.left, cmp.right
+            if isinstance(left, exp.Column) and isinstance(right, exp.Literal):
+                if self._col_is_temporal(left, column_datatypes):
+                    result.add(id(right))
+            elif isinstance(right, exp.Column) and isinstance(left, exp.Literal):
+                if self._col_is_temporal(right, column_datatypes):
+                    result.add(id(left))
+        return result
+
+    def _temporal_ids_from_between(
+        self, tree: exp.Expression, column_datatypes: dict[int, str]
+    ) -> set[int]:
+        """Marks literals in BETWEEN bounds against temporal columns."""
+        result: set[int] = set()
+        for between in tree.find_all(exp.Between):
+            col = between.this
+            if not isinstance(col, exp.Column):
+                continue
+            if not self._col_is_temporal(col, column_datatypes):
+                continue
+            low = between.args.get("low")
+            high = between.args.get("high")
+            if isinstance(low, exp.Literal):
+                result.add(id(low))
+            if isinstance(high, exp.Literal):
+                result.add(id(high))
+        return result
+
+    def _temporal_ids_from_in(
+        self, tree: exp.Expression, column_datatypes: dict[int, str]
+    ) -> set[int]:
+        """Marks literals inside IN (...) lists against temporal columns."""
+        result: set[int] = set()
+        for in_node in tree.find_all(exp.In):
+            col = in_node.this
+            if not isinstance(col, exp.Column):
+                continue
+            if not self._col_is_temporal(col, column_datatypes):
+                continue
+            for expr in in_node.expressions:
+                if isinstance(expr, exp.Literal):
+                    result.add(id(expr))
+        return result
+
     def _parameterize_literals(
-        self, tree: exp.Expression, literals: list[exp.Literal]
+        self,
+        tree: exp.Expression,
+        literals: list[exp.Literal],
+        temporal_literal_ids: set[int],
     ) -> dict[str, Any]:
-        """Replaces literal values with named query parameters."""
+        """Replaces string literal values with named query parameters.
+
+        Two categories of literals are intentionally left inline:
+
+        - Numeric literals: binding integers as parameters causes asyncpg
+          DataError when PostgreSQL infers a TEXT parameter type from context
+          (e.g. ``THEN 1`` inside a CASE expression).
+        - Temporal literals: string literals compared against DATE/TIME/TIMESTAMP
+          columns cause asyncpg to infer the parameter type as the column's type
+          and call ``.toordinal()`` on a Python str, crashing with AttributeError.
+          Leaving them inline lets PostgreSQL parse and validate them directly.
+
+        Both categories carry no SQL-injection risk: numerics cannot contain
+        injection syntax, and temporal literals that fail PostgreSQL's date parser
+        simply raise a DataError rather than executing.
+        """
         parameters: dict[str, Any] = {}
         param_counter = 1
         for node_inst in literals:
+            if node_inst.is_number:
+                continue
+            if id(node_inst) in temporal_literal_ids:
+                continue
             param_name = f"p{param_counter}"
-            if node_inst.is_string:
-                parameters[param_name] = node_inst.this
-            elif node_inst.is_number:
-                parameters[param_name] = (
-                    float(node_inst.this)
-                    if "." in node_inst.this
-                    else int(node_inst.this)
-                )
-            else:
-                parameters[param_name] = node_inst.this
+            parameters[param_name] = node_inst.this
             node_inst.replace(exp.Parameter(this=exp.var(param_name)))
             param_counter += 1
         return parameters
@@ -508,10 +630,13 @@ class DeterministicTranslator:
         self,
         tree: exp.Expression,
         relationships: list[AbstractRelationshipDef],
+        cte_aliases: set[str],
     ) -> None:
         """
         Validates that every explicit JOIN ON condition references a declared
         relationship edge. Runs on the abstract AST before physical substitution.
+        JOIN conditions referencing CTE virtual tables are skipped — their
+        column safety was already validated inside the CTE body.
         """
         sql_alias_to_table: dict[str, str] = {}
         for table_node in tree.find_all(exp.Table):
@@ -530,31 +655,82 @@ class DeterministicTranslator:
                     " All JOINs must reference a declared relationship"
                     " via a column-equality condition."
                 )
-            found_declared_edge = False
-            for eq_node in on_clause.find_all(exp.EQ):
-                left, right = eq_node.left, eq_node.right
-                if not isinstance(left, exp.Column) or not isinstance(
-                    right, exp.Column
-                ):
-                    continue
-                left_ref = self._resolve_col_join_ref(left, sql_alias_to_table)
-                right_ref = self._resolve_col_join_ref(right, sql_alias_to_table)
-                if left_ref is None or right_ref is None:
-                    continue
-                pair: frozenset[str] = frozenset({left_ref, right_ref})
-                if pair not in declared_edges:
-                    raise TranslationError(
-                        f"JOIN condition '{left_ref} = {right_ref}' does not"
-                        f" correspond to any declared relationship in the schema."
-                        f" Hallucinated JOIN blocked."
-                    )
-                found_declared_edge = True
-            if not found_declared_edge:
+            found = self._validate_join_on_clause(
+                on_clause, sql_alias_to_table, declared_edges, cte_aliases
+            )
+            if not found:
                 raise TranslationError(
                     "JOIN ON clause contains no column-equality condition that"
                     " matches a declared relationship. Non-equality, literal,"
                     " or unqualified JOIN predicates are not permitted."
                 )
+
+    def _validate_join_on_clause(
+        self,
+        on_clause: exp.Expression,
+        sql_alias_to_table: dict[str, str],
+        declared_edges: set[frozenset[str]],
+        cte_aliases: set[str],
+    ) -> bool:
+        """Checks every EQ node in a JOIN ON clause against the declared edge index.
+
+        Returns True if at least one valid column-equality condition was found.
+        Raises TranslationError for undeclared non-CTE edge pairs.
+        """
+        found = False
+        for eq_node in on_clause.find_all(exp.EQ):
+            left, right = eq_node.left, eq_node.right
+            if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
+                continue
+            left_ref = self._resolve_col_join_ref(left, sql_alias_to_table)
+            right_ref = self._resolve_col_join_ref(right, sql_alias_to_table)
+            if left_ref is None or right_ref is None:
+                continue
+            left_table = left_ref.split(".")[0]
+            right_table = right_ref.split(".")[0]
+            if left_table in cte_aliases or right_table in cte_aliases:
+                found = True
+                continue
+            pair: frozenset[str] = frozenset({left_ref, right_ref})
+            if pair not in declared_edges:
+                raise TranslationError(
+                    f"JOIN condition '{left_ref} = {right_ref}' does not"
+                    f" correspond to any declared relationship in the schema."
+                    f" Hallucinated JOIN blocked."
+                )
+            found = True
+        return found
+
+    @staticmethod
+    def _collect_cte_aliases(tree: exp.Expression) -> set[str]:
+        """Returns the lowercased alias names of all CTEs defined in the query."""
+        aliases: set[str] = set()
+        for cte in tree.find_all(exp.CTE):
+            alias = cte.alias
+            if alias:
+                aliases.add(alias.lower())
+        return aliases
+
+    @staticmethod
+    def _collect_cte_column_aliases(tree: exp.Expression) -> set[str]:
+        """Returns the lowercased AS-declared column aliases from CTE SELECT lists.
+
+        Only top-level expressions in each CTE's SELECT are collected — nested
+        aliases inside subexpressions are intentionally excluded to avoid
+        masking real schema column names.
+
+        These names must be left unresolved in the outer query: they are virtual
+        columns produced by the CTE and have no physical counterpart in the schema.
+        """
+        aliases: set[str] = set()
+        for cte in tree.find_all(exp.CTE):
+            body = cte.this
+            if not isinstance(body, exp.Select):
+                continue
+            for expr in body.expressions:
+                if isinstance(expr, exp.Alias):
+                    aliases.add(expr.alias.lower())
+        return aliases
 
     @staticmethod
     def _build_edge_index(

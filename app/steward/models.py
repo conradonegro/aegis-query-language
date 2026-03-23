@@ -18,6 +18,7 @@ class AbstractColumnDef(BaseModel):
     physical_target: str
     rag_enabled: bool = False
     rag_cardinality_hint: Literal["low", "medium", "high"] | None = None
+    sample_values: list[str] = []
 
 class AbstractTableDef(BaseModel):
     alias: str

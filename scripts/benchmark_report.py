@@ -75,7 +75,8 @@ def _cmd_list(args: argparse.Namespace) -> None:
     try:
         rows = conn.execute(
             """
-            SELECT run_id, commit_hash, dirty, timestamp, provider_id, total, accuracy_pct
+            SELECT run_id, commit_hash, dirty, timestamp,
+                   provider_id, total, accuracy_pct
             FROM benchmark_runs
             ORDER BY timestamp DESC
             """
@@ -202,8 +203,12 @@ def _cmd_compare(args: argparse.Namespace) -> None:
 
     _print_table(["db_id", "run_a", "run_b", "delta"], table_rows)
 
-    regressions = sum(1 for _qid, _db, match_a, match_b in rows if match_a == 1 and match_b == 0)
-    improvements = sum(1 for _qid, _db, match_a, match_b in rows if match_a == 0 and match_b == 1)
+    regressions = sum(
+        1 for _qid, _db, match_a, match_b in rows if match_a == 1 and match_b == 0
+    )
+    improvements = sum(
+        1 for _qid, _db, match_a, match_b in rows if match_a == 0 and match_b == 1
+    )
 
     print("\nDelta counts:")
     print(f"Regressions: {regressions}")

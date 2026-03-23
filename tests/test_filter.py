@@ -456,3 +456,104 @@ def test_detect_source_database_clear_winner_two_match() -> None:
     )
     filtered = f.filter_schema(intent, schema)
     assert filtered.source_database_used == "financial"
+
+
+# ─── DB-scoped: zero-token tables are still included ─────────────────────────
+
+def test_explicit_source_database_includes_zero_token_overlap_table() -> None:
+    """
+    Regression: BIRD-style query where one table in the scoped database has
+    no token overlap with the query but is required for a JOIN.
+
+    'In 2012, who had the least consumption in LAM?' — 'who'/'LAM' are a stop
+    word and a column *value* respectively, so `customers` scores 0 against
+    tokens {2012, least, consumption, lam}. With explicit source_database the
+    filter must include all tables in the database regardless of token score;
+    only column-level filtering remains active.
+    """
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table_with_db(
+                "yearmonth",
+                "debit_card_specializing",
+                "Monthly consumption per customer",
+                cols=[
+                    _col("customerid", "Customer identifier"),
+                    _col("date", "Year-month date"),
+                    _col("consumption", "Gas consumption amount"),
+                ],
+            ),
+            _table_with_db(
+                "customers",
+                "debit_card_specializing",
+                "Customer accounts",
+                cols=[
+                    _col("customerid", "Customer identifier"),
+                    _col("segment", "Customer segment code"),
+                    _col("currency", "Billing currency"),
+                ],
+            ),
+            # Different database — must be excluded
+            _table_with_db("loan", "financial", "Loan records"),
+        ],
+        relationships=[],
+    )
+    intent = UserIntent(
+        natural_language_query="In 2012, who had the least consumption in LAM?",
+        source_database="debit_card_specializing",
+    )
+    filtered = f.filter_schema(intent, schema)
+    aliases = {t.alias for t in filtered.tables}
+    assert "yearmonth" in aliases, "yearmonth must be included (consumption matches)"
+    assert "customers" in aliases, (
+        "customers must be included despite zero token overlap"
+    )
+    assert "loan" not in aliases, "loan is from a different database"
+    assert filtered.source_database_used == "debit_card_specializing"
+
+
+def test_auto_detected_source_database_includes_zero_token_overlap_table() -> None:
+    """
+    Same scenario as above but source_database is auto-detected rather than
+    explicit. Once the database is resolved by auto-detection, all tables in
+    that database must be included — not re-filtered by token scoring.
+    """
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = RegistrySchema(
+        version="1",
+        tables=[
+            _table_with_db(
+                "yearmonth",
+                "debit_card_specializing",
+                "Monthly consumption per customer",
+                cols=[
+                    _col("customerid", "Customer identifier"),
+                    _col("consumption", "Gas consumption amount"),
+                ],
+            ),
+            _table_with_db(
+                "customers",
+                "debit_card_specializing",
+                "Customer accounts",
+                cols=[
+                    _col("customerid", "Customer identifier"),
+                    _col("segment", "Customer segment code"),
+                ],
+            ),
+            _table_with_db("loan", "financial", "Loan records"),
+        ],
+        relationships=[],
+    )
+    # No explicit source_database — auto-detection must pick debit_card_specializing
+    # via the "consumption" / "yearmonth" signal, then include customers too.
+    intent = UserIntent(
+        natural_language_query="In 2012, who had the least consumption in LAM?"
+    )
+    filtered = f.filter_schema(intent, schema)
+    assert filtered.source_database_used == "debit_card_specializing"
+    aliases = {t.alias for t in filtered.tables}
+    assert "yearmonth" in aliases
+    assert "customers" in aliases, "customers must be included once DB is auto-detected"
+    assert "loan" not in aliases

@@ -96,11 +96,6 @@ class RegistryLoader:
             for col_dict in tbl_dict.get("columns", []):
 
                 sc_extra = col_dict.get("safety_classification") or {}
-                col_type = col_dict.get("type", "").lower()
-                _numeric_types = {
-                    "numeric", "integer", "real", "double precision",
-                    "bigint", "smallint", "float", "decimal",
-                }
                 safety = SafetyClassification(
                     allowed_in_select=col_dict.get("allowed_in_select", False),
                     allowed_in_where=col_dict.get("allowed_in_filter", False),
@@ -110,7 +105,12 @@ class RegistryLoader:
                     ),
                     aggregation_allowed=sc_extra.get(
                         "aggregation_allowed",
-                        col_type in _numeric_types,
+                        # Default: any selectable column may appear in aggregations.
+                        # COUNT(col), COUNT(DISTINCT col), and CASE-inside-SUM
+                        # patterns are valid for all types. Explicit
+                        # safety_classification in the artifact overrides this
+                        # for sensitive columns.
+                        col_dict.get("allowed_in_select", False),
                     ),
                     join_participation_allowed=col_dict.get("allowed_in_join", False),
                 )
@@ -122,7 +122,8 @@ class RegistryLoader:
                         data_type=col_dict.get("type", "text"),
                         safety=safety,
                         # Mapping conceptual alias directly to real name
-                        physical_target=col_dict["name"]
+                        physical_target=col_dict["name"],
+                        sample_values=col_dict.get("sample_values") or [],
                     )
                 )
 
