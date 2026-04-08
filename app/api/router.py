@@ -1578,15 +1578,163 @@ async def update_metadata_column(
     return _map_col(col)
 
 
+def _clone_column(
+    old_c: MetadataColumn, new_c_id: uuid.UUID, new_t_id: uuid.UUID,
+    new_version_id: uuid.UUID,
+) -> MetadataColumn:
+    """Build a new MetadataColumn that mirrors `old_c` under a fresh
+    (column_id, table_id, version_id) triple. All scalar fields are
+    copied, including sample_values and sample_values_exhaustive. The
+    related MetadataColumnValue rows are cloned separately after a flush
+    so the FK on (version_id, column_id) is satisfied."""
+    return MetadataColumn(
+        column_id=new_c_id,
+        version_id=new_version_id,
+        table_id=new_t_id,
+        real_name=old_c.real_name,
+        alias=old_c.alias,
+        description=old_c.description,
+        data_type=old_c.data_type,
+        is_nullable=old_c.is_nullable,
+        is_primary_key=old_c.is_primary_key,
+        is_unique=old_c.is_unique,
+        is_sensitive=old_c.is_sensitive,
+        allowed_in_select=old_c.allowed_in_select,
+        allowed_in_filter=old_c.allowed_in_filter,
+        allowed_in_join=old_c.allowed_in_join,
+        safety_classification=old_c.safety_classification,
+        rag_enabled=old_c.rag_enabled,
+        rag_cardinality_hint=old_c.rag_cardinality_hint,
+        rag_limit=old_c.rag_limit,
+        rag_sample_strategy=old_c.rag_sample_strategy,
+        rag_order_by_column=old_c.rag_order_by_column,
+        rag_order_direction=old_c.rag_order_direction,
+        refresh_on_compile=old_c.refresh_on_compile,
+        sample_values=old_c.sample_values,
+        sample_values_exhaustive=old_c.sample_values_exhaustive,
+    )
+
+
+def _clone_baseline_tables(
+    baseline: MetadataVersion, session: AsyncSession,
+    new_version: MetadataVersion,
+) -> tuple[dict[uuid.UUID, uuid.UUID], dict[uuid.UUID, uuid.UUID]]:
+    """Clone every (active or inactive) table and column from `baseline`
+    onto `new_version`. Returns mappings of old → new IDs for tables and
+    columns so the relationship and curated-value clone steps can rebind
+    foreign keys correctly."""
+    table_id_map: dict[uuid.UUID, uuid.UUID] = {}
+    col_id_map: dict[uuid.UUID, uuid.UUID] = {}
+    for old_t in baseline.tables:
+        new_t_id = uuid.uuid4()
+        session.add(MetadataTable(
+            table_id=new_t_id,
+            version_id=new_version.version_id,
+            real_name=old_t.real_name,
+            alias=old_t.alias,
+            description=old_t.description,
+            tenant_id=old_t.tenant_id,
+            active=old_t.active,
+        ))
+        table_id_map[old_t.table_id] = new_t_id
+        for old_c in old_t.columns:
+            new_c_id = uuid.uuid4()
+            session.add(_clone_column(
+                old_c, new_c_id, new_t_id, new_version.version_id,
+            ))
+            col_id_map[old_c.column_id] = new_c_id
+    return table_id_map, col_id_map
+
+
+def _clone_baseline_curated_values(
+    baseline: MetadataVersion, session: AsyncSession,
+    new_version: MetadataVersion,
+    col_id_map: dict[uuid.UUID, uuid.UUID],
+) -> None:
+    """Clone curated MetadataColumnValue rows from `baseline` onto
+    `new_version`. Only active rows are propagated — archived values are
+    intentionally dropped, mirroring the compiler's _compute_rag_values_hash
+    filter at api/compiler.py. Each row is rebound to (new_version_id,
+    new_column_id); value_id is regenerated so the new draft owns its rows
+    independently of the baseline."""
+    for old_t in baseline.tables:
+        for old_c in old_t.columns:
+            new_c_id = col_id_map[old_c.column_id]
+            for old_v in old_c.values:
+                if not old_v.active:
+                    continue
+                session.add(MetadataColumnValue(
+                    value_id=uuid.uuid4(),
+                    column_id=new_c_id,
+                    version_id=new_version.version_id,
+                    value=old_v.value,
+                    active=True,
+                ))
+
+
+def _clone_baseline_edges(
+    baseline: MetadataVersion, session: AsyncSession,
+    new_version: MetadataVersion,
+    table_id_map: dict[uuid.UUID, uuid.UUID],
+    col_id_map: dict[uuid.UUID, uuid.UUID],
+) -> None:
+    """Clone relationship edges. Skip any edge whose source or target
+    column was not cloned (e.g. dangling references) rather than inserting
+    an old column UUID under the new version_id (FK violation)."""
+    for old_e in baseline.edges:
+        src_col_id = col_id_map.get(old_e.source_column_id)
+        tgt_col_id = col_id_map.get(old_e.target_column_id)
+        if not src_col_id or not tgt_col_id:
+            continue
+        session.add(MetadataRelationship(
+            relationship_id=uuid.uuid4(),
+            version_id=new_version.version_id,
+            source_table_id=table_id_map[old_e.source_table_id],
+            source_column_id=src_col_id,
+            target_table_id=table_id_map[old_e.target_table_id],
+            target_column_id=tgt_col_id,
+            relationship_type=old_e.relationship_type,
+            cardinality=old_e.cardinality,
+            bidirectional=old_e.bidirectional,
+            active=old_e.active,
+        ))
+
+
+async def _load_clone_baseline(
+    session: AsyncSession, baseline_id: uuid.UUID, tenant_id: str,
+) -> MetadataVersion:
+    """Eager-load a baseline MetadataVersion (with tables, columns, curated
+    values, and edges) and assert it belongs to the calling tenant."""
+    stmt = (
+        select(MetadataVersion)
+        .where(MetadataVersion.version_id == baseline_id)
+        .options(
+            selectinload(MetadataVersion.tables)
+            .selectinload(MetadataTable.columns)
+            .selectinload(MetadataColumn.values),
+            selectinload(MetadataVersion.edges)
+        )
+    )
+    res = await session.execute(stmt)
+    baseline = res.scalar_one_or_none()
+    if not baseline:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    if baseline.tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Baseline version does not belong to your tenant.",
+        )
+    return baseline
+
+
 @api_router.post("/metadata/versions", response_model=ProtocolMetadataVersion)
 async def create_metadata_version(
     payload: VersionCreateRequest,
     session: Annotated[AsyncSession, Depends(get_steward_db_session)],
     cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
 ) -> ProtocolMetadataVersion:
-    new_version_id = uuid.uuid4()
     new_version = MetadataVersion(
-        version_id=new_version_id,
+        version_id=uuid.uuid4(),
         tenant_id=cred.tenant_id,
         status="draft",
         created_by=cred.user_id,
@@ -1596,98 +1744,22 @@ async def create_metadata_version(
 
     if payload.baseline_version_id:
         baseline_id = uuid.UUID(payload.baseline_version_id)
-        stmt = (
-            select(MetadataVersion)
-            .where(MetadataVersion.version_id == baseline_id)
-            .options(
-                selectinload(MetadataVersion.tables).selectinload(
-                    MetadataTable.columns
-                ),
-                selectinload(MetadataVersion.edges)
-            )
+        baseline = await _load_clone_baseline(
+            session, baseline_id, cred.tenant_id,
         )
-        res = await session.execute(stmt)
-        baseline = res.scalar_one_or_none()
-        if not baseline:
-             raise HTTPException(status_code=404, detail="Baseline not found")
-        if baseline.tenant_id != cred.tenant_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Baseline version does not belong to your tenant.",
-            )
-
-        table_id_map = {}
-        col_id_map = {}
-
-        # Deep clone
-        for old_t in baseline.tables:
-            new_t_id = uuid.uuid4()
-            new_t = MetadataTable(
-                table_id=new_t_id,
-                version_id=new_version.version_id,
-                real_name=old_t.real_name,
-                alias=old_t.alias,
-                description=old_t.description,
-                tenant_id=old_t.tenant_id,
-                active=old_t.active
-            )
-            session.add(new_t)
-            table_id_map[old_t.table_id] = new_t_id
-
-            for old_c in old_t.columns:
-                new_c_id = uuid.uuid4()
-                new_c = MetadataColumn(
-                    column_id=new_c_id,
-                    version_id=new_version.version_id,
-                    table_id=new_t_id,
-                    real_name=old_c.real_name,
-                    alias=old_c.alias,
-                    description=old_c.description,
-                    data_type=old_c.data_type,
-                    is_nullable=old_c.is_nullable,
-                    is_primary_key=old_c.is_primary_key,
-                    is_unique=old_c.is_unique,
-                    is_sensitive=old_c.is_sensitive,
-                    allowed_in_select=old_c.allowed_in_select,
-                    allowed_in_filter=old_c.allowed_in_filter,
-                    allowed_in_join=old_c.allowed_in_join,
-                    safety_classification=old_c.safety_classification,
-                    rag_enabled=old_c.rag_enabled,
-                    rag_cardinality_hint=old_c.rag_cardinality_hint,
-                    rag_limit=old_c.rag_limit,
-                    rag_sample_strategy=old_c.rag_sample_strategy,
-                    rag_order_by_column=old_c.rag_order_by_column,
-                    rag_order_direction=old_c.rag_order_direction,
-                    refresh_on_compile=old_c.refresh_on_compile,
-                )
-                session.add(new_c)
-                col_id_map[old_c.column_id] = new_c_id
-
+        table_id_map, col_id_map = _clone_baseline_tables(
+            baseline, session, new_version,
+        )
         # Flush tables and columns to the DB before inserting relationships so
-        # the FK constraint (version_id, source/target_column_id) → metadata_columns
-        # is satisfied when the relationship rows are written.
+        # the FK constraint (version_id, source/target_column_id) ->
+        # metadata_columns is satisfied when the relationship rows are written.
         await session.flush()
-
-        for old_e in baseline.edges:
-            src_col_id = col_id_map.get(old_e.source_column_id)
-            tgt_col_id = col_id_map.get(old_e.target_column_id)
-            if not src_col_id or not tgt_col_id:
-                # Edge references a column that wasn't cloned — skip rather than
-                # inserting an old column UUID under the new version_id (FK violation).
-                continue
-            new_e = MetadataRelationship(
-                relationship_id=uuid.uuid4(),
-                version_id=new_version.version_id,
-                source_table_id=table_id_map[old_e.source_table_id],
-                source_column_id=src_col_id,
-                target_table_id=table_id_map[old_e.target_table_id],
-                target_column_id=tgt_col_id,
-                relationship_type=old_e.relationship_type,
-                cardinality=old_e.cardinality,
-                bidirectional=old_e.bidirectional,
-                active=old_e.active
-            )
-            session.add(new_e)
+        _clone_baseline_curated_values(
+            baseline, session, new_version, col_id_map,
+        )
+        _clone_baseline_edges(
+            baseline, session, new_version, table_id_map, col_id_map,
+        )
 
     await session.commit()
     await session.refresh(new_version)
