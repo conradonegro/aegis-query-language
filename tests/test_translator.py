@@ -459,6 +459,71 @@ def test_cte_column_prefix_resolves_without_error() -> None:
     assert result is not None
 
 
+def test_cte_prefixed_alias_only_output_column_resolves_without_error() -> None:
+    """A CTE-prefixed reference to an alias-only output column (no underlying
+    schema column with the same name) must not raise TranslationError.
+
+    This is the exact BIRD failure pattern from q=1479/1480: the LLM emits
+    `agg.total_consumption` after defining `SUM(consumption) AS total_consumption`
+    inside a CTE. The bypass at translator._resolve_column_with_prefix must
+    short-circuit on the CTE name BEFORE attempting physical column lookup,
+    because `total_consumption` does not exist in any schema table.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    # Self-contained schema: salary must be aggregation-allowed so the inner
+    # CTE body's SUM(salary) clears safety. Other tests rely on the shared
+    # _make_schema() not permitting aggregation on salary, so we use a local
+    # schema instead of perturbing it.
+    schema = RegistrySchema(
+        version="v1.0.0",
+        tables=[
+            AbstractTableDef(
+                alias="users",
+                description="Users",
+                physical_target="public.users",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id",
+                        description="ID",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="user_id",
+                    ),
+                    AbstractColumnDef(
+                        alias="salary",
+                        description="Salary",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            aggregation_allowed=True,
+                        ),
+                        physical_target="salary_cents",
+                    ),
+                ],
+            ),
+        ],
+        relationships=[],
+    )
+
+    # `aggregate_total` is NOT a schema column anywhere — it only exists as the
+    # AS-declared output of the CTE body's SUM expression. The outer query
+    # references it via the CTE alias prefix.
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "WITH agg AS (SELECT SUM(salary) AS aggregate_total FROM users) "
+            "SELECT agg.aggregate_total FROM agg "
+            "ORDER BY agg.aggregate_total DESC"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+    # The CTE alias and its output column must survive in the final SQL —
+    # they have no physical counterpart and must not be rewritten.
+    assert "aggregate_total" in result.sql
+    assert "agg" in result.sql
+
+
 # ------------------------------------------------------------------
 # BUG-1 — Temporal literal parameterization
 # ------------------------------------------------------------------
