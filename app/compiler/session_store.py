@@ -3,8 +3,8 @@ import os
 import time
 from typing import Any
 
-from pydantic import ValidationError
 import redis.exceptions
+from pydantic import ValidationError
 
 from app.compiler.models import SessionQueryContext
 

@@ -158,6 +158,9 @@ def test_compile_pending_review_version_does_not_mutate_runtime_state() -> None:
     fake_artifact.artifact_blob = {"tables": []}
     fake_artifact.compiled_at = _dt.now(UTC)
 
+    rebuild_mock = AsyncMock()
+    publish_reload_mock = AsyncMock()
+
     try:
         with (
             patch(
@@ -168,6 +171,11 @@ def test_compile_pending_review_version_does_not_mutate_runtime_state() -> None:
                 "app.api.compiler.MetadataCompiler.compile_version",
                 new=AsyncMock(return_value=fake_artifact),
             ),
+            patch(
+                "app.api.router._rebuild_rag_index_for_tenant",
+                new=rebuild_mock,
+            ),
+            patch("app.api.router.publish_reload", new=publish_reload_mock),
             TestClient(app, raise_server_exceptions=False) as client,
         ):
             # Snapshot runtime state BEFORE the compile request
@@ -183,6 +191,15 @@ def test_compile_pending_review_version_does_not_mutate_runtime_state() -> None:
             registries_after = dict(app.state.registries)
             hashes_after = dict(app.state.loaded_artifact_hashes)
 
+        # The compile must SUCCEED — preview compiles return 200. Any other
+        # status (404/422/500) means the endpoint short-circuited before
+        # reaching the gate, so the runtime-state assertions below would
+        # pass for the wrong reason.
+        assert response.status_code == 200, (
+            f"preview compile expected 200, got {response.status_code}:"
+            f" {response.text}"
+        )
+
         # The critical assertion: runtime state is UNCHANGED for the
         # requesting tenant when compiling a pending_review version.
         assert registries_after.get("test_tenant") is registries_before.get(
@@ -197,12 +214,10 @@ def test_compile_pending_review_version_does_not_mutate_runtime_state() -> None:
             f" after={hashes_after.get('test_tenant')!r})"
         )
 
-        # The compile may succeed (preview compile) or fail with 4xx if the
-        # endpoint is restricted further — both are valid outcomes for the
-        # safety property under test. The endpoint should NOT 5xx.
-        assert response.status_code < 500, (
-            f"unexpected 5xx from preview compile: {response.text}"
-        )
+        # And the gated side effects must NOT have fired for a
+        # pending_review preview compile.
+        rebuild_mock.assert_not_awaited()
+        publish_reload_mock.assert_not_awaited()
     finally:
         app.dependency_overrides.pop(require_admin_credential, None)
         engine.dispose()

@@ -80,7 +80,7 @@ from app.compiler.provider_config import (
 from app.execution import ExecutionContext
 from app.execution.interfaces import ExecutionLayer
 from app.rag.normalizer import normalize as normalize_rag_value
-from app.reload import publish_reload
+from app.reload import _perform_reload, publish_reload
 from app.steward import RegistrySchema
 from app.vault import VaultMissingSecretError, get_secrets_manager
 
@@ -167,76 +167,37 @@ def get_utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-async def _rebuild_rag_index_for_tenant(
-    app: Any,
-    tenant_id: str,
-    artifact_blob: dict[str, Any],
-    artifact_hash: str,
-    artifact_version_id: str,
-    column_values: dict[str, list[str]],
-) -> None:
-    """Rebuild the RAG vector store for a tenant, serialized via the
-    per-tenant reload lock.
+async def _rebuild_rag_index_for_tenant(app: Any, tenant_id: str) -> None:
+    """Compile-path counterpart to app.reload._perform_reload — delegates
+    to it.
 
-    This is the compile-path counterpart to app.reload._perform_reload —
-    both paths take the same app.state.reload_locks[tenant_id] and
-    re-check loaded_artifact_hashes inside the lock so concurrent paths
-    skip naturally instead of double-rebuilding.
+    Background (review pass 4): the previous implementation took the
+    caller's `artifact_blob` / `artifact_hash` / `column_values` and
+    installed them inside the per-tenant lock. The skip check only
+    matched "loaded hash equals MY hash", so when a concurrent admin
+    moved the active version forward between schedule-time and
+    lock-acquire-time, the helper still installed the OLDER blob over
+    the NEWER one — leaving the worker with a regressed schema/RAG
+    until the next poll cycle. The compile-path also did a synchronous
+    schema swap OUTSIDE the lock at compile_metadata_version, racing
+    with `_perform_reload`'s same-key write to `app.state.registries`.
 
-    Extracted to a module-level function (rather than living as an
-    inner function inside compile_metadata_version) so the lock
-    behavior is testable in isolation — see
-    tests/test_reload.py::test_rebuild_helper_and_perform_reload_serialize_via_lock.
+    Both gaps collapse into one if we treat the DB as the source of
+    truth: re-query the active artifact inside the lock and install
+    whatever is currently active, regardless of what the caller
+    happened to compile. That is exactly what `_perform_reload` does,
+    so we delegate to it. The compile path passes the artifact through
+    the DB (it just committed the new row); `_perform_reload` will
+    pick that row up via `_load_active_artifact_and_values`.
+
+    The function is kept as a separate symbol (rather than inlining
+    `_perform_reload` at the call site) so:
+    - the compile path has a stable named entry point
+    - tests can race wrapper-vs-direct to verify shared lock semantics
+      (see tests/test_reload.py::
+      test_rebuild_helper_and_perform_reload_serialize_via_lock)
     """
-    # Lazy-imported to avoid the circular import that previously kept
-    # this logic inline in compile_metadata_version.
-    from app.rag.builder import RagDivergenceError, build_from_artifact
-
-    locks = app.state.reload_locks
-    if tenant_id not in locks:
-        locks[tenant_id] = asyncio.Lock()
-
-    async with locks[tenant_id]:
-        # Idempotency: if a concurrent pub/sub echo already rebuilt the
-        # index for this artifact, skip. Checked inside the lock so
-        # both paths see a consistent loaded_artifact_hashes view.
-        if app.state.loaded_artifact_hashes.get(tenant_id) == artifact_hash:
-            logger.info(
-                "rag_rebuild: tenant %s already at artifact %s — skipping"
-                " (concurrent path won the race)",
-                tenant_id, artifact_hash[:12],
-            )
-            return
-
-        try:
-            new_store = await build_from_artifact(
-                artifact_blob=artifact_blob,
-                version_id=artifact_version_id,
-                tenant_id=tenant_id,
-                artifact_version=artifact_hash,
-                column_values=column_values,
-            )
-            app.state.vector_stores[tenant_id] = new_store
-            app.state.compiler.set_vector_store(new_store, tenant_id)
-            # Advance the loaded hash only after BOTH schema and RAG
-            # are live for this artifact (Task 2.2 contract).
-            app.state.loaded_artifact_hashes[tenant_id] = artifact_hash
-            logger.info(
-                "rag_rebuild: tenant %s reloaded to artifact %s",
-                tenant_id, artifact_hash[:12],
-            )
-        except RagDivergenceError:
-            logger.warning(
-                "rag_rebuild: divergence for tenant %s — index not updated;"
-                " loaded hash NOT advanced (retry on next reload)",
-                tenant_id,
-            )
-        except Exception:
-            logger.exception(
-                "rag_rebuild: failed for tenant %s — loaded hash NOT"
-                " advanced (retry on next reload)",
-                tenant_id,
-            )
+    await _perform_reload(app, tenant_id)
 
 
 async def _resolve_session(
@@ -973,27 +934,6 @@ async def get_active_metadata(
     }
 
 
-async def _fetch_rag_column_values(
-    version_id: uuid.UUID,
-    session: AsyncSession,
-) -> dict[str, list[str]]:
-    """Fetch all active RAG values for a version, grouped by column_id string."""
-    stmt = (
-        select(MetadataColumnValue.column_id, MetadataColumnValue.value)
-        .where(
-            MetadataColumnValue.active.is_(True),
-            MetadataColumnValue.version_id == version_id,
-        )
-        .order_by(MetadataColumnValue.column_id, MetadataColumnValue.value)
-    )
-    result = await session.execute(stmt)
-    groups: dict[str, list[str]] = {}
-    for col_id, value in result.all():
-        key = str(col_id)
-        groups.setdefault(key, []).append(value)
-    return groups
-
-
 @api_router.post(
     "/metadata/compile/{version_id}", response_model=MetadataCompileResponse
 )
@@ -1002,11 +942,16 @@ async def compile_metadata_version(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_registry_admin_db_session)],
     cred: Annotated[ResolvedCredential, Depends(require_admin_credential)],
-    wait_for_index: bool = False,
+    wait_for_index: bool = True,
 ) -> MetadataCompileResponse:
-    """Compile an active metadata version into a runtime Aegis Registry artifact."""
+    """Compile an active metadata version into a runtime Aegis Registry artifact.
+
+    `wait_for_index` defaults to True so the response is only returned after
+    the local hot-reload (schema swap + RAG rebuild) has completed. Pass
+    `?wait_for_index=false` to return as soon as the compile commits and let
+    the hot-reload run as a background task.
+    """
     from app.api.compiler import MixedTenantArtifactError
-    from app.steward.loader import RegistryLoader
 
     # Ownership check: verify this version belongs to the requesting tenant
     version_res = await session.execute(
@@ -1060,51 +1005,32 @@ async def compile_metadata_version(
     # signals, or rebuild the RAG index — those steps would leave the worker
     # serving a mismatched schema/RAG/hash combination.
     if current_status == "active":
-        # Hot-reload this tenant's schema slot only
-        async with request.app.state.registry_runtime_session_factory() as rt_session:
-            schema = await RegistryLoader.load_active_schema(
-                rt_session, cred.tenant_id
-            )
-        request.app.state.registries[cred.tenant_id] = schema
-        # NOTE: loaded_artifact_hashes is intentionally NOT advanced here.
-        # The advance happens inside _rebuild_index's success branch so
-        # that a failed RAG rebuild leaves the loaded hash at the previous
-        # version, and the next reload retries (review finding #3).
-
         # Notify all other workers — always publish regardless of local
         # state so workers that haven't loaded this artifact yet receive
-        # the signal.
+        # the signal. Each worker runs its own _perform_reload, which is
+        # the source-of-truth path (queries DB inside the per-tenant
+        # lock and installs whatever is currently active).
         await publish_reload(
             request.app.state.redis_client,
             cred.tenant_id,
             artifact.artifact_hash,
         )
 
-        # Fetch column values for RAG builder
-        async with request.app.state.registry_admin_session_factory() as val_session:
-            column_values = await _fetch_rag_column_values(
-                version_id, val_session
-            )
-
+        # Local hot-reload via the same _perform_reload path (no separate
+        # snapshot, no schema swap outside the lock). This closes the two
+        # gaps reported in pass 4:
+        #   1. The previous compile-path helper installed the caller's
+        #      blob even when a concurrent path had already moved
+        #      loaded_artifact_hashes past it — regressing state until
+        #      the next poll.
+        #   2. The previous synchronous schema swap at this call site
+        #      ran OUTSIDE the per-tenant lock and could race with
+        #      _perform_reload's same-key write to app.state.registries.
         if wait_for_index:
-            await _rebuild_rag_index_for_tenant(
-                app=request.app,
-                tenant_id=cred.tenant_id,
-                artifact_blob=artifact.artifact_blob,
-                artifact_hash=artifact.artifact_hash,
-                artifact_version_id=str(version_id),
-                column_values=column_values,
-            )
+            await _rebuild_rag_index_for_tenant(request.app, cred.tenant_id)
         else:
             _ = asyncio.create_task(
-                _rebuild_rag_index_for_tenant(
-                    app=request.app,
-                    tenant_id=cred.tenant_id,
-                    artifact_blob=artifact.artifact_blob,
-                    artifact_hash=artifact.artifact_hash,
-                    artifact_version_id=str(version_id),
-                    column_values=column_values,
-                )
+                _rebuild_rag_index_for_tenant(request.app, cred.tenant_id)
             )
 
     return MetadataCompileResponse(

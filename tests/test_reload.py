@@ -153,18 +153,17 @@ async def test_rebuild_helper_and_perform_reload_serialize_via_lock(
 
     fake_app.state.registry_runtime_session_factory = _NoopSession
 
+    # Reference the imported uuid module to silence the unused-import lint
+    # — uuid is needed for the fake_artifact.version_id construction above.
+    _ = uuid
     # Race the compile-path helper against the pub/sub echo path.
     # asyncio.gather schedules both coroutines; the counting_build sleep
     # guarantees both reach the lock before either completes its rebuild.
+    # Both entry points now flow through the same _perform_reload code path
+    # (the helper is a thin wrapper, see app/api/router.py:170 docstring),
+    # so the lock semantics are exactly _perform_reload's per-tenant lock.
     await asyncio.gather(
-        _rebuild_rag_index_for_tenant(
-            app=fake_app,
-            tenant_id="tenant_a",
-            artifact_blob=fake_artifact.artifact_blob,
-            artifact_hash="new_hash",
-            artifact_version_id=str(fake_artifact.version_id),
-            column_values={},
-        ),
+        _rebuild_rag_index_for_tenant(fake_app, "tenant_a"),
         reload_mod._perform_reload(fake_app, "tenant_a"),
     )
 
@@ -177,3 +176,81 @@ async def test_rebuild_helper_and_perform_reload_serialize_via_lock(
         " on app.state.reload_locks[tenant_id]"
     )
     assert fake_app.state.loaded_artifact_hashes["tenant_a"] == "new_hash"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_helper_does_not_install_stale_blob_after_db_moved_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a concurrent admin advanced the active version while the
+    compile-path RAG rebuild was queued, the helper must NOT install the
+    older artifact over the newer one — it must defer to the DB.
+
+    Reproduces gap A from review pass 4: the previous helper accepted a
+    caller-provided artifact_hash/blob and only skipped when the loaded
+    hash *equalled* the caller's hash. When loaded had moved past the
+    caller's hash to a newer version, the helper still installed the
+    older blob, regressing state until the next poll.
+
+    Fix: the helper now delegates to _perform_reload, which queries DB
+    inside the lock and installs whatever is currently active.
+    """
+    from app import reload as reload_mod
+    from app.api.router import _rebuild_rag_index_for_tenant
+
+    build_calls: list[str] = []
+
+    async def counting_build(**kwargs: Any) -> Any:
+        build_calls.append(str(kwargs.get("artifact_version", "?")))
+        return MagicMock()
+
+    monkeypatch.setattr(
+        "app.rag.builder.build_from_artifact", counting_build
+    )
+
+    # Simulate the DB-side state: the active artifact for "tenant_a" is V3,
+    # NOT the V2 the compile-path is about to schedule.
+    db_active = MagicMock()
+    db_active.artifact_hash = "v3_hash"
+    db_active.artifact_blob = {"version": "v3"}
+    db_active.version_id = "00000000-0000-0000-0000-000000000003"
+
+    async def fake_load(_app: Any, _tenant: str) -> tuple[Any, dict[str, Any]]:
+        return (db_active, {})
+
+    monkeypatch.setattr(
+        reload_mod, "_load_active_artifact_and_values", fake_load
+    )
+    monkeypatch.setattr(
+        "app.steward.loader.RegistryLoader.load_active_schema",
+        AsyncMock(return_value=MagicMock()),
+    )
+
+    fake_app: Any = MagicMock()
+    fake_app.state.loaded_artifact_hashes = {"tenant_a": "v1_hash"}
+    fake_app.state.registries = {}
+    fake_app.state.vector_stores = {}
+    fake_app.state.reload_locks = {}
+    fake_app.state.compiler.set_vector_store = MagicMock()
+
+    class _NoopSession:
+        async def __aenter__(self) -> Any:
+            return self
+        async def __aexit__(self, *_: Any) -> None:
+            pass
+
+    fake_app.state.registry_runtime_session_factory = _NoopSession
+
+    # Call the helper as the compile path would, having just compiled V2.
+    # The DB now reports V3 active. The helper must install V3 (DB
+    # source-of-truth), NOT V2 (caller's stale snapshot).
+    await _rebuild_rag_index_for_tenant(fake_app, "tenant_a")
+
+    # The build call should have been for V3 (the DB's current active),
+    # never for V2.
+    assert build_calls == ["v3_hash"], (
+        f"expected exactly one build for v3_hash, got {build_calls};"
+        " the helper installed a stale snapshot rather than re-querying"
+        " the DB inside the lock"
+    )
+    assert fake_app.state.loaded_artifact_hashes["tenant_a"] == "v3_hash"
