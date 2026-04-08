@@ -19,6 +19,7 @@ class AbstractColumnDef(BaseModel):
     rag_enabled: bool = False
     rag_cardinality_hint: Literal["low", "medium", "high"] | None = None
     sample_values: list[str] = []
+    sample_values_exhaustive: bool = False
 
 class AbstractTableDef(BaseModel):
     alias: str

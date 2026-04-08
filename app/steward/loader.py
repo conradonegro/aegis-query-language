@@ -124,6 +124,9 @@ class RegistryLoader:
                         # Mapping conceptual alias directly to real name
                         physical_target=col_dict["name"],
                         sample_values=col_dict.get("sample_values") or [],
+                        sample_values_exhaustive=col_dict.get(
+                            "sample_values_exhaustive", False
+                        ),
                     )
                 )
 
