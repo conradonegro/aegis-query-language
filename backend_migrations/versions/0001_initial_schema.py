@@ -428,6 +428,19 @@ def upgrade() -> None:
             WHERE (status = 'active')
     """)
 
+    # Prevent WORM audit chain forks under concurrent admin writes.
+    # Two concurrent transactions could otherwise read the same chain tip
+    # and commit different rows pointing at the same previous_hash, branching
+    # the audit history. The partial unique index rejects the second writer;
+    # the application retries against the new tip (see app/api/compiler.py
+    # and app/api/router.py). The index is partial so the genesis row
+    # (previous_hash = '') is exempt from uniqueness.
+    op.execute("""
+        CREATE UNIQUE INDEX uq_audit_previous_hash_nonempty
+            ON aegis_meta.metadata_audit (previous_hash)
+            WHERE previous_hash != ''
+    """)
+
     # WORM audit trigger: prevent UPDATE and DELETE on metadata_audit
     op.execute("""
         CREATE OR REPLACE FUNCTION aegis_meta.prevent_audit_mutation()
@@ -445,6 +458,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "DROP INDEX IF EXISTS aegis_meta.uq_audit_previous_hash_nonempty"
+    )
     op.execute(
         "DROP INDEX IF EXISTS aegis_meta.uq_one_active_version_per_tenant"
     )
