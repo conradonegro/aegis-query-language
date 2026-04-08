@@ -104,21 +104,42 @@ async def _run_discovery(session: AsyncSession) -> None:
 
         table_obj = table_map[tbl_name]
 
-        # Sample the 3 most frequently occurring non-null values for this column.
-        # Frequency-based selection is more representative than lexicographic
-        # order: it surfaces dominant categories (e.g. the most common segment
-        # values) and mid-range dates rather than just the earliest entries.
-        # Use quoted identifiers to safely handle reserved words.
+        # Choose between exhaustive enumeration (low cardinality) and
+        # frequency-ranked sampling (high cardinality).
+        #
+        # The LLM treats Sample values lists as closed-world enumerations
+        # regardless of how rule 10 is phrased. For columns with <=8 distinct
+        # values, we surface ALL values and label them as the complete set,
+        # giving the model accurate closed-world signal. For higher-cardinality
+        # columns we keep frequency-ranked samples and label them prominently
+        # as non-exhaustive at render time.
         sample_vals: list[str] = []
+        sample_vals_exhaustive: bool = False
         try:
-            sample_sql = text(
-                f'SELECT "{col_name}" FROM "{tbl_name}"'
-                f' WHERE "{col_name}" IS NOT NULL'
-                f' GROUP BY "{col_name}"'
-                f' ORDER BY COUNT(*) DESC LIMIT 3'
+            distinct_sql = text(
+                f'SELECT COUNT(DISTINCT "{col_name}") FROM "{tbl_name}"'
             )
-            sample_res = await session.execute(sample_sql)
-            sample_vals = [str(row[0]) for row in sample_res.fetchall()]
+            distinct_count_row = await session.execute(distinct_sql)
+            distinct_count = distinct_count_row.scalar()
+            if distinct_count is not None and 0 < distinct_count <= 8:
+                exhaustive_sql = text(
+                    f'SELECT "{col_name}" FROM "{tbl_name}"'
+                    f' WHERE "{col_name}" IS NOT NULL'
+                    f' GROUP BY "{col_name}"'
+                    f' ORDER BY COUNT(*) DESC'
+                )
+                exhaustive_res = await session.execute(exhaustive_sql)
+                sample_vals = [str(row[0]) for row in exhaustive_res.fetchall()]
+                sample_vals_exhaustive = True
+            else:
+                sample_sql = text(
+                    f'SELECT "{col_name}" FROM "{tbl_name}"'
+                    f' WHERE "{col_name}" IS NOT NULL'
+                    f' GROUP BY "{col_name}"'
+                    f' ORDER BY COUNT(*) DESC LIMIT 3'
+                )
+                sample_res = await session.execute(sample_sql)
+                sample_vals = [str(row[0]) for row in sample_res.fetchall()]
         except Exception:
             pass  # Non-fatal — skip sample values for this column
 
@@ -136,6 +157,7 @@ async def _run_discovery(session: AsyncSession) -> None:
             allowed_in_filter=True,
             allowed_in_join=True,  # Auto enable all defaults for baseline
             sample_values=sample_vals or None,
+            sample_values_exhaustive=sample_vals_exhaustive,
         )
 
         column_map[(tbl_name, col_name)] = col_obj
