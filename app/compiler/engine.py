@@ -96,6 +96,7 @@ class CompilerEngine:
             )
             is_follow_up = (
                 prior_context is not None
+                and prior_context.registry_version == schema.version
                 and hasattr(self.schema_filter, "is_follow_up")
                 and self.schema_filter.is_follow_up(
                     intent,
@@ -245,6 +246,7 @@ class CompilerEngine:
                         last_filtered_schema=filtered_schema,
                         last_successful_sql=executable.sql,
                         timestamp=time.time(),
+                        registry_version=schema.version,
                     ),
                 )
 

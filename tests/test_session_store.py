@@ -26,6 +26,7 @@ def _ctx(sql: str = "SELECT 1", ts: float | None = None) -> SessionQueryContext:
         ),
         last_successful_sql=sql,
         timestamp=ts if ts is not None else time.time(),
+        registry_version="1",
     )
 
 
@@ -180,6 +181,114 @@ async def test_circuit_breaker_opens_on_failure_and_suppresses_repeated_logs(
     assert n_after_first == 1
     assert n_after_second == 1  # No additional log emitted
     assert store.backend == "redis-degraded"
+
+
+@pytest.mark.asyncio
+async def test_follow_up_rejects_cached_context_when_registry_version_changes() -> None:
+    """A SessionQueryContext built against registry version A must NOT be
+    reused as a follow-up when the active registry version is now B.
+
+    Code-review finding #1 (2026-04-07): the follow-up path reused
+    last_filtered_schema with no version check, allowing queries against
+    aliases that had been removed or reclassified by a newer registry.
+    """
+    import time
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.compiler.engine import CompilerEngine
+    from app.compiler.models import (
+        FilteredSchema,
+        PromptHints,
+        SessionQueryContext,
+        UserIntent,
+    )
+    from app.compiler.session_store import SessionStore
+    from app.steward import RegistrySchema
+
+    # Stub the dependencies CompilerEngine needs
+    schema_filter = MagicMock()
+    schema_filter.is_follow_up = MagicMock(return_value=True)
+    schema_filter.filter_schema = MagicMock(
+        return_value=FilteredSchema(
+            version="v_new",
+            tables=[],
+            relationships=[],
+            omitted_columns={},
+        )
+    )
+
+    prompt_builder = MagicMock()
+    prompt_builder.build_prompt = MagicMock(return_value=MagicMock(
+        system_instruction="", user_prompt="", chat_history=[]
+    ))
+
+    llm_gateway = MagicMock()
+    llm_gateway.generate = AsyncMock(return_value=MagicMock(
+        raw_text='{"sql": "SELECT 1"}',
+        model_id="mock",
+        latency_ms=1.0,
+        prompt_tokens=0,
+        completion_tokens=0,
+    ))
+
+    parser = MagicMock()
+    safety_engine = MagicMock()
+    translator = MagicMock()
+
+    engine = CompilerEngine(
+        schema_filter=schema_filter,
+        prompt_builder=prompt_builder,
+        llm_gateway=llm_gateway,
+        parser=parser,
+        safety_engine=safety_engine,
+        translator=translator,
+    )
+    engine.session_store = SessionStore(redis_client=None, ttl=3600)
+
+    # Pre-seed a stale context tied to registry version "v_old"
+    stale_filtered = FilteredSchema(
+        version="v_old",
+        tables=[],
+        relationships=[],
+        omitted_columns={"old_alias": "removed in v_new"},
+    )
+    stale_context = SessionQueryContext(
+        last_filtered_schema=stale_filtered,
+        last_successful_sql="SELECT * FROM old_table",
+        timestamp=time.time(),
+        registry_version="v_old",
+    )
+    await engine.session_store.set("session-123", stale_context)
+
+    # The currently loaded registry is "v_new"
+    new_schema = RegistrySchema(version="v_new", tables=[], relationships=[])
+
+    intent = UserIntent(natural_language_query="follow-up question")
+    hints = PromptHints(column_hints=[])
+
+    # We expect the engine to NOT treat this as a follow-up — even though
+    # is_follow_up returns True, the version mismatch should override.
+    try:
+        await engine.compile(
+            intent=intent,
+            schema=new_schema,
+            hints=hints,
+            tenant_id="test_tenant",
+            session_id="session-123",
+        )
+    except Exception:
+        # Other failures (mocked translator, etc.) are fine — we only care
+        # about whether filter_schema was called (proving fresh-build path)
+        # versus whether stale_filtered was reused.
+        pass
+
+    # If the version-check fix is in place, filter_schema must have been
+    # called — meaning the engine rebuilt the filtered schema instead of
+    # reusing the stale one.
+    assert schema_filter.filter_schema.called, (
+        "Engine reused the stale SessionQueryContext despite registry"
+        " version mismatch (v_old context vs v_new active schema)"
+    )
 
 
 def test_resolve_session_rejects_cross_user_access_within_same_tenant() -> None:

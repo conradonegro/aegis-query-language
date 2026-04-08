@@ -44,6 +44,7 @@ class SessionQueryContext(BaseModel):
     last_filtered_schema: FilteredSchema
     last_successful_sql: str
     timestamp: float
+    registry_version: str
 
 class PromptHints(BaseModel):
     column_hints: list[str]
