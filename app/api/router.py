@@ -971,50 +971,65 @@ async def compile_metadata_version(
     except MixedTenantArtifactError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Hot-reload this tenant's schema slot only
-    async with request.app.state.registry_runtime_session_factory() as rt_session:
-        schema = await RegistryLoader.load_active_schema(rt_session, cred.tenant_id)
-    request.app.state.registries[cred.tenant_id] = schema
-    request.app.state.loaded_artifact_hashes[cred.tenant_id] = artifact.artifact_hash
-
-    # Notify all other workers — always publish regardless of local state so
-    # workers that haven't loaded this artifact yet receive the signal.
-    await publish_reload(
-        request.app.state.redis_client,
-        cred.tenant_id,
-        artifact.artifact_hash,
-    )
-
-    # Fetch column values for RAG builder
-    async with request.app.state.registry_admin_session_factory() as val_session:
-        column_values = await _fetch_rag_column_values(version_id, val_session)
-
-    async def _rebuild_index() -> None:
-        try:
-            new_store = await build_from_artifact(
-                artifact_blob=artifact.artifact_blob,
-                version_id=str(version_id),
-                tenant_id=cred.tenant_id,
-                artifact_version=artifact.artifact_hash,
-                column_values=column_values,
+    # Hot-reload runtime state only when the compiled version is the active
+    # one. Compiling a pending_review version is a preview operation and must
+    # NOT swap the registry, advance loaded_artifact_hashes, publish reload
+    # signals, or rebuild the RAG index — those steps would leave the worker
+    # serving a mismatched schema/RAG/hash combination.
+    if version_obj.status == "active":
+        # Hot-reload this tenant's schema slot only
+        async with request.app.state.registry_runtime_session_factory() as rt_session:
+            schema = await RegistryLoader.load_active_schema(
+                rt_session, cred.tenant_id
             )
-            request.app.state.vector_stores[cred.tenant_id] = new_store
-            request.app.state.compiler.set_vector_store(new_store, cred.tenant_id)
-        except RagDivergenceError:
-            logger.warning(
-                "RAG divergence detected for version %s — "
-                "index not updated; re-compile after fixing values.",
-                version_id,
-            )
-        except Exception:
-            logger.exception(
-                "RAG index rebuild failed for version %s", version_id
+        request.app.state.registries[cred.tenant_id] = schema
+        request.app.state.loaded_artifact_hashes[cred.tenant_id] = (
+            artifact.artifact_hash
+        )
+
+        # Notify all other workers — always publish regardless of local
+        # state so workers that haven't loaded this artifact yet receive
+        # the signal.
+        await publish_reload(
+            request.app.state.redis_client,
+            cred.tenant_id,
+            artifact.artifact_hash,
+        )
+
+        # Fetch column values for RAG builder
+        async with request.app.state.registry_admin_session_factory() as val_session:
+            column_values = await _fetch_rag_column_values(
+                version_id, val_session
             )
 
-    if wait_for_index:
-        await _rebuild_index()
-    else:
-        _ = asyncio.create_task(_rebuild_index())
+        async def _rebuild_index() -> None:
+            try:
+                new_store = await build_from_artifact(
+                    artifact_blob=artifact.artifact_blob,
+                    version_id=str(version_id),
+                    tenant_id=cred.tenant_id,
+                    artifact_version=artifact.artifact_hash,
+                    column_values=column_values,
+                )
+                request.app.state.vector_stores[cred.tenant_id] = new_store
+                request.app.state.compiler.set_vector_store(
+                    new_store, cred.tenant_id
+                )
+            except RagDivergenceError:
+                logger.warning(
+                    "RAG divergence detected for version %s — "
+                    "index not updated; re-compile after fixing values.",
+                    version_id,
+                )
+            except Exception:
+                logger.exception(
+                    "RAG index rebuild failed for version %s", version_id
+                )
+
+        if wait_for_index:
+            await _rebuild_index()
+        else:
+            _ = asyncio.create_task(_rebuild_index())
 
     return MetadataCompileResponse(
         artifact_id=str(artifact.artifact_id),

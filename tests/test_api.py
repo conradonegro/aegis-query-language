@@ -109,6 +109,105 @@ def test_api_error_shape() -> None:
         app.dependency_overrides.clear()
 
 
+def test_compile_pending_review_version_does_not_mutate_runtime_state() -> None:
+    """Compiling a pending_review version must not touch app.state.registries
+    or app.state.loaded_artifact_hashes.
+
+    Code-review finding #2 (2026-04-07): the router blindly hot-reloaded after
+    every successful compile, leaving the worker with mismatched schema/RAG/
+    hash state when the compiled version was not yet active.
+
+    To exercise the gate without standing up the full metadata schema in
+    SQLite, we patch _run_strategy_refresh + MetadataCompiler.compile_version
+    so the function reaches the runtime mutation block. The test then asserts
+    that for a pending_review version, that block leaves runtime state alone.
+    """
+    import uuid as uuid_mod
+    from datetime import UTC
+    from datetime import datetime as _dt
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from sqlalchemy import create_engine, text
+
+    from app.api.auth import require_admin_credential
+
+    sqlite_url = "sqlite:///file:testdb?mode=memory&cache=shared&uri=true"
+    engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
+
+    pending_vid = uuid_mod.uuid4()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO metadata_versions"
+                " (version_id, tenant_id, status, created_by)"
+                " VALUES (:vid, 'test_tenant', 'pending_review', 'test')"
+            ),
+            {"vid": pending_vid.hex},
+        )
+
+    app.dependency_overrides[require_admin_credential] = lambda: _FAKE_ADMIN_CRED
+
+    # Build a stand-in artifact the patched compile_version returns. The
+    # router code reads .artifact_id, .version_id, .artifact_hash,
+    # .artifact_blob, .compiled_at — provide them all on a MagicMock.
+    fake_artifact = MagicMock()
+    fake_artifact.artifact_id = uuid_mod.uuid4()
+    fake_artifact.version_id = pending_vid
+    fake_artifact.artifact_hash = "deadbeef" * 8
+    fake_artifact.artifact_blob = {"tables": []}
+    fake_artifact.compiled_at = _dt.now(UTC)
+
+    try:
+        with (
+            patch(
+                "app.api.router._run_strategy_refresh",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "app.api.compiler.MetadataCompiler.compile_version",
+                new=AsyncMock(return_value=fake_artifact),
+            ),
+            TestClient(app, raise_server_exceptions=False) as client,
+        ):
+            # Snapshot runtime state BEFORE the compile request
+            registries_before = dict(app.state.registries)
+            hashes_before = dict(app.state.loaded_artifact_hashes)
+
+            response = client.post(
+                f"/api/v1/metadata/compile/{pending_vid}",
+                params={"wait_for_index": "true"},
+            )
+
+            # Snapshot runtime state AFTER the compile request
+            registries_after = dict(app.state.registries)
+            hashes_after = dict(app.state.loaded_artifact_hashes)
+
+        # The critical assertion: runtime state is UNCHANGED for the
+        # requesting tenant when compiling a pending_review version.
+        assert registries_after.get("test_tenant") is registries_before.get(
+            "test_tenant"
+        ), "Compiling pending_review should not swap app.state.registries"
+        assert hashes_after.get("test_tenant") == hashes_before.get(
+            "test_tenant"
+        ), (
+            "Compiling pending_review should not advance"
+            " loaded_artifact_hashes"
+            f" (before={hashes_before.get('test_tenant')!r},"
+            f" after={hashes_after.get('test_tenant')!r})"
+        )
+
+        # The compile may succeed (preview compile) or fail with 4xx if the
+        # endpoint is restricted further — both are valid outcomes for the
+        # safety property under test. The endpoint should NOT 5xx.
+        assert response.status_code < 500, (
+            f"unexpected 5xx from preview compile: {response.text}"
+        )
+    finally:
+        app.dependency_overrides.pop(require_admin_credential, None)
+        engine.dispose()
+
+
 def test_create_credential_propagates_operational_error_as_5xx() -> None:
     """A non-integrity commit failure (e.g. OperationalError from a DB
     restart or transient network blip) must NOT be rewritten to HTTP 409.
