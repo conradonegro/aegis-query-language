@@ -19,6 +19,18 @@ logger = logging.getLogger(__name__)
 # of creating and tearing down a new pool on every request.
 _http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=60.0)
 
+
+async def aclose_http_client() -> None:
+    """Close the module-level shared httpx.AsyncClient.
+
+    Intended to be called from app.main:lifespan during shutdown so the
+    underlying connection pool is released. Without this, repeated lifespan
+    cycles (e.g. TestClient startup/shutdown loops, dev-server reloads) leak
+    open sockets to the configured remote LLM endpoint.
+    """
+    await _http_client.aclose()
+
+
 # Retry configuration — overridable via environment variables.
 _LLM_RETRY_COUNT = int(os.getenv("LLM_RETRY_COUNT", "3"))
 _LLM_RETRY_BASE_DELAY = float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0"))

@@ -445,6 +445,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await app.state.steward_engine.dispose()
     await app.state.registry_admin_engine.dispose()
     await app.state.runtime_engine.dispose()
+
+    # Close the module-level httpx.AsyncClient pools used by the LLM
+    # gateways. These are module globals (not per-app instances), so the
+    # close is shared across all FastAPI app instances in the same process
+    # — fine in production, fine in tests because each lifespan cycle
+    # gets a fresh ephemeral process or recreates the client lazily on
+    # next use.
+    from app.compiler import base_gateway as _llm_base_gateway
+    from app.compiler import ollama as _llm_ollama
+    await _llm_ollama.aclose_http_client()
+    await _llm_base_gateway.aclose_http_client()
+
     logger.info("Aegis Semantic Proxy Shutting down.")
 
 

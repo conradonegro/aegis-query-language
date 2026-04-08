@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 _http_client: httpx.AsyncClient = httpx.AsyncClient(timeout=500.0)
 
 
+async def aclose_http_client() -> None:
+    """Close the module-level shared httpx.AsyncClient.
+
+    Intended to be called from app.main:lifespan during shutdown so the
+    underlying connection pool is released. Without this, repeated lifespan
+    cycles (e.g. TestClient startup/shutdown loops, dev-server reloads) leak
+    open sockets to the Ollama endpoint.
+    """
+    await _http_client.aclose()
+
+
 class LLMGenerationError(Exception):
     """Raised when the LLM fails to generate a valid response that meets strict
     constraints."""
