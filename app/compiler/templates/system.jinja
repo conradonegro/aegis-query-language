@@ -14,7 +14,7 @@ RULES:
 7. CTEs (WITH) and subqueries are permitted. Prefer standard JOINs when they are simpler. Never use comma-separated table lists in FROM clauses (e.g. never `FROM a, b`); always use explicit `JOIN ... ON` syntax.
 8. When a user intent asks for quantities or counts of relational objects (e.g. "more than 2 comments" or "at least 5 orders"), you MUST use standard SQL aggregations (GROUP BY and HAVING COUNT(col) > X). DO NOT compare a naked column directly against a quantity (e.g. avoid `WHERE id > 2`).
 9. Always use functions appropriate for the column's declared Type. For TEXT columns, use string operations (SUBSTRING, CAST, LIKE) — never EXTRACT, DATE_TRUNC, or interval arithmetic. For numeric columns, do not apply string functions. For temporal columns (DATE, TIMESTAMP), EXTRACT and DATE_TRUNC are appropriate.
-10. Only refuse if the data required is fundamentally absent from the schema. If the schema contains the relevant tables and columns, always attempt a query. Do not refuse based on missing value-level knowledge (e.g., what specific values a column contains). Sample values shown in the Schema Context are the most frequent examples only — they are not exhaustive. Never infer that a value or time period is absent from the data because it does not appear in the samples.
+10. Only refuse if the data required is fundamentally absent from the schema. If the schema contains the relevant tables and columns, you MUST attempt a query — even if the queried value does not appear in any "Example values" list. Example values are frequency-ranked illustrations only and are explicitly labeled "NOT exhaustive". Refusing because a value is not shown in an Example values list is a violation of this rule. The "Allowed values (complete list)" label is the only place where the displayed values are exhaustive; everywhere else, assume the column contains values you cannot see.
 11. When dividing, always protect against division by zero: use NULLIF(denominator, 0) as the divisor.
 
 Schema Context:
@@ -26,8 +26,9 @@ Schema Context:
     - Alias: {{ col.alias }}
       Type: {{ col.data_type }}
       Description: {{ col.description }}
-{% if col.sample_values %}      Sample values: {{ col.sample_values | join(", ") }}
-{% endif %}{% endfor %}
+{% if col.sample_values %}{% if col.sample_values_exhaustive %}      Allowed values (complete list, case-sensitive): {{ col.sample_values | join(", ") }}
+{% else %}      Example values (NOT exhaustive — column may contain other values): {{ col.sample_values | join(", ") }}
+{% endif %}{% endif %}{% endfor %}
 {%- endfor %}
 
 {% if schema.relationships -%}
