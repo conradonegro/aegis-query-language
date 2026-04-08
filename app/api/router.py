@@ -191,6 +191,7 @@ async def _resolve_session(
                 select(ChatSession).where(
                     ChatSession.session_id == session_uuid,
                     ChatSession.tenant_id == tenant_id,
+                    ChatSession.user_id == user_id,
                 )
             )
             chat_session = res.scalar_one_or_none()

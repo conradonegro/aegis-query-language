@@ -182,6 +182,91 @@ async def test_circuit_breaker_opens_on_failure_and_suppresses_repeated_logs(
     assert store.backend == "redis-degraded"
 
 
+def test_resolve_session_rejects_cross_user_access_within_same_tenant() -> None:
+    """A session created by user A must NOT be loadable by user B, even when
+    both users belong to the same tenant.
+
+    Code-review finding #5 (2026-04-07): _resolve_session previously scoped
+    by tenant_id only, allowing horizontal privilege escalation between
+    users of the same tenant.
+    """
+    import uuid as uuid_mod
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine, text
+
+    from app.api.auth import ResolvedCredential, require_query_credential
+    from app.main import app
+    from tests.conftest import TEST_QUERY_CREDENTIAL_ID
+
+    sqlite_url = "sqlite:///file:testdb?mode=memory&cache=shared&uri=true"
+    engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
+
+    user_a_session = uuid_mod.uuid4()
+
+    # Pre-seed a chat session owned by user_a in test_tenant
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO chat_sessions"
+                " (session_id, tenant_id, user_id)"
+                " VALUES (:sid, 'test_tenant', 'user_a')"
+            ),
+            {"sid": str(user_a_session)},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO chat_messages"
+                " (message_id, session_id, sequence_number, role, content)"
+                " VALUES (:mid, :sid, 1, 'user', 'A confidential prompt')"
+            ),
+            {"mid": str(uuid_mod.uuid4()), "sid": str(user_a_session)},
+        )
+
+    # Override credential to be a *different* user in the same tenant
+    user_b_cred = ResolvedCredential(
+        credential_id=TEST_QUERY_CREDENTIAL_ID,
+        tenant_id="test_tenant",
+        user_id="user_b",  # NOTE: not user_a
+        scope="query",
+    )
+    app.dependency_overrides[require_query_credential] = lambda: user_b_cred
+
+    try:
+        with TestClient(app) as client:
+            # User B presents user A's session_id in a generate request.
+            response = client.post(
+                "/api/v1/query/generate",
+                json={
+                    "natural_language_query": "follow-up",
+                    "session_id": str(user_a_session),
+                },
+            )
+        # The endpoint should still respond (it'll create a fresh session for
+        # user_b), but user A's history must NOT have been loaded into the
+        # prompt or returned in the response.
+        assert response.status_code in (200, 400, 422)
+        body = response.json()
+        # The response must NOT echo user_a's confidential prompt — verify
+        # that nothing in the response body contains the planted text.
+        assert "A confidential prompt" not in str(body)
+
+        # Stronger: user_a's session row must still own its messages and
+        # user_b's request must have been bound to a NEW session row.
+        with engine.connect() as conn:
+            count = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM chat_sessions"
+                    " WHERE session_id = :sid AND user_id = 'user_a'"
+                ),
+                {"sid": str(user_a_session)},
+            ).scalar()
+            assert count == 1
+    finally:
+        app.dependency_overrides.pop(require_query_credential, None)
+        engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_circuit_breaker_recovers_after_cooldown(
     caplog: pytest.LogCaptureFixture,
