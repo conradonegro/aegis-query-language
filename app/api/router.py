@@ -167,6 +167,78 @@ def get_utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+async def _rebuild_rag_index_for_tenant(
+    app: Any,
+    tenant_id: str,
+    artifact_blob: dict[str, Any],
+    artifact_hash: str,
+    artifact_version_id: str,
+    column_values: dict[str, list[str]],
+) -> None:
+    """Rebuild the RAG vector store for a tenant, serialized via the
+    per-tenant reload lock.
+
+    This is the compile-path counterpart to app.reload._perform_reload —
+    both paths take the same app.state.reload_locks[tenant_id] and
+    re-check loaded_artifact_hashes inside the lock so concurrent paths
+    skip naturally instead of double-rebuilding.
+
+    Extracted to a module-level function (rather than living as an
+    inner function inside compile_metadata_version) so the lock
+    behavior is testable in isolation — see
+    tests/test_reload.py::test_rebuild_helper_and_perform_reload_serialize_via_lock.
+    """
+    # Lazy-imported to avoid the circular import that previously kept
+    # this logic inline in compile_metadata_version.
+    from app.rag.builder import RagDivergenceError, build_from_artifact
+
+    locks = app.state.reload_locks
+    if tenant_id not in locks:
+        locks[tenant_id] = asyncio.Lock()
+
+    async with locks[tenant_id]:
+        # Idempotency: if a concurrent pub/sub echo already rebuilt the
+        # index for this artifact, skip. Checked inside the lock so
+        # both paths see a consistent loaded_artifact_hashes view.
+        if app.state.loaded_artifact_hashes.get(tenant_id) == artifact_hash:
+            logger.info(
+                "rag_rebuild: tenant %s already at artifact %s — skipping"
+                " (concurrent path won the race)",
+                tenant_id, artifact_hash[:12],
+            )
+            return
+
+        try:
+            new_store = await build_from_artifact(
+                artifact_blob=artifact_blob,
+                version_id=artifact_version_id,
+                tenant_id=tenant_id,
+                artifact_version=artifact_hash,
+                column_values=column_values,
+            )
+            app.state.vector_stores[tenant_id] = new_store
+            app.state.compiler.set_vector_store(new_store, tenant_id)
+            # Advance the loaded hash only after BOTH schema and RAG
+            # are live for this artifact (Task 2.2 contract).
+            app.state.loaded_artifact_hashes[tenant_id] = artifact_hash
+            logger.info(
+                "rag_rebuild: tenant %s reloaded to artifact %s",
+                tenant_id, artifact_hash[:12],
+            )
+        except RagDivergenceError:
+            logger.warning(
+                "rag_rebuild: divergence for tenant %s — index not updated;"
+                " loaded hash NOT advanced (retry on next reload)",
+                tenant_id,
+            )
+        except Exception:
+            logger.exception(
+                "rag_rebuild: failed for tenant %s — loaded hash NOT"
+                " advanced (retry on next reload)",
+                tenant_id,
+            )
+
+
 async def _resolve_session(
     payload_session_id: str | None,
     session: AsyncSession,
@@ -934,7 +1006,6 @@ async def compile_metadata_version(
 ) -> MetadataCompileResponse:
     """Compile an active metadata version into a runtime Aegis Registry artifact."""
     from app.api.compiler import MixedTenantArtifactError
-    from app.rag.builder import RagDivergenceError, build_from_artifact
     from app.steward.loader import RegistryLoader
 
     # Ownership check: verify this version belongs to the requesting tenant
@@ -1003,41 +1074,26 @@ async def compile_metadata_version(
                 version_id, val_session
             )
 
-        async def _rebuild_index() -> None:
-            try:
-                new_store = await build_from_artifact(
-                    artifact_blob=artifact.artifact_blob,
-                    version_id=str(version_id),
+        if wait_for_index:
+            await _rebuild_rag_index_for_tenant(
+                app=request.app,
+                tenant_id=cred.tenant_id,
+                artifact_blob=artifact.artifact_blob,
+                artifact_hash=artifact.artifact_hash,
+                artifact_version_id=str(version_id),
+                column_values=column_values,
+            )
+        else:
+            _ = asyncio.create_task(
+                _rebuild_rag_index_for_tenant(
+                    app=request.app,
                     tenant_id=cred.tenant_id,
-                    artifact_version=artifact.artifact_hash,
+                    artifact_blob=artifact.artifact_blob,
+                    artifact_hash=artifact.artifact_hash,
+                    artifact_version_id=str(version_id),
                     column_values=column_values,
                 )
-                request.app.state.vector_stores[cred.tenant_id] = new_store
-                request.app.state.compiler.set_vector_store(
-                    new_store, cred.tenant_id
-                )
-                # Advance hash only after both schema and RAG are live.
-                request.app.state.loaded_artifact_hashes[cred.tenant_id] = (
-                    artifact.artifact_hash
-                )
-            except RagDivergenceError:
-                logger.warning(
-                    "RAG divergence detected for version %s — "
-                    "index not updated; loaded hash NOT advanced"
-                    " (retry on next reload).",
-                    version_id,
-                )
-            except Exception:
-                logger.exception(
-                    "RAG index rebuild failed for version %s — "
-                    "loaded hash NOT advanced (retry on next reload)",
-                    version_id,
-                )
-
-        if wait_for_index:
-            await _rebuild_index()
-        else:
-            _ = asyncio.create_task(_rebuild_index())
+            )
 
     return MetadataCompileResponse(
         artifact_id=str(artifact.artifact_id),
