@@ -506,7 +506,10 @@ def _parse_args() -> argparse.Namespace:
         "--concurrency",
         type=int,
         default=2,
-        help="Max in-flight questions (default: 2; keep low for multi-database runs to avoid 429s)",
+        help=(
+            "Max in-flight questions (default: 2; keep low for"
+            " multi-database runs to avoid 429s)"
+        ),
     )
     parser.add_argument(
         "--limit",

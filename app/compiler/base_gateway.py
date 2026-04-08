@@ -71,6 +71,66 @@ class RemoteLLMGateway(ABC):
         """Return (prompt_tokens, completion_tokens) from the provider response."""
         ...
 
+    async def _handle_rate_limit(
+        self, response: httpx.Response, attempt: int
+    ) -> None:
+        """Sleep for the appropriate backoff after a 429, or raise if the
+        retry budget is exhausted.
+
+        Extracted from `generate` so the main loop stays under the C901
+        complexity threshold.
+        """
+        if attempt == _LLM_RETRY_COUNT:
+            raise LLMGenerationError(
+                f"Rate limited by {self._provider_name} after"
+                f" {_LLM_RETRY_COUNT} retries.",
+                raw_response=response.text,
+            )
+
+        retry_after_hdr = response.headers.get("Retry-After")
+        delay = _LLM_RETRY_BASE_DELAY * (2 ** attempt)
+        if retry_after_hdr:
+            try:
+                delay = float(retry_after_hdr)
+            except ValueError:
+                pass  # fall through to exponential backoff already set above
+        delay += random.uniform(0.0, 1.0)  # jitter
+        logger.warning(
+            "Rate limited (429) by %s — retrying in %.1fs"
+            " (attempt %d/%d)",
+            self._provider_name,
+            delay,
+            attempt + 1,
+            _LLM_RETRY_COUNT,
+        )
+        await asyncio.sleep(delay)
+
+    def _decode_response(self, response: httpx.Response) -> dict[str, Any]:
+        """Raise-for-status + JSON decode, normalizing httpx errors into
+        LLMGenerationError. Extracted to keep `generate` under C901."""
+        try:
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPStatusError as e:
+            raise LLMGenerationError(
+                f"HTTP error communicating with {self._provider_name}: {e}"
+            ) from e
+        return data  # type: ignore[no-any-return]
+
+    def _validate_json_payload(self, message_content: str) -> None:
+        """Raise LLMGenerationError if `message_content` is not valid JSON
+        (only when strict_json is enabled)."""
+        if not self.strict_json:
+            return
+        try:
+            json.loads(message_content)
+        except json.JSONDecodeError as e:
+            raise LLMGenerationError(
+                f"{self._provider_name} returned invalid JSON. "
+                f"Raw: {message_content[:100]}...",
+                raw_response=message_content,
+            ) from e
+
     async def generate(self, prompt: PromptEnvelope) -> LLMResult:
         api_key = self.secrets.get_api_key(self._provider_name)
         if not api_key:
@@ -99,52 +159,13 @@ class RemoteLLMGateway(ABC):
                 ) from e
 
             if response.status_code == 429:
-                if attempt == _LLM_RETRY_COUNT:
-                    raise LLMGenerationError(
-                        f"Rate limited by {self._provider_name} after"
-                        f" {_LLM_RETRY_COUNT} retries.",
-                        raw_response=response.text,
-                    )
-                retry_after_hdr = response.headers.get("Retry-After")
-                if retry_after_hdr:
-                    try:
-                        delay = float(retry_after_hdr)
-                    except ValueError:
-                        delay = _LLM_RETRY_BASE_DELAY * (2 ** attempt)
-                else:
-                    delay = _LLM_RETRY_BASE_DELAY * (2 ** attempt)
-                delay += random.uniform(0.0, 1.0)  # jitter
-                logger.warning(
-                    "Rate limited (429) by %s — retrying in %.1fs"
-                    " (attempt %d/%d)",
-                    self._provider_name,
-                    delay,
-                    attempt + 1,
-                    _LLM_RETRY_COUNT,
-                )
-                await asyncio.sleep(delay)
+                await self._handle_rate_limit(response, attempt)
                 continue
 
-            try:
-                response.raise_for_status()
-                data = response.json()
-            except httpx.HTTPStatusError as e:
-                raise LLMGenerationError(
-                    f"HTTP error communicating with {self._provider_name}: {e}"
-                ) from e
-
+            data = self._decode_response(response)
             latency_ms = (time.perf_counter() - start_time) * 1000.0
             message_content = self._extract_content(data)
-
-            if self.strict_json:
-                try:
-                    json.loads(message_content)
-                except json.JSONDecodeError as e:
-                    raise LLMGenerationError(
-                        f"{self._provider_name} returned invalid JSON. "
-                        f"Raw: {message_content[:100]}...",
-                        raw_response=message_content,
-                    ) from e
+            self._validate_json_payload(message_content)
 
             prompt_tokens, completion_tokens = self._extract_usage(data)
             return LLMResult(
