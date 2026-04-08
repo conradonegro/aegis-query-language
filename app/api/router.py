@@ -61,6 +61,7 @@ from app.api.models import (
     VersionStatusUpdateRequest,
 )
 from app.audit import QueryAuditEvent
+from app.audit.append import is_activation_collision, is_audit_chain_collision
 from app.audit.chaining import compute_audit_row_hash, get_canonical_json
 from app.compiler.backend_hints import BackendHintContext, build_backend_hints
 from app.compiler.engine import CompilerEngine
@@ -599,6 +600,158 @@ _TRANSITION_AUDIT_ACTION: dict[tuple[str, str], str] = {
 }
 
 
+async def _attempt_status_transition_commit(
+    *,
+    session: AsyncSession,
+    version: MetadataVersion,
+    version_id: uuid.UUID,
+    payload: VersionStatusUpdateRequest,
+    cred: ResolvedCredential,
+    previous_status: str,
+    existing_active: MetadataVersion | None,
+    cached_existing_active_id: uuid.UUID | None,
+    secrets_mgr: Any,
+) -> None:
+    """Run one audit-chain commit attempt for update_version_status.
+
+    Reads the chain tip, applies version mutations, builds the optional
+    archival audit row + the main transition audit row, and commits. On
+    IntegrityError the caller is responsible for rollback + dispatch via
+    `is_audit_chain_collision` / `is_activation_collision`.
+
+    Extracted from update_version_status so that function stays under
+    the C901 complexity threshold after the audit-chain retry loop was
+    added (review finding #4). The chain-tip SELECT must run BEFORE any
+    ORM mutations so default autoflush cannot fire the partial unique
+    index uq_one_active_version_per_tenant during the SELECT — see the
+    comments in update_version_status for the empirical justification.
+    """
+    # 1. READ chain tip BEFORE any ORM mutations.
+    last_audit_res = await session.execute(
+        select(MetadataAudit)
+        .order_by(
+            MetadataAudit.timestamp.desc(),
+            MetadataAudit.audit_id.desc(),
+        )
+        .limit(1)
+    )
+    last_row = last_audit_res.scalar_one_or_none()
+    chain_tip = last_row.row_hash if last_row else ""
+
+    # 2. NOW apply version mutations. Assignments to expired ORM
+    #    attributes are safe; only reads would crash.
+    version.status = payload.status
+    if payload.reason:
+        version.change_reason = payload.reason
+    if payload.status == "active":
+        version.approved_by = cred.user_id
+        version.approved_at = datetime.now(UTC)
+    if existing_active is not None:
+        existing_active.status = "archived"
+
+    # 3. Optional archival audit row, threading the chain tip forward.
+    if cached_existing_active_id is not None:
+        archive_ts = datetime.now(UTC)
+        archive_payload = {
+            "event": "status_transition",
+            "version_id": str(cached_existing_active_id),
+            "from_status": "active",
+            "to_status": "archived",
+            "reason": "Superseded by activation of a newer version",
+            "status": "SUCCESS",
+        }
+        archive_canonical = get_canonical_json(archive_payload)
+        archive_row_hash = compute_audit_row_hash(
+            chain_tip, archive_canonical, archive_ts.isoformat()
+        )
+        session.add(
+            MetadataAudit(
+                version_id=cached_existing_active_id,
+                actor=cred.user_id,
+                action="revoke",
+                payload=archive_payload,
+                timestamp=archive_ts,
+                previous_hash=chain_tip,
+                row_hash=archive_row_hash,
+                key_id=secrets_mgr.get_current_signing_key_id(),
+                credential_id=cred.credential_id,
+            )
+        )
+        chain_tip = archive_row_hash
+
+    # 4. Main transition audit row.
+    audit_timestamp = datetime.now(UTC)
+    audit_action = _TRANSITION_AUDIT_ACTION[(previous_status, payload.status)]
+    audit_payload_data = {
+        "event": "status_transition",
+        "version_id": str(version_id),
+        "from_status": previous_status,
+        "to_status": payload.status,
+        "reason": payload.reason,
+        "status": "SUCCESS",
+    }
+    audit_canonical = get_canonical_json(audit_payload_data)
+    new_row_hash = compute_audit_row_hash(
+        chain_tip, audit_canonical, audit_timestamp.isoformat()
+    )
+    session.add(
+        MetadataAudit(
+            version_id=version_id,
+            actor=cred.user_id,
+            action=audit_action,
+            payload=audit_payload_data,
+            timestamp=audit_timestamp,
+            previous_hash=chain_tip,
+            row_hash=new_row_hash,
+            key_id=secrets_mgr.get_current_signing_key_id(),
+            credential_id=cred.credential_id,
+        )
+    )
+
+    await session.commit()
+
+
+def _dispatch_status_transition_commit_failure(
+    exc: IntegrityError, attempt: int
+) -> None:
+    """Translate an IntegrityError from a status-transition commit into
+    either an HTTPException (terminal) or silent return (retry).
+
+    - Activation collision → 409, no retry.
+    - Audit-chain collision → silent return for retry; on the final
+      attempt, 503.
+    - Anything else → re-raise unchanged.
+
+    Extracted from update_version_status to keep the orchestrating
+    function under the C901 complexity threshold after the retry loop
+    was added (review finding #4).
+    """
+    if is_activation_collision(exc):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Activation conflict: another version became"
+                " active concurrently. Retry the request after"
+                " verifying the current active version."
+            ),
+        ) from exc
+
+    if is_audit_chain_collision(exc):
+        if attempt == 4:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Audit chain contention: failed to append"
+                    " after retries. Try again."
+                ),
+            ) from exc
+        return  # caller's loop should `continue` to the next attempt
+
+    # Any other IntegrityError is a genuine data problem the caller
+    # should see unchanged — do NOT wrap it in a contention message.
+    raise exc
+
+
 @api_router.patch(
     "/metadata/versions/{version_id}/status",
     response_model=ProtocolMetadataVersion,
@@ -654,15 +807,24 @@ async def update_version_status(
 
     previous_status = version.status
 
+    # CACHED SCALARS (reviewer pass 3, findings #1 + #3): cache the
+    # ORM scalar reads we'll need across retries BEFORE the loop.
+    # AsyncSession.rollback() expires loaded attributes; reading
+    # version.created_at or existing_active.version_id on attempt 2
+    # would crash with MissingGreenlet. Verified empirically against
+    # an in-memory aiosqlite session.
+    cached_version_created_at_iso = version.created_at.isoformat()
+
     # ------------------------------------------------------------------
-    # Pre-activation checks (active transition only)
+    # Pre-activation snapshot (runs once; doesn't depend on retry state)
     # ------------------------------------------------------------------
-    # These must run before any mutations so that failures are clean 422s
-    # with no partial state written to the DB.
+    # existing_active is a snapshot of the current DB state. If another
+    # transaction modifies it concurrently, the
+    # uq_one_active_version_per_tenant index on commit will detect the
+    # race and we surface a 409.
     existing_active: MetadataVersion | None = None
+    cached_existing_active_id: uuid.UUID | None = None
     if payload.status == "active":
-        # Locate any currently active version for this tenant so it can be
-        # atomically archived in the same transaction below.
         existing_active_res = await session.execute(
             select(MetadataVersion).where(
                 MetadataVersion.tenant_id == cred.tenant_id,
@@ -671,117 +833,60 @@ async def update_version_status(
             )
         )
         existing_active = existing_active_res.scalars().first()
-
-        # Approval timestamps — only meaningful for the active transition;
-        # placed here to keep both active-only mutations in one branch.
-        version.approved_by = cred.user_id
-        version.approved_at = datetime.now(UTC)
-
-    # Apply status change
-    version.status = payload.status
-    if payload.reason:
-        version.change_reason = payload.reason
-
-    # ------------------------------------------------------------------
-    # WORM audit chain
-    # ------------------------------------------------------------------
-    # Fetch the chain tip once; it will be threaded through the optional
-    # implicit archival record and then the main transition record so that
-    # both entries form a valid contiguous chain within this transaction.
-    last_audit_res = await session.execute(
-        select(MetadataAudit)
-        .order_by(MetadataAudit.timestamp.desc(), MetadataAudit.audit_id.desc())
-        .limit(1)
-    )
-    last_row = last_audit_res.scalar_one_or_none()
-    chain_tip = last_row.row_hash if last_row else ""
+        if existing_active is not None:
+            # Cache the ID before the loop. existing_active.version_id
+            # would expire on rollback and crash on attempt 2 when the
+            # archival audit row is built.
+            cached_existing_active_id = existing_active.version_id
 
     secrets_mgr = get_secrets_manager()
 
-    # If an old active version is being superseded, archive it first and add
-    # its own WORM audit entry before the main activation entry.
-    if existing_active is not None:
-        existing_active.status = "archived"
-
-        archive_ts = datetime.now(UTC)
-        archive_payload = {
-            "event": "status_transition",
-            "version_id": str(existing_active.version_id),
-            "from_status": "active",
-            "to_status": "archived",
-            "reason": "Superseded by activation of a newer version",
-            "status": "SUCCESS",
-        }
-        archive_canonical = get_canonical_json(archive_payload)
-        archive_row_hash = compute_audit_row_hash(
-            chain_tip, archive_canonical, archive_ts.isoformat()
-        )
-        session.add(
-            MetadataAudit(
-                version_id=existing_active.version_id,
-                actor=cred.user_id,
-                action="revoke",
-                payload=archive_payload,
-                timestamp=archive_ts,
-                previous_hash=chain_tip,
-                row_hash=archive_row_hash,
-                key_id=secrets_mgr.get_current_signing_key_id(),
-                credential_id=cred.credential_id,
+    # ------------------------------------------------------------------
+    # WORM audit chain — with scoped retry on audit-chain contention
+    # ------------------------------------------------------------------
+    # Three possible commit outcomes and how we handle each:
+    #   1. success                              → return 200
+    #   2. uq_audit_previous_hash_nonempty      → retry (rollback + rebuild)
+    #   3. uq_one_active_version_per_tenant     → 409 to client, no retry
+    #   4. any other IntegrityError             → propagate unchanged (5xx)
+    #
+    # Every version-mutation lives inside _attempt_status_transition_commit
+    # because session.rollback() reverts all attribute assignments on
+    # managed objects. If approved_by/approved_at were set outside the
+    # loop, a successful retry would activate the version with NULL
+    # approval metadata (reviewer pass 2 finding #3).
+    for attempt in range(5):
+        try:
+            await _attempt_status_transition_commit(
+                session=session,
+                version=version,
+                version_id=version_id,
+                payload=payload,
+                cred=cred,
+                previous_status=previous_status,
+                existing_active=existing_active,
+                cached_existing_active_id=cached_existing_active_id,
+                secrets_mgr=secrets_mgr,
             )
-        )
-        # Thread the hash forward: the activation record chains from here.
-        chain_tip = archive_row_hash
+            # Success: build the response from cached/route-level values
+            # rather than reading version.* (keeps retry-vs-success paths
+            # symmetric and prevents the return path from regressing if
+            # the session config ever changes).
+            return ProtocolMetadataVersion(
+                version_id=str(version_id),
+                status=payload.status,
+                created_at=cached_version_created_at_iso,
+            )
+        except IntegrityError as exc:
+            await session.rollback()
+            _dispatch_status_transition_commit_failure(exc, attempt)
+            # If the dispatcher returned silently, we should retry.
 
-    audit_timestamp = datetime.now(UTC)
-    audit_action = _TRANSITION_AUDIT_ACTION[(previous_status, payload.status)]
-    audit_payload_data = {
-        "event": "status_transition",
-        "version_id": str(version_id),
-        "from_status": previous_status,
-        "to_status": payload.status,
-        "reason": payload.reason,
-        "status": "SUCCESS",
-    }
-
-    audit_canonical = get_canonical_json(audit_payload_data)
-    new_row_hash = compute_audit_row_hash(
-        chain_tip, audit_canonical, audit_timestamp.isoformat()
-    )
-
-    session.add(
-        MetadataAudit(
-            version_id=version_id,
-            actor=cred.user_id,
-            action=audit_action,
-            payload=audit_payload_data,
-            timestamp=audit_timestamp,
-            previous_hash=chain_tip,
-            row_hash=new_row_hash,
-            key_id=secrets_mgr.get_current_signing_key_id(),
-            credential_id=cred.credential_id,
-        )
-    )
-
-    # Atomic commit: status change(s) + audit record(s) together.
-    # On PostgreSQL, the partial unique index uq_one_active_version_per_tenant
-    # acts as a final backstop against concurrent activations — an IntegrityError
-    # here means two callers raced; return 409 so the client can retry.
-    try:
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Activation conflict: another version became active concurrently. "
-                "Retry the request after verifying the current active version."
-            ),
-        ) from exc
-
-    return ProtocolMetadataVersion(
-        version_id=str(version.version_id),
-        status=version.status,
-        created_at=version.created_at.isoformat(),
+    # Unreachable in practice — the loop either returns or raises on
+    # every path — but keeps mypy happy.
+    raise HTTPException(
+        status_code=500,
+        detail="Audit append loop exited without committing.",
     )
 
 
