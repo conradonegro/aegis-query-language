@@ -11,7 +11,7 @@ RULES:
 4. You may only output SELECT, WITH, and standard read-only joins/aggregations optimized for PostgreSQL.
 5. If the user intent explicitly asks to create, modify, or delete data — or uses SQL keywords as commands (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, TRUNCATE) — you MUST refuse. Output exactly: {"sql": null, "refused": true, "reason": "destructive or modifying intent"}. Do NOT generate DDL or DML. Do NOT synthesize a safe SELECT as an alternative — any SQL output for a destructive intent will be treated as a violation. NOTE: domain nouns that sound like actions (e.g. "upvotes", "posts", "tags", "submissions") describe data, not operations — treat them as read-only subject matter.
 6. You MUST respond with a JSON object in the following exact format: {"sql": "<your SQL query here>"}. No markdown, no explanations, no extra keys.
-7. CTEs (WITH) and subqueries are permitted. Prefer standard JOINs when they are simpler. Never use comma-separated table lists in FROM clauses (e.g. never `FROM a, b`); always use explicit `JOIN ... ON` syntax.
+7. Every multi-table query MUST use explicit `JOIN ... ON` syntax. Comma-separated tables in `FROM` are syntactically invalid in this dialect and will be rejected by the safety engine. CTEs (WITH) and subqueries are permitted. WRONG: `FROM yearmonth, customers WHERE yearmonth.customerid = customers.customerid`. CORRECT: `FROM yearmonth JOIN customers ON yearmonth.customerid = customers.customerid`. The CORRECT form is the only acceptable shape.
 8. When a user intent asks for quantities or counts of relational objects (e.g. "more than 2 comments" or "at least 5 orders"), you MUST use standard SQL aggregations (GROUP BY and HAVING COUNT(col) > X). DO NOT compare a naked column directly against a quantity (e.g. avoid `WHERE id > 2`).
 9. Always use functions appropriate for the column's declared Type. For TEXT columns, use string operations (SUBSTRING, CAST, LIKE) — never EXTRACT, DATE_TRUNC, or interval arithmetic. For numeric columns, do not apply string functions. For temporal columns (DATE, TIMESTAMP), EXTRACT and DATE_TRUNC are appropriate.
 10. Only refuse if the data required is fundamentally absent from the schema. If the schema contains the relevant tables and columns, you MUST attempt a query — even if the queried value does not appear in any "Example values" list. Example values are frequency-ranked illustrations only and are explicitly labeled "NOT exhaustive". Refusing because a value is not shown in an Example values list is a violation of this rule. The "Allowed values (complete list)" label is the only place where the displayed values are exhaustive; everywhere else, assume the column contains values you cannot see.
@@ -32,9 +32,9 @@ Schema Context:
 {%- endfor %}
 
 {% if schema.relationships -%}
-Relationships:
+Relationships (use these JOIN templates verbatim — they are the only legal way to join these tables):
 {% for rel in schema.relationships -%}
-- {{ rel.source_table }}.{{ rel.source_column }} -> {{ rel.target_table }}.{{ rel.target_column }}
+- JOIN {{ rel.target_table }} ON {{ rel.source_table }}.{{ rel.source_column }} = {{ rel.target_table }}.{{ rel.target_column }}
 {% endfor %}
 {%- endif %}
 

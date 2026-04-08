@@ -190,3 +190,87 @@ def test_prompt_omits_value_block_when_no_samples() -> None:
         "Allowed values (complete list, case-sensitive):"
         not in envelope.system_instruction
     )
+
+
+def test_prompt_relationships_render_as_join_templates() -> None:
+    """Relationships must render as ready-to-paste JOIN templates so the LLM
+    is biased toward explicit JOIN syntax over comma-separated FROM clauses.
+    """
+    from app.steward import AbstractRelationshipDef
+
+    builder = PromptBuilder()
+    intent = UserIntent(natural_language_query="test")
+    schema = FilteredSchema(
+        version="1.0",
+        tables=[
+            AbstractTableDef(
+                alias="yearmonth",
+                description="Monthly billing periods",
+                physical_target="public.yearmonth",
+                columns=[
+                    AbstractColumnDef(
+                        alias="customerid",
+                        description="FK",
+                        data_type="integer",
+                        safety=SafetyClassification(
+                            join_participation_allowed=True
+                        ),
+                        physical_target="customerid",
+                    ),
+                ],
+            ),
+            AbstractTableDef(
+                alias="customers",
+                description="Customers",
+                physical_target="public.customers",
+                columns=[
+                    AbstractColumnDef(
+                        alias="customerid",
+                        description="PK",
+                        data_type="integer",
+                        safety=SafetyClassification(
+                            join_participation_allowed=True
+                        ),
+                        physical_target="customerid",
+                    ),
+                ],
+            ),
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="yearmonth",
+                source_column="customerid",
+                target_table="customers",
+                target_column="customerid",
+            )
+        ],
+        omitted_columns={},
+    )
+    hints = PromptHints(column_hints=[])
+    envelope = builder.build_prompt(intent, schema, hints, chat_history=[])
+
+    assert (
+        "JOIN customers ON yearmonth.customerid = customers.customerid"
+        in envelope.system_instruction
+    )
+    # The arrow form must NOT appear — it was the misleading old format
+    assert (
+        "yearmonth.customerid -> customers.customerid"
+        not in envelope.system_instruction
+    )
+
+
+def test_prompt_rule_7_contains_counter_example() -> None:
+    """Rule 7 must contain the concrete WRONG/CORRECT counter-example pair."""
+    builder = PromptBuilder()
+    intent = UserIntent(natural_language_query="test")
+    schema = FilteredSchema(
+        version="1.0", tables=[], relationships=[], omitted_columns={}
+    )
+    hints = PromptHints(column_hints=[])
+    envelope = builder.build_prompt(intent, schema, hints, chat_history=[])
+
+    assert "WRONG:" in envelope.system_instruction
+    assert "CORRECT:" in envelope.system_instruction
+    assert "FROM yearmonth, customers" in envelope.system_instruction
+    assert "FROM yearmonth JOIN customers" in envelope.system_instruction
