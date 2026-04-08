@@ -406,25 +406,25 @@ class DeterministicTranslator:
     def _validate_temporal_expressions(
         self, tree: exp.Expression, column_datatypes: dict[int, str]
     ) -> None:
-        """Validates EXTRACT and INTERVAL nodes after physical resolution."""
-        temporal_types = {"timestamp", "date", "datetime", "time", "interval"}
+        """Validates EXTRACT and INTERVAL nodes after physical resolution.
+
+        EXTRACT requires a temporal *expression*, which may be either a bare
+        column (whose datatype was recorded during the AST walk) or a CAST
+        whose target type is temporal. Other forms are rejected at compile
+        time so the LLM gets a useful error rather than a runtime crash.
+        """
         for extract_node in tree.find_all(exp.Extract):
             source = extract_node.expression
-            if not isinstance(source, exp.Column):
-                raise UnsafeExpressionError(
-                    f"EXTRACT numeric target must be natively bound to a column,"
-                    f" found '{type(source).__name__}'."
-                )
             if any(extract_node.find_all(exp.Subquery, exp.Select, exp.Window)):
                 raise UnsafeExpressionError(
                     "Nested subqueries or window constructs are strictly blocked"
                     " inside EXTRACT."
                 )
-            dtype = column_datatypes.get(id(source), "")
-            if not any(t in dtype for t in temporal_types):
+            if not self._resolves_to_temporal(source, column_datatypes):
                 raise UnsafeExpressionError(
-                    f"EXTRACT operations are only permitted on temporal columns."
-                    f" Resolved column '{source.name}' is of type '{dtype}'."
+                    f"EXTRACT requires a temporal expression; got"
+                    f" '{type(source).__name__}' that does not resolve to a"
+                    f" temporal type."
                 )
         for interval_node in tree.find_all(exp.Interval):
             if any(interval_node.find_all(exp.Subquery, exp.Select, exp.Window)):
@@ -432,6 +432,29 @@ class DeterministicTranslator:
                     "Nested subqueries or window constructs are strictly blocked"
                     " inside INTERVAL."
                 )
+
+    def _resolves_to_temporal(
+        self, expr: exp.Expression, column_datatypes: dict[int, str]
+    ) -> bool:
+        """Returns True iff `expr` is guaranteed to evaluate to a temporal value.
+
+        Recognized forms:
+          - exp.Column whose resolved datatype contains a temporal type token
+          - exp.Cast whose target DataType is one of the temporal types
+
+        Not recognized (returns False — caller raises): arithmetic, anonymous
+        function calls, literals, parameters, anything else.
+        """
+        if isinstance(expr, exp.Column):
+            dtype = column_datatypes.get(id(expr), "")
+            return any(t in dtype for t in self._TEMPORAL_TYPES)
+        if isinstance(expr, exp.Cast):
+            target = expr.to
+            if not isinstance(target, exp.DataType):
+                return False
+            target_name = target.this.name.lower() if target.this else ""
+            return target_name in self._TEMPORAL_TYPES
+        return False
 
     # ------------------------------------------------------------------
     # Literal parameterization and row-limit enforcement

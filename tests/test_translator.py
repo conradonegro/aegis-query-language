@@ -525,6 +525,72 @@ def test_cte_prefixed_alias_only_output_column_resolves_without_error() -> None:
 
 
 # ------------------------------------------------------------------
+# BUG-6 — EXTRACT on CAST expression
+# ------------------------------------------------------------------
+
+def _make_schema_with_text_date() -> RegistrySchema:
+    """Schema with a TEXT column that stores ISO date strings.
+
+    Models the debit_card_specializing.transactions_1k.date scenario where the
+    underlying column is TEXT but contains parseable date strings, requiring
+    a CAST before temporal extraction.
+    """
+    return RegistrySchema(
+        version="v1.0.0",
+        tables=[
+            AbstractTableDef(
+                alias="txns",
+                description="Transactions with text-encoded dates",
+                physical_target="public.transactions",
+                columns=[
+                    AbstractColumnDef(
+                        alias="txn_date",
+                        description="ISO date stored as text",
+                        data_type="text",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True
+                        ),
+                        physical_target="txn_date",
+                    ),
+                    AbstractColumnDef(
+                        alias="amount",
+                        description="Numeric amount",
+                        data_type="numeric",
+                        safety=SafetyClassification(allowed_in_select=True),
+                        physical_target="amount",
+                    ),
+                ],
+            )
+        ],
+        relationships=[],
+    )
+
+
+def test_extract_year_from_cast_text_to_date_passes() -> None:
+    """EXTRACT(YEAR FROM CAST(text_col AS DATE)) must be permitted.
+
+    The CAST target type is DATE, so the resulting expression IS temporal,
+    regardless of the source column's declared type. The temporal validator
+    must inspect the cast target rather than insisting on a bare Column.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT EXTRACT(YEAR FROM CAST(txn_date AS DATE)) AS yr"
+            " FROM txns"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+    assert "EXTRACT" in result.sql.upper()
+
+
+# ------------------------------------------------------------------
 # BUG-1 — Temporal literal parameterization
 # ------------------------------------------------------------------
 
