@@ -83,6 +83,7 @@ def _build_table_dict(
             "rag_limit": col.rag_limit,
             "rag_values_hash": _compute_rag_values_hash(active_values),
             "sample_values": col.sample_values or [],
+            "sample_values_exhaustive": col.sample_values_exhaustive,
         })
 
     return tbl_dict
