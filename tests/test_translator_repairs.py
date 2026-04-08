@@ -306,7 +306,7 @@ def test_extract_invalid_non_temporal_column(
         )
     )
     with pytest.raises(
-        UnsafeExpressionError, match="only permitted on temporal columns"
+        UnsafeExpressionError, match="does not resolve to a temporal"
     ):
         translator.translate(ast, mock_schema)
 
@@ -319,7 +319,7 @@ def test_extract_invalid_literal_source(
         )
     )
     with pytest.raises(
-        UnsafeExpressionError, match="must be natively bound to a column"
+        UnsafeExpressionError, match="does not resolve to a temporal"
     ):
         translator.translate(ast, mock_schema)
 
@@ -332,7 +332,11 @@ def test_extract_nested_subquery_fails(
         )
     )
     with pytest.raises(
-        UnsafeExpressionError, match="must be natively bound to a column"
+        UnsafeExpressionError,
+        match=(
+            "Nested subqueries or window constructs are strictly blocked"
+            " inside EXTRACT"
+        ),
     ):
         translator.translate(ast, mock_schema)
 

@@ -4,7 +4,11 @@ import sqlglot
 from app.compiler import AbstractQuery
 from app.compiler.models import ValidatedAST
 from app.compiler.parser import SQLParser
-from app.compiler.safety import SafetyEngine, SafetyViolationError
+from app.compiler.safety import (
+    SafetyEngine,
+    SafetyViolationError,
+    UnsafeExpressionError,
+)
 from app.compiler.translator import DeterministicTranslator, TranslationError
 from app.steward import (
     AbstractColumnDef,
@@ -588,6 +592,96 @@ def test_extract_year_from_cast_text_to_date_passes() -> None:
     result = translator.translate(validated, schema, abstract_query_hash="h")
     assert result is not None
     assert "EXTRACT" in result.sql.upper()
+
+
+def test_extract_year_from_cast_text_to_text_rejected() -> None:
+    """EXTRACT(YEAR FROM CAST(text_col AS TEXT)) must be rejected.
+
+    The cast target is TEXT, not a temporal type, so the resulting
+    expression is not temporal. PostgreSQL would reject this at runtime;
+    we reject it at compile time for a better error message.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT EXTRACT(YEAR FROM CAST(txn_date AS TEXT)) FROM txns"
+    ))
+    validated = safety.validate(ast)
+    with pytest.raises(
+        UnsafeExpressionError, match="does not resolve to a temporal"
+    ):
+        translator.translate(validated, schema, abstract_query_hash="h")
+
+
+def test_extract_year_from_cast_text_to_timestamp_passes() -> None:
+    """EXTRACT(YEAR FROM CAST(text_col AS TIMESTAMP)) must be permitted."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT EXTRACT(YEAR FROM CAST(txn_date AS TIMESTAMP)) FROM txns"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+
+
+def test_extract_on_bare_temporal_column_still_passes() -> None:
+    """Regression: EXTRACT on a bare DATE column must still work."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_dates()  # has events.event_date DATE
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT EXTRACT(YEAR FROM event_date) FROM events"
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+
+
+def test_extract_on_bare_text_column_still_rejected() -> None:
+    """Regression: EXTRACT on a bare TEXT column must still be rejected."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql="SELECT EXTRACT(YEAR FROM txn_date) FROM txns"
+    ))
+    validated = safety.validate(ast)
+    with pytest.raises(
+        UnsafeExpressionError, match="does not resolve to a temporal"
+    ):
+        translator.translate(validated, schema, abstract_query_hash="h")
+
+
+def test_extract_with_subquery_still_blocked() -> None:
+    """Regression: EXTRACT with a nested SELECT must remain blocked."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_dates()
+
+    # sqlglot will parse this as EXTRACT containing a Subquery
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT EXTRACT(YEAR FROM (SELECT event_date FROM events LIMIT 1))"
+            " FROM events"
+        )
+    ))
+    validated = safety.validate(ast)
+    with pytest.raises(UnsafeExpressionError, match="subqueries"):
+        translator.translate(validated, schema, abstract_query_hash="h")
 
 
 # ------------------------------------------------------------------
