@@ -342,18 +342,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     secure_runtime_db_url = _secure_url(runtime_db_url, "user_aegis_runtime")
 
+    app.state.registry_runtime_engine = create_async_engine(
+        secure_registry_runtime_db_url
+    )
+    app.state.steward_engine = create_async_engine(secure_steward_db_url)
+    app.state.registry_admin_engine = create_async_engine(
+        secure_registry_admin_db_url
+    )
+    app.state.runtime_engine = create_async_engine(secure_runtime_db_url)
+
     app.state.registry_runtime_session_factory = async_sessionmaker(
-        create_async_engine(secure_registry_runtime_db_url),
-        expire_on_commit=False,
+        app.state.registry_runtime_engine, expire_on_commit=False
     )
     app.state.steward_session_factory = async_sessionmaker(
-        create_async_engine(secure_steward_db_url), expire_on_commit=False
+        app.state.steward_engine, expire_on_commit=False
     )
     app.state.registry_admin_session_factory = async_sessionmaker(
-        create_async_engine(secure_registry_admin_db_url), expire_on_commit=False
+        app.state.registry_admin_engine, expire_on_commit=False
     )
     app.state.runtime_session_factory = async_sessionmaker(
-        create_async_engine(secure_runtime_db_url), expire_on_commit=False
+        app.state.runtime_engine, expire_on_commit=False
     )
 
     app.state.executor = ExecutionEngine(connection_string=secure_runtime_db_url)
@@ -433,6 +441,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _cancel_reload_tasks(reload_tasks)
     await session_store.close()
     await app.state.executor.close()
+    await app.state.registry_runtime_engine.dispose()
+    await app.state.steward_engine.dispose()
+    await app.state.registry_admin_engine.dispose()
+    await app.state.runtime_engine.dispose()
     logger.info("Aegis Semantic Proxy Shutting down.")
 
 
