@@ -983,9 +983,10 @@ async def compile_metadata_version(
                 rt_session, cred.tenant_id
             )
         request.app.state.registries[cred.tenant_id] = schema
-        request.app.state.loaded_artifact_hashes[cred.tenant_id] = (
-            artifact.artifact_hash
-        )
+        # NOTE: loaded_artifact_hashes is intentionally NOT advanced here.
+        # The advance happens inside _rebuild_index's success branch so
+        # that a failed RAG rebuild leaves the loaded hash at the previous
+        # version, and the next reload retries (review finding #3).
 
         # Notify all other workers — always publish regardless of local
         # state so workers that haven't loaded this artifact yet receive
@@ -1015,15 +1016,22 @@ async def compile_metadata_version(
                 request.app.state.compiler.set_vector_store(
                     new_store, cred.tenant_id
                 )
+                # Advance hash only after both schema and RAG are live.
+                request.app.state.loaded_artifact_hashes[cred.tenant_id] = (
+                    artifact.artifact_hash
+                )
             except RagDivergenceError:
                 logger.warning(
                     "RAG divergence detected for version %s — "
-                    "index not updated; re-compile after fixing values.",
+                    "index not updated; loaded hash NOT advanced"
+                    " (retry on next reload).",
                     version_id,
                 )
             except Exception:
                 logger.exception(
-                    "RAG index rebuild failed for version %s", version_id
+                    "RAG index rebuild failed for version %s — "
+                    "loaded hash NOT advanced (retry on next reload)",
+                    version_id,
                 )
 
         if wait_for_index:

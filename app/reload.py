@@ -177,11 +177,12 @@ async def _perform_reload(app: Any, tenant_id: str) -> None:
             )
             return  # Do NOT update loaded_artifact_hashes on failure
 
-        # Mark schema as live before starting RAG rebuild.
-        # Old RAG store remains active until the rebuild succeeds.
-        app.state.loaded_artifact_hashes[tenant_id] = db_hash
+        # Schema is in place. RAG rebuild is next; loaded_artifact_hashes
+        # is intentionally NOT advanced yet — if the RAG rebuild fails, the
+        # next poll cycle must see a hash mismatch and retry. Schema reload
+        # is idempotent so re-running it on the next poll is cheap.
         logger.info(
-            "reload: tenant %s schema updated to artifact %s",
+            "reload: tenant %s schema swapped to artifact %s",
             tenant_id, db_hash[:12],
         )
 
@@ -196,19 +197,29 @@ async def _perform_reload(app: Any, tenant_id: str) -> None:
             )
             app.state.vector_stores[tenant_id] = new_store
             app.state.compiler.set_vector_store(new_store, tenant_id)
-            logger.info(
-                "reload: tenant %s RAG rebuilt for artifact %s",
-                tenant_id, db_hash[:12],
-            )
         except RagDivergenceError:
             logger.warning(
-                "reload: RAG divergence for tenant %s — old index retained", tenant_id
-            )
-        except Exception:
-            logger.exception(
-                "reload: RAG rebuild failed for tenant %s — old index retained",
+                "reload: RAG divergence for tenant %s — old index retained,"
+                " hash NOT advanced (will retry)",
                 tenant_id,
             )
+            return
+        except Exception:
+            logger.exception(
+                "reload: RAG rebuild failed for tenant %s — old index"
+                " retained, hash NOT advanced (will retry)",
+                tenant_id,
+            )
+            return
+
+        # Both schema and RAG are now live for this artifact. Advance the
+        # loaded hash so the next poll skips this tenant until the next
+        # genuine version change.
+        app.state.loaded_artifact_hashes[tenant_id] = db_hash
+        logger.info(
+            "reload: tenant %s fully reloaded to artifact %s",
+            tenant_id, db_hash[:12],
+        )
 
 
 # ---------------------------------------------------------------------------
