@@ -1042,12 +1042,24 @@ async def compile_metadata_version(
     except MixedTenantArtifactError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # Re-read the version status from the DB after compile_version commits.
+    # Using a scalar SELECT avoids relying on the identity-mapped version_obj,
+    # which may now be stale if another admin changed the lifecycle state while
+    # the compile was running.
+    current_status = (
+        await session.execute(
+            select(MetadataVersion.status).where(
+                MetadataVersion.version_id == version_id
+            )
+        )
+    ).scalar_one()
+
     # Hot-reload runtime state only when the compiled version is the active
     # one. Compiling a pending_review version is a preview operation and must
     # NOT swap the registry, advance loaded_artifact_hashes, publish reload
     # signals, or rebuild the RAG index — those steps would leave the worker
     # serving a mismatched schema/RAG/hash combination.
-    if version_obj.status == "active":
+    if current_status == "active":
         # Hot-reload this tenant's schema slot only
         async with request.app.state.registry_runtime_session_factory() as rt_session:
             schema = await RegistryLoader.load_active_schema(

@@ -3,6 +3,7 @@ import os
 import time
 from typing import Any
 
+from pydantic import ValidationError
 import redis.exceptions
 
 from app.compiler.models import SessionQueryContext
@@ -87,16 +88,31 @@ class SessionStore:
             self._degraded_until = 0.0
 
     async def get(self, session_id: str) -> SessionQueryContext | None:
+        key = f"aegis:session:{session_id}"
         if self._redis is not None and not self._circuit_open():
             try:
-                raw = await self._redis.get(f"aegis:session:{session_id}")
+                raw = await self._redis.get(key)
                 self._redis_ok()
             except redis.exceptions.RedisError as exc:
                 self._redis_error(exc)
                 return self._local.get(session_id)
             if raw is None:
                 return None
-            return SessionQueryContext.model_validate_json(raw)
+            try:
+                return SessionQueryContext.model_validate_json(raw)
+            except ValidationError as exc:
+                logger.warning(
+                    "Discarding invalid or legacy session context for %s: %s",
+                    session_id,
+                    exc,
+                )
+                # Best-effort cleanup: old payloads should degrade to a cache miss
+                # rather than failing every follow-up request until TTL expiry.
+                try:
+                    await self._redis.delete(key)
+                except redis.exceptions.RedisError:
+                    pass
+                return None
         return self._local.get(session_id)
 
     async def set(self, session_id: str, context: SessionQueryContext) -> None:

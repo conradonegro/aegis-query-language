@@ -208,6 +208,114 @@ def test_compile_pending_review_version_does_not_mutate_runtime_state() -> None:
         engine.dispose()
 
 
+def test_compile_skips_hot_reload_if_version_archived_during_compile() -> None:
+    """The post-compile hot-reload gate must use a fresh DB status read.
+
+    Validation review (2026-04-08): compile_metadata_version loaded the
+    version once, then decided whether to hot-reload from the same ORM
+    instance after compile_version returned. If another admin archived the
+    version during the compile, the identity-mapped object stayed "active"
+    and the worker still published reloads / rebuilt runtime state for an
+    archived version.
+    """
+    import uuid as uuid_mod
+    from datetime import UTC
+    from datetime import datetime as _dt
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from sqlalchemy import create_engine, text
+
+    from app.api.auth import require_admin_credential
+
+    sqlite_url = "sqlite:///file:testdb?mode=memory&cache=shared&uri=true"
+    engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
+
+    active_vid = uuid_mod.uuid4()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO metadata_versions"
+                " (version_id, tenant_id, status, created_by)"
+                " VALUES (:vid, 'test_tenant', 'active', 'test')"
+            ),
+            {"vid": active_vid.hex},
+        )
+
+    fake_artifact = MagicMock()
+    fake_artifact.artifact_id = uuid_mod.uuid4()
+    fake_artifact.version_id = active_vid
+    fake_artifact.artifact_hash = "bead" * 16
+    fake_artifact.artifact_blob = {"tables": []}
+    fake_artifact.compiled_at = _dt.now(UTC)
+
+    async def compile_then_archive(**_: Any) -> Any:
+        async with app.state.registry_admin_session_factory() as other_session:
+            await other_session.execute(
+                text(
+                    "UPDATE metadata_versions"
+                    " SET status = 'archived'"
+                    " WHERE version_id = :vid"
+                ),
+                {"vid": active_vid.hex},
+            )
+            await other_session.commit()
+        return fake_artifact
+
+    publish_reload_mock = AsyncMock()
+    rebuild_mock = AsyncMock()
+    load_schema_mock = AsyncMock(return_value=MagicMock())
+
+    app.dependency_overrides[require_admin_credential] = lambda: _FAKE_ADMIN_CRED
+
+    try:
+        with (
+            patch(
+                "app.api.router._run_strategy_refresh",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "app.api.compiler.MetadataCompiler.compile_version",
+                new=AsyncMock(side_effect=compile_then_archive),
+            ),
+            patch("app.api.router.publish_reload", new=publish_reload_mock),
+            patch(
+                "app.api.router._rebuild_rag_index_for_tenant",
+                new=rebuild_mock,
+            ),
+            patch(
+                "app.steward.loader.RegistryLoader.load_active_schema",
+                new=load_schema_mock,
+            ),
+            TestClient(app, raise_server_exceptions=False) as client,
+        ):
+            registries_before = dict(app.state.registries)
+            hashes_before = dict(app.state.loaded_artifact_hashes)
+
+            response = client.post(
+                f"/api/v1/metadata/compile/{active_vid}",
+                params={"wait_for_index": "true"},
+            )
+
+            registries_after = dict(app.state.registries)
+            hashes_after = dict(app.state.loaded_artifact_hashes)
+
+        assert response.status_code == 200, response.text
+        assert registries_after == registries_before, (
+            "An archived version should not trigger schema hot-reload after"
+            " compile completion."
+        )
+        assert hashes_after == hashes_before, (
+            "An archived version should not advance loaded_artifact_hashes."
+        )
+        publish_reload_mock.assert_not_awaited()
+        rebuild_mock.assert_not_awaited()
+        load_schema_mock.assert_not_awaited()
+    finally:
+        app.dependency_overrides.pop(require_admin_credential, None)
+        engine.dispose()
+
+
 def test_create_credential_propagates_operational_error_as_5xx() -> None:
     """A non-integrity commit failure (e.g. OperationalError from a DB
     restart or transient network blip) must NOT be rewritten to HTTP 409.

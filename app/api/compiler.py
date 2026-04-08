@@ -180,6 +180,7 @@ class MetadataCompiler:
         stmt = (
             select(MetadataVersion)
             .where(MetadataVersion.version_id == version_id)
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(MetadataVersion.tables)
                 .selectinload(MetadataTable.columns)

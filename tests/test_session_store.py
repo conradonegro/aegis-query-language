@@ -133,6 +133,35 @@ async def test_redis_get_hit_deserialises_correctly() -> None:
 
 
 @pytest.mark.asyncio
+async def test_redis_get_legacy_payload_is_treated_as_cache_miss() -> None:
+    """A pre-upgrade payload without registry_version must not 500 the request.
+
+    Review validation (2026-04-08): SessionQueryContext gained a required
+    registry_version field, but Redis may still contain older JSON rows until
+    TTL expiry. The store should discard those entries and behave as a miss.
+    """
+    import json
+
+    redis = AsyncMock()
+    redis.get.return_value = json.dumps({
+        "last_filtered_schema": {
+            "version": "v1",
+            "tables": [],
+            "relationships": [],
+            "omitted_columns": {},
+        },
+        "last_successful_sql": "SELECT 1",
+        "timestamp": 123.0,
+    })
+
+    store = SessionStore(redis_client=redis)
+    result = await store.get("legacy-session")
+
+    assert result is None
+    redis.delete.assert_awaited_once_with("aegis:session:legacy-session")
+
+
+@pytest.mark.asyncio
 async def test_redis_get_miss_returns_none() -> None:
     redis = AsyncMock()
     redis.get.return_value = None

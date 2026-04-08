@@ -492,3 +492,66 @@ async def test_update_version_status_real_session_retries_archival_branch() -> N
             )
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_compile_version_refreshes_status_after_concurrent_transition() -> None:
+    """compile_version must not trust a stale identity-mapped status.
+
+    Validation review (2026-04-08): compile_metadata_version preloads a
+    MetadataVersion in the same AsyncSession that compile_version later uses.
+    Without populate_existing=True on compile_version's SELECT, SQLAlchemy
+    returns the already-loaded ORM object without refreshing it, so a
+    concurrent status change (e.g. active -> archived) is missed and the
+    archived version still compiles.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.api.meta_models import MetadataVersion
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as conn:
+            await _setup_metadata_schema_for_sqlite(conn)
+
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session_a, factory() as session_b:
+            version = MetadataVersion(
+                tenant_id="test_tenant",
+                status="active",
+                created_by="test",
+            )
+            session_a.add(version)
+            await session_a.commit()
+            version_id = version.version_id
+
+            # Preload into session_a's identity map.
+            loaded = (
+                await session_a.execute(
+                    select(MetadataVersion).where(
+                        MetadataVersion.version_id == version_id
+                    )
+                )
+            ).scalar_one()
+            assert loaded.status == "active"
+
+            # Concurrent admin archives the same version in another session.
+            archived = (
+                await session_b.execute(
+                    select(MetadataVersion).where(
+                        MetadataVersion.version_id == version_id
+                    )
+                )
+            ).scalar_one()
+            archived.status = "archived"
+            await session_b.commit()
+
+            with pytest.raises(ValueError, match="pending_review"):
+                await MetadataCompiler.compile_version(
+                    session=session_a,
+                    version_id=version_id,
+                    actor="test_actor",
+                )
+    finally:
+        await engine.dispose()
