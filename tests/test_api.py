@@ -109,6 +109,73 @@ def test_api_error_shape() -> None:
         app.dependency_overrides.clear()
 
 
+def test_create_credential_propagates_operational_error_as_5xx() -> None:
+    """A non-integrity commit failure (e.g. OperationalError from a DB
+    restart or transient network blip) must NOT be rewritten to HTTP 409.
+
+    Code-review finding #8 (2026-04-07): bare `except Exception` was
+    catching every commit failure and reporting it as "already exists",
+    masking outages and confusing operators and clients. The fix narrows
+    the except clause to IntegrityError only.
+
+    create_credential is chosen for this regression test because
+    conftest.py creates the tenant_credentials table and seeds an admin
+    credential, so the handler path reaches session.commit() before any
+    lookup can short-circuit it.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy.exc import OperationalError
+
+    from app.api.auth import require_admin_credential
+
+    app.dependency_overrides[require_admin_credential] = lambda: _FAKE_ADMIN_CRED
+
+    op_err = OperationalError(
+        "INSERT INTO tenant_credentials ...",
+        None,
+        Exception("DB went away"),
+    )
+
+    try:
+        # Patch only the commit — execute/add/refresh still work normally.
+        # The SAME AsyncSession instance is used for auth lookups earlier
+        # in the request, so we must target commit specifically rather
+        # than patching the whole session.
+        with patch(
+            "sqlalchemy.ext.asyncio.AsyncSession.commit",
+            new=AsyncMock(side_effect=op_err),
+        ):
+            # raise_server_exceptions=False so unhandled exceptions are
+            # converted to 500 responses (default TestClient behavior is to
+            # re-raise them, which would mask whether the handler narrowed
+            # the except clause correctly).
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post(
+                    "/api/v1/auth/credentials",
+                    json={
+                        "tenant_id": "test_tenant",
+                        "user_id": "new_user",
+                        "scope": "query",
+                        "description": "regression test",
+                    },
+                )
+
+        # The critical assertion: OperationalError was NOT masked as 409.
+        # FastAPI's default exception handling turns the unhandled exception
+        # into a 500. If a future change wires up a dedicated handler that
+        # returns 503 for OperationalError, that's also acceptable.
+        assert response.status_code != 409, (
+            "OperationalError was masked as 409 conflict;"
+            f" response body: {response.text}"
+        )
+        assert response.status_code >= 500, (
+            f"expected 5xx for commit failure, got {response.status_code}"
+        )
+    finally:
+        app.dependency_overrides.pop(require_admin_credential, None)
+
+
 def test_api_execute_pipeline() -> None:
     """
     Test 3: Verify /execute correctly passes through Compilation and Execution.

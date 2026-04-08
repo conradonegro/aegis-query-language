@@ -997,7 +997,7 @@ async def create_column_value(
     try:
         await session.commit()
         await session.refresh(val)
-    except Exception as exc:
+    except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
             status_code=409, detail="Value already exists for this column."
@@ -1665,7 +1665,7 @@ async def create_credential(
     try:
         await session.commit()
         await session.refresh(new_cred)
-    except Exception as exc:
+    except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
             status_code=409, detail="A credential with this key hash already exists."
