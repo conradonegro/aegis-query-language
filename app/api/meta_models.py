@@ -135,6 +135,9 @@ class MetadataColumn(Base):
     safety_classification: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     sample_values: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    sample_values_exhaustive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
     # RAG indexing fields
     rag_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
