@@ -528,6 +528,92 @@ def test_cte_prefixed_alias_only_output_column_resolves_without_error() -> None:
     assert "agg" in result.sql
 
 
+def _make_schema_with_aggregation() -> RegistrySchema:
+    """Schema where salary allows aggregation and id allows group_by,
+    used by the SELECT-alias bypass tests."""
+    return RegistrySchema(
+        version="v1.0.0",
+        tables=[
+            AbstractTableDef(
+                alias="users",
+                description="Users",
+                physical_target="public.users",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id",
+                        description="ID",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            allowed_in_group_by=True,
+                        ),
+                        physical_target="user_id",
+                    ),
+                    AbstractColumnDef(
+                        alias="salary",
+                        description="Salary",
+                        safety=SafetyClassification(
+                            allowed_in_select=True,
+                            aggregation_allowed=True,
+                        ),
+                        physical_target="salary_cents",
+                    ),
+                ],
+            ),
+        ],
+        relationships=[],
+    )
+
+
+def test_select_alias_in_order_by_resolves_without_error() -> None:
+    """A top-level SELECT alias (e.g. SUM(...) AS total_consumption) referenced
+    in ORDER BY must not raise TranslationError.
+
+    This is the actual BIRD failure mode for q=1479/q=1480: the LLM emits
+    `SELECT SUM(consumption) AS total_consumption ... ORDER BY total_consumption`
+    and the translator rejects `total_consumption` because it's not a schema
+    column and not a CTE output alias. The fix is to also collect AS-declared
+    aliases from all SELECT nodes, not just CTE bodies.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_aggregation()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT users.id, SUM(users.salary) AS total_salary"
+            " FROM users"
+            " GROUP BY users.id"
+            " ORDER BY total_salary DESC"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+    assert "total_salary" in result.sql
+
+
+def test_select_alias_in_having_resolves_without_error() -> None:
+    """A SELECT alias referenced in HAVING must also be bypassed."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_aggregation()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT users.id, SUM(users.salary) AS total_salary"
+            " FROM users"
+            " GROUP BY users.id"
+            " HAVING total_salary > 0"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+    assert "total_salary" in result.sql
+
+
 # ------------------------------------------------------------------
 # BUG-6 — EXTRACT on CAST expression
 # ------------------------------------------------------------------

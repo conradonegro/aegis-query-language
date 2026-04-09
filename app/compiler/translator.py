@@ -53,6 +53,7 @@ class DeterministicTranslator:
 
         cte_aliases = self._collect_cte_aliases(tree)
         cte_col_aliases = self._collect_cte_column_aliases(tree)
+        cte_col_aliases |= self._collect_select_output_aliases(tree)
 
         if relationships:
             self._validate_join_graph(tree, relationships, cte_aliases)
@@ -751,6 +752,27 @@ class DeterministicTranslator:
             if not isinstance(body, exp.Select):
                 continue
             for expr in body.expressions:
+                if isinstance(expr, exp.Alias):
+                    aliases.add(expr.alias.lower())
+        return aliases
+
+    @staticmethod
+    def _collect_select_output_aliases(tree: exp.Expression) -> set[str]:
+        """Returns the lowercased AS-declared aliases from all SELECT projections.
+
+        In SQL, ORDER BY and HAVING may reference a SELECT alias (e.g.
+        ``ORDER BY total_consumption`` where ``SUM(x) AS total_consumption``
+        is in the SELECT list). These are virtual columns with no physical
+        counterpart; the translator must bypass them the same way it bypasses
+        CTE output aliases.
+
+        This covers ALL Select nodes in the tree (top-level, CTEs, subqueries)
+        so the set may overlap with _collect_cte_column_aliases. That is safe —
+        duplicates in a set are idempotent and the bypass logic is identical.
+        """
+        aliases: set[str] = set()
+        for select_node in tree.find_all(exp.Select):
+            for expr in select_node.expressions:
                 if isinstance(expr, exp.Alias):
                     aliases.add(expr.alias.lower())
         return aliases
