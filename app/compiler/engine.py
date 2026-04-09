@@ -31,7 +31,7 @@ from app.compiler.models import (
 from app.compiler.ollama import LLMGenerationError
 from app.compiler.session_store import SessionStore
 from app.rag.interfaces import VectorStoreProtocol
-from app.rag.models import RAGOutcome
+from app.rag.models import RAGOutcome, RAGResult
 from app.steward import RegistrySchema
 
 
@@ -338,27 +338,38 @@ class CompilerEngine:
             return
 
         strict = os.getenv("RAG_STRICT_MODE", "").lower() == "true"
-
         rag_result = store.search(
             intent.natural_language_query, tenant_id=tenant_id, limit=5
         )
+        self._inject_rag_result(
+            rag_result, hints, included_cols, strict
+        )
+        self._record_rag_explain(hints, explain_context)
 
+    def _inject_rag_result(
+        self,
+        rag_result: RAGResult,
+        hints: PromptHints,
+        included_cols: RAGIncludedColumns,
+        strict: bool,
+    ) -> None:
+        """Inject RAG matches into prompt hints and record provenance."""
         if (
             rag_result.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
             and rag_result.match
         ):
-            match_val = rag_result.match.categorical_value
+            mv = rag_result.match.categorical_value
             hints.column_hints.append(
-                f"Always consider value '{match_val.value}' maps to abstract"
-                f" column '{match_val.abstract_column}'"
+                f"Always consider value '{mv.value}' maps to abstract"
+                f" column '{mv.abstract_column}'"
             )
             hints.rag_provenance = {
                 "rag_outcome": rag_result.outcome.value,
-                "rag_matched_value": match_val.value,
-                "rag_abstract_column": match_val.abstract_column,
+                "rag_matched_value": mv.value,
+                "rag_abstract_column": mv.abstract_column,
                 "rag_similarity_score": rag_result.match.similarity_score,
             }
-            included_cols.columns.append(match_val.abstract_column)
+            included_cols.columns.append(mv.abstract_column)
         elif (
             rag_result.outcome == RAGOutcome.AMBIGUOUS_MATCH
             and rag_result.candidates
@@ -369,23 +380,9 @@ class CompilerEngine:
                     f"{len(rag_result.candidates)} candidate values found. "
                     "Refine your query or disable RAG_STRICT_MODE."
                 )
-            # Multiple candidate values matched — surface all of them so the
-            # LLM can choose the right one or use an IN / LIKE clause.
-            abstract_col = rag_result.candidates[0].categorical_value.abstract_column
-            candidate_values = [
-                m.categorical_value.value for m in rag_result.candidates[:10]
-            ]
-            hints.column_hints.append(
-                f"Possible values for column '{abstract_col}':"
-                f" {', '.join(repr(v) for v in candidate_values)}"
+            self._inject_ambiguous_hints(
+                rag_result, hints, included_cols
             )
-            hints.rag_provenance = {
-                "rag_outcome": rag_result.outcome.value,
-                "rag_abstract_column": abstract_col,
-                "rag_candidates": candidate_values,
-                "rag_reason": rag_result.reason,
-            }
-            included_cols.columns.append(abstract_col)
         else:
             if strict:
                 raise RAGUncertaintyError(
@@ -398,26 +395,60 @@ class CompilerEngine:
                 "rag_reason": rag_result.reason,
             }
 
-        if hints.rag_provenance:
-            prov = hints.rag_provenance
-            if "rag_matched_value" in prov:
-                matches = [prov["rag_matched_value"]]
-                scores = [prov["rag_similarity_score"]]
-                reason = "Single High Confidence Match Injected"
-            elif "rag_candidates" in prov:
-                matches = prov["rag_candidates"]
-                scores = []
-                reason = prov.get("rag_reason", "Ambiguous candidates injected")
-            else:
-                matches = []
-                scores = []
-                reason = prov.get("rag_reason", "")
-            explain_context["rag"] = {
-                "outcome": prov.get("rag_outcome", "UNKNOWN"),
-                "matches": matches,
-                "scores": scores,
-                "reason": reason,
-            }
+    @staticmethod
+    def _inject_ambiguous_hints(
+        rag_result: RAGResult,
+        hints: PromptHints,
+        included_cols: RAGIncludedColumns,
+    ) -> None:
+        """Group ambiguous candidates by column and inject one hint each."""
+        by_col: dict[str, list[str]] = {}
+        for m in (rag_result.candidates or [])[:10]:
+            col = m.categorical_value.abstract_column
+            by_col.setdefault(col, []).append(m.categorical_value.value)
+        all_candidates: list[str] = []
+        all_columns: list[str] = []
+        for col, vals in by_col.items():
+            hints.column_hints.append(
+                f"Possible values for column '{col}':"
+                f" {', '.join(repr(v) for v in vals)}"
+            )
+            included_cols.columns.append(col)
+            all_candidates.extend(vals)
+            all_columns.append(col)
+        hints.rag_provenance = {
+            "rag_outcome": rag_result.outcome.value,
+            "rag_abstract_column": all_columns[0] if all_columns else "",
+            "rag_candidates": all_candidates,
+            "rag_reason": rag_result.reason,
+        }
+
+    @staticmethod
+    def _record_rag_explain(
+        hints: PromptHints, explain_context: dict[str, Any]
+    ) -> None:
+        """Populate the explainability dict from RAG provenance."""
+        if not hints.rag_provenance:
+            return
+        prov = hints.rag_provenance
+        if "rag_matched_value" in prov:
+            matches = [prov["rag_matched_value"]]
+            scores = [prov["rag_similarity_score"]]
+            reason = "Single High Confidence Match Injected"
+        elif "rag_candidates" in prov:
+            matches = prov["rag_candidates"]
+            scores = []
+            reason = prov.get("rag_reason", "Ambiguous candidates injected")
+        else:
+            matches = []
+            scores = []
+            reason = prov.get("rag_reason", "")
+        explain_context["rag"] = {
+            "outcome": prov.get("rag_outcome", "UNKNOWN"),
+            "matches": matches,
+            "scores": scores,
+            "reason": reason,
+        }
 
     # ------------------------------------------------------------------
     # LLM response parsing
