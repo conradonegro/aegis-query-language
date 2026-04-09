@@ -973,6 +973,31 @@ def test_date_literal_against_cast_to_date_in_between_left_inline() -> None:
     assert not any(v == "2012-01-01" for v in result.parameters.values())
 
 
+def test_literal_inside_cast_to_date_left_inline() -> None:
+    """CAST('2012-01-01' AS DATE) must keep the literal inline.
+
+    The literal is a child of the Cast node, not a direct operand of
+    a comparison. asyncpg infers the Cast target type for the parameter
+    and crashes with 'toordinal' when given a plain string.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT txn_date FROM txns"
+            " WHERE txn_date > CAST('2012-01-01' AS DATE)"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'2012-01-01'" in result.sql
+    assert not any(v == "2012-01-01" for v in result.parameters.values())
+
+
 def test_cte_join_on_condition_resolves_without_error() -> None:
     """JOIN ON referencing a CTE virtual table must not raise TranslationError."""
     parser = SQLParser()

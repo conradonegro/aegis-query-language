@@ -487,6 +487,7 @@ class DeterministicTranslator:
         ids |= self._temporal_ids_from_binary(tree, column_datatypes)
         ids |= self._temporal_ids_from_between(tree, column_datatypes)
         ids |= self._temporal_ids_from_in(tree, column_datatypes)
+        ids |= self._temporal_ids_from_cast(tree, column_datatypes)
         return ids
 
     def _col_is_temporal(
@@ -547,6 +548,26 @@ class DeterministicTranslator:
             for expr in in_node.expressions:
                 if isinstance(expr, exp.Literal):
                     result.add(id(expr))
+        return result
+
+    def _temporal_ids_from_cast(
+        self, tree: exp.Expression, column_datatypes: dict[int, str]
+    ) -> set[int]:
+        """Marks literals wrapped in CAST(literal AS temporal_type).
+
+        When the LLM writes ``CAST('2012-01-01' AS DATE)``, the literal is
+        a child of the Cast node, not a direct operand of a comparison.
+        asyncpg infers the Cast target type for the parameter and crashes
+        with 'toordinal' when given a plain string. Leaving the literal
+        inline lets PostgreSQL handle the cast safely.
+        """
+        result: set[int] = set()
+        for cast_node in tree.find_all(exp.Cast):
+            if not self._resolves_to_temporal(cast_node, column_datatypes):
+                continue
+            inner = cast_node.this
+            if isinstance(inner, exp.Literal):
+                result.add(id(inner))
         return result
 
     def _parameterize_literals(
