@@ -274,3 +274,17 @@ def test_prompt_rule_7_contains_counter_example() -> None:
     assert "CORRECT:" in envelope.system_instruction
     assert "FROM yearmonth, customers" in envelope.system_instruction
     assert "FROM yearmonth JOIN customers" in envelope.system_instruction
+
+
+def test_prompt_contains_self_review_instruction() -> None:
+    """Rule 12 must instruct the LLM to self-check the generated SQL."""
+    builder = PromptBuilder()
+    intent = UserIntent(natural_language_query="test")
+    schema = FilteredSchema(
+        version="1.0", tables=[], relationships=[], omitted_columns={}
+    )
+    hints = PromptHints(column_hints=[])
+    envelope = builder.build_prompt(intent, schema, hints, chat_history=[])
+
+    assert "re-check the SQL" in envelope.system_instruction
+    assert "fix the SQL before responding" in envelope.system_instruction
