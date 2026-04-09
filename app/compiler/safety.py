@@ -107,6 +107,8 @@ class SafetyEngine:
         exp.Interval,
         # Functions
         exp.Extract,
+        exp.StrToDate,       # TO_DATE(text, format) — PostgreSQL date parsing
+        exp.TimestampTrunc,  # DATE_TRUNC('part', temporal) — PostgreSQL truncation
         # Alias
         exp.Alias, exp.ColumnPosition, exp.TableAlias, exp.Tuple
     )

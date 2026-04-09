@@ -770,6 +770,26 @@ def test_extract_with_subquery_still_blocked() -> None:
         translator.translate(validated, schema, abstract_query_hash="h")
 
 
+def test_to_date_passes_safety_and_translates() -> None:
+    """TO_DATE(text_col, format) must pass the safety allow-list and translate
+    correctly. sqlglot parses both TO_DATE and STR_TO_DATE as exp.StrToDate
+    and renders TO_DATE(...) in postgres dialect."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT TO_DATE(txn_date, 'YYYY-MM-DD') FROM txns"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+    assert result is not None
+    assert "TO_DATE" in result.sql.upper()
+
+
 # ------------------------------------------------------------------
 # BUG-1 — Temporal literal parameterization
 # ------------------------------------------------------------------
