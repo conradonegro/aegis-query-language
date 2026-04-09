@@ -918,6 +918,61 @@ def test_text_literal_still_parameterized_despite_date_column_in_scope() -> None
     assert result.parameters.get("p1") == "conference"
 
 
+# ------------------------------------------------------------------
+# BUG-1 variant — CAST(text AS DATE) temporal literal exclusion
+# ------------------------------------------------------------------
+
+def test_date_literal_against_cast_to_date_left_inline() -> None:
+    """A literal compared to CAST(text_col AS DATE) must NOT be parameterized.
+
+    asyncpg infers the bind parameter type from the CAST result (DATE),
+    expects a Python datetime.date, and crashes with 'toordinal' when given
+    a plain string. The temporal literal exclusion must recognize CAST with
+    a temporal target type, not just bare temporal columns.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT txn_date FROM txns"
+            " WHERE CAST(txn_date AS DATE) >= '2012-01-01'"
+            " AND CAST(txn_date AS DATE) < '2012-02-01'"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'2012-01-01'" in result.sql
+    assert "'2012-02-01'" in result.sql
+    assert not any(v == "2012-01-01" for v in result.parameters.values())
+    assert not any(v == "2012-02-01" for v in result.parameters.values())
+
+
+def test_date_literal_against_cast_to_date_in_between_left_inline() -> None:
+    """BETWEEN bounds against CAST(text AS DATE) must stay inline."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    translator = DeterministicTranslator()
+    schema = _make_schema_with_text_date()
+
+    ast = parser.parse(AbstractQuery(
+        sql=(
+            "SELECT txn_date FROM txns"
+            " WHERE CAST(txn_date AS DATE)"
+            " BETWEEN '2012-01-01' AND '2012-12-31'"
+        )
+    ))
+    validated = safety.validate(ast)
+    result = translator.translate(validated, schema, abstract_query_hash="h")
+
+    assert "'2012-01-01'" in result.sql
+    assert "'2012-12-31'" in result.sql
+    assert not any(v == "2012-01-01" for v in result.parameters.values())
+
+
 def test_cte_join_on_condition_resolves_without_error() -> None:
     """JOIN ON referencing a CTE virtual table must not raise TranslationError."""
     parser = SQLParser()

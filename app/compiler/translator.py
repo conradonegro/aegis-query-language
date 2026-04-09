@@ -495,31 +495,37 @@ class DeterministicTranslator:
         dtype = column_datatypes.get(id(col), "")
         return any(t in dtype for t in self._TEMPORAL_TYPES)
 
+    def _expr_is_temporal(
+        self, expr: exp.Expression, column_datatypes: dict[int, str]
+    ) -> bool:
+        """True if `expr` resolves to a temporal type — bare column OR CAST."""
+        if isinstance(expr, exp.Column):
+            return self._col_is_temporal(expr, column_datatypes)
+        return self._resolves_to_temporal(expr, column_datatypes)
+
     def _temporal_ids_from_binary(
         self, tree: exp.Expression, column_datatypes: dict[int, str]
     ) -> set[int]:
-        """Marks literals in binary comparisons against temporal columns."""
+        """Marks literals in binary comparisons against temporal expressions."""
         result: set[int] = set()
         for cmp in tree.find_all(exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE):
             left, right = cmp.left, cmp.right
-            if isinstance(left, exp.Column) and isinstance(right, exp.Literal):
-                if self._col_is_temporal(left, column_datatypes):
+            if isinstance(right, exp.Literal):
+                if self._expr_is_temporal(left, column_datatypes):
                     result.add(id(right))
-            elif isinstance(right, exp.Column) and isinstance(left, exp.Literal):
-                if self._col_is_temporal(right, column_datatypes):
+            elif isinstance(left, exp.Literal):
+                if self._expr_is_temporal(right, column_datatypes):
                     result.add(id(left))
         return result
 
     def _temporal_ids_from_between(
         self, tree: exp.Expression, column_datatypes: dict[int, str]
     ) -> set[int]:
-        """Marks literals in BETWEEN bounds against temporal columns."""
+        """Marks literals in BETWEEN bounds against temporal expressions."""
         result: set[int] = set()
         for between in tree.find_all(exp.Between):
-            col = between.this
-            if not isinstance(col, exp.Column):
-                continue
-            if not self._col_is_temporal(col, column_datatypes):
+            subject = between.this
+            if not self._expr_is_temporal(subject, column_datatypes):
                 continue
             low = between.args.get("low")
             high = between.args.get("high")
@@ -532,13 +538,11 @@ class DeterministicTranslator:
     def _temporal_ids_from_in(
         self, tree: exp.Expression, column_datatypes: dict[int, str]
     ) -> set[int]:
-        """Marks literals inside IN (...) lists against temporal columns."""
+        """Marks literals inside IN (...) lists against temporal expressions."""
         result: set[int] = set()
         for in_node in tree.find_all(exp.In):
-            col = in_node.this
-            if not isinstance(col, exp.Column):
-                continue
-            if not self._col_is_temporal(col, column_datatypes):
+            subject = in_node.this
+            if not self._expr_is_temporal(subject, column_datatypes):
                 continue
             for expr in in_node.expressions:
                 if isinstance(expr, exp.Literal):
