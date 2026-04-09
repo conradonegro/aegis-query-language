@@ -143,6 +143,36 @@ async def _run_discovery(session: AsyncSession) -> None:
         except Exception:
             pass  # Non-fatal — skip sample values for this column
 
+        # RAG configuration: enable semantic value matching for medium-
+        # cardinality text columns so the LLM gets value-level hints even
+        # when the exact value isn't in the top-3 prompt samples.
+        #
+        # Strategy:
+        #  - text columns, not PKs, 9-200 distinct values → rag_enabled
+        #  - ≤50 distinct → "low" cardinality hint (all indexed)
+        #  - 51-200 → "medium" hint (top 100 indexed)
+        #  - >200 or non-text or PK → skip (too noisy / not categorical)
+        #
+        # Values are populated at compile time via refresh_on_compile=True,
+        # which queries the runtime DB using the "most_frequent" strategy.
+        rag_enabled = False
+        rag_cardinality_hint: str | None = None
+        rag_limit: int | None = None
+        rag_sample_strategy: str | None = None
+        rag_refresh = False
+        _is_text = dtype.lower() in ("text", "character varying", "varchar")
+        if (
+            _is_text
+            and not is_pk
+            and distinct_count is not None
+            and 9 <= distinct_count <= 200
+        ):
+            rag_enabled = True
+            rag_cardinality_hint = "low" if distinct_count <= 50 else "medium"
+            rag_limit = min(distinct_count, 100)
+            rag_sample_strategy = "most_frequent"
+            rag_refresh = True
+
         # Map Column Object
         col_obj = MetadataColumn(
             column_id=uuid.uuid4(),
@@ -158,6 +188,11 @@ async def _run_discovery(session: AsyncSession) -> None:
             allowed_in_join=True,  # Auto enable all defaults for baseline
             sample_values=sample_vals or None,
             sample_values_exhaustive=sample_vals_exhaustive,
+            rag_enabled=rag_enabled,
+            rag_cardinality_hint=rag_cardinality_hint,
+            rag_limit=rag_limit,
+            rag_sample_strategy=rag_sample_strategy,
+            refresh_on_compile=rag_refresh,
         )
 
         column_map[(tbl_name, col_name)] = col_obj
