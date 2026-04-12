@@ -26,6 +26,42 @@ logger = logging.getLogger(__name__)
 _CLAUDE_BIN = os.getenv("CLAUDE_CLI_PATH", "claude")
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Remove markdown code fences the CLI sometimes wraps around JSON."""
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[len("```json"):].strip()
+    if text.startswith("```"):
+        text = text[len("```"):].strip()
+    if text.endswith("```"):
+        text = text[:-len("```")].strip()
+    return text
+
+
+def _parse_cli_envelope(raw: str) -> tuple[str, int, int]:
+    """Parse the CLI JSON envelope. Returns (text, prompt_tokens, completion_tokens)."""
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise LLMGenerationError(
+            f"Claude CLI returned non-JSON output: {raw[:200]}",
+            raw_response=raw,
+        ) from e
+
+    if envelope.get("is_error"):
+        raise LLMGenerationError(
+            f"Claude CLI error: {envelope.get('result', 'unknown')}",
+            raw_response=raw,
+        )
+
+    text = _strip_markdown_fences(envelope.get("result", ""))
+    if not text.startswith("{"):
+        text = "{" + text
+
+    usage = envelope.get("usage", {})
+    return text, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+
+
 class ClaudeCLIGateway:
     """LLM gateway that invokes the ``claude`` CLI for each request."""
 
@@ -34,32 +70,14 @@ class ClaudeCLIGateway:
 
     async def generate(self, prompt: PromptEnvelope) -> LLMResult:
         start = time.perf_counter()
-
-        # Write the system prompt to a temp file to avoid shell-quoting
-        # issues with long multi-line prompts that contain special chars.
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as sys_f:
-            sys_f.write(prompt.system_instruction)
-            sys_prompt_path = sys_f.name
-
-        # Build the user message. For multi-turn (chat history), prepend
-        # the history to the user prompt — the CLI only takes one prompt.
-        user_text = prompt.user_prompt
-        if prompt.chat_history:
-            history_lines = [
-                f"[{m.role}]: {m.content}" for m in prompt.chat_history
-            ]
-            user_text = "\n".join(history_lines) + "\n\n" + user_text
+        user_text, sys_prompt_path = self._prepare_input(prompt)
 
         cmd = [
-            _CLAUDE_BIN,
-            "-p",
+            _CLAUDE_BIN, "-p",
             "--model", self.model,
             "--system-prompt-file", sys_prompt_path,
             "--output-format", "json",
             "--tools", "",
-            "--bare",
         ]
 
         try:
@@ -75,8 +93,7 @@ class ClaudeCLIGateway:
             )
         except TimeoutError as e:
             raise LLMGenerationError(
-                "Claude CLI timed out after 120s.",
-                raw_response="",
+                "Claude CLI timed out after 120s.", raw_response="",
             ) from e
         except FileNotFoundError as e:
             raise LLMGenerationError(
@@ -88,37 +105,40 @@ class ClaudeCLIGateway:
             os.unlink(sys_prompt_path)
 
         if proc.returncode != 0:
-            err_text = stderr.decode("utf-8", errors="replace")[:500]
+            err = stderr.decode("utf-8", errors="replace")[:500]
             raise LLMGenerationError(
-                f"Claude CLI exited with code {proc.returncode}: {err_text}",
-                raw_response=err_text,
+                f"Claude CLI exited with code {proc.returncode}: {err}",
+                raw_response=err,
             )
 
-        raw_stdout = stdout.decode("utf-8", errors="replace")
-
-        # --output-format json wraps the response in a JSON object with
-        # a "result" field containing the assistant's text.
-        try:
-            envelope = json.loads(raw_stdout)
-            text = envelope.get("result", raw_stdout)
-        except json.JSONDecodeError:
-            text = raw_stdout
-
-        # The LLM is expected to return a JSON object like {"sql": "..."}
-        # (with the JSON prefill pattern, the opening "{" is already there).
-        # Ensure the text starts with "{" for the downstream JSON parser.
-        text = text.strip()
-        if not text.startswith("{"):
-            text = "{" + text
-
+        raw = stdout.decode("utf-8", errors="replace")
+        text, p_tok, c_tok = _parse_cli_envelope(raw)
         elapsed = (time.perf_counter() - start) * 1000
         return LLMResult(
             raw_text=text,
             model_id=self.model,
             latency_ms=elapsed,
-            prompt_tokens=0,
-            completion_tokens=0,
+            prompt_tokens=p_tok,
+            completion_tokens=c_tok,
         )
+
+    @staticmethod
+    def _prepare_input(prompt: PromptEnvelope) -> tuple[str, str]:
+        """Write system prompt to a temp file and build user text.
+        Returns (user_text, sys_prompt_path)."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False
+        ) as sys_f:
+            sys_f.write(prompt.system_instruction)
+            sys_prompt_path = sys_f.name
+
+        user_text = prompt.user_prompt
+        if prompt.chat_history:
+            history = [
+                f"[{m.role}]: {m.content}" for m in prompt.chat_history
+            ]
+            user_text = "\n".join(history) + "\n\n" + user_text
+        return user_text, sys_prompt_path
 
 
 # Satisfy the protocol check at import time.
