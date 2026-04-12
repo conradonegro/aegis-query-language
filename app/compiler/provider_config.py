@@ -25,7 +25,7 @@ import os
 # Kept here so provider_config is the single source of truth; llm_factory
 # imports this set rather than maintaining its own parallel list.
 KNOWN_PROVIDERS: frozenset[str] = frozenset(
-    {"ollama", "openai", "anthropic", "google", "xai"}
+    {"ollama", "openai", "anthropic", "google", "xai", "cli"}
 )
 
 

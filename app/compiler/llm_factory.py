@@ -1,6 +1,7 @@
 import os
 
 from app.compiler.anthropic_gateway import AnthropicLLMGateway
+from app.compiler.cli_gateway import ClaudeCLIGateway
 from app.compiler.google_gateway import GoogleLLMGateway
 from app.compiler.interfaces import LLMGatewayProtocol
 from app.compiler.ollama import OllamaLLMGateway
@@ -46,6 +47,9 @@ def get_llm_gateway(provider_id: str | None = None) -> LLMGatewayProtocol:
 
     if prefix == "xai":
         return XAILLMGateway(model=model_part or "grok-1")
+
+    if prefix == "cli":
+        return ClaudeCLIGateway(model=model_part or "haiku")
 
     # parse_provider_id already rejects unknown prefixes; this is unreachable.
     raise ValueError(f"Unknown LLM provider prefix: '{prefix}'")
