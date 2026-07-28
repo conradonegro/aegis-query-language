@@ -28,13 +28,50 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Sequence
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
+# ---------------------------------------------------------------------------
+# Result comparison — official BIRD EX semantics
+# ---------------------------------------------------------------------------
+
+
+def _normalize_value(value: Any) -> Any:
+    """Bridge the JSON serialization boundary between gold and generated rows.
+
+    Gold rows carry native driver types; generated rows arrive through the
+    API's JSON layer where pydantic serializes Decimal as str(Decimal) and
+    date/datetime as isoformat strings.
+    """
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def rows_match(
+    gold_rows: Sequence[tuple[Any, ...]],
+    gen_rows: Sequence[tuple[Any, ...]],
+) -> bool:
+    """Official BIRD EX: set(predicted) == set(gold) over row tuples.
+
+    Row order ignored, duplicate rows collapsed, column count/order
+    significant.
+    """
+
+    def norm(rows: Sequence[tuple[Any, ...]]) -> set[tuple[Any, ...]]:
+        return {tuple(_normalize_value(v) for v in row) for row in rows}
+
+    return norm(gold_rows) == norm(gen_rows)
+
 
 # ---------------------------------------------------------------------------
 # Gold SQL execution
@@ -45,14 +82,10 @@ async def _run_gold_sql(
     sql: str,
     db_id: str,
 ) -> list[tuple[Any, ...]]:
-    """
-    Execute gold SQL against the physical database.
-    Returns a sorted list of row tuples for set comparison.
-    """
+    """Execute gold SQL against the physical database."""
     async with engine.connect() as conn:
         result = await conn.execute(text(sql))
-        rows = [tuple(r) for r in result.fetchall()]
-    return sorted(rows, key=lambda r: [str(v) for v in r])
+        return [tuple(r) for r in result.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -135,17 +168,14 @@ async def _evaluate_question(
         result["generated_sql"] = generated_sql
         result["source_database_used"] = body.get("source_database_used")
 
-        # Compare generated results with gold results
+        # Compare generated results with gold results (official BIRD EX)
         gold_rows = await _run_gold_sql(engine, gold_sql, db_id)
         gen_rows = [tuple(row.values()) for row in body.get("results", [])]
-        gen_rows_sorted = sorted(
-            gen_rows, key=lambda r: [str(v) for v in r]
-        )
 
-        result["match"] = gold_rows == gen_rows_sorted
+        result["match"] = rows_match(gold_rows, gen_rows)
         result["status"] = "success"
         result["gold_row_count"] = len(gold_rows)
-        result["gen_row_count"] = len(gen_rows_sorted)
+        result["gen_row_count"] = len(gen_rows)
 
     except Exception as exc:
         result["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)

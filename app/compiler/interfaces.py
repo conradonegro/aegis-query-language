@@ -71,7 +71,7 @@ class TranslatorProtocol(Protocol):
         schema: RegistrySchema,
         abstract_query_hash: str = "default_hash",
         safety_version: str = "v1.0.0",
-        row_limit: int = 1000,
+        row_limit: int | None = None,
         relationships: list[AbstractRelationshipDef] | None = None,
     ) -> ExecutableQuery:
         ...

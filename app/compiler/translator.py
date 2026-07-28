@@ -1,3 +1,4 @@
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -8,6 +9,17 @@ from app.api.models import TranslationRepair
 from app.compiler.models import ExecutableQuery, ValidatedAST
 from app.compiler.safety import SafetyPolicyViolationError, UnsafeExpressionError
 from app.steward import AbstractRelationshipDef, RegistrySchema, SafetyClassification
+
+_DEFAULT_ROW_LIMIT = 1000
+
+
+def configured_row_limit() -> int:
+    """Row cap injected into every query; AEGIS_ROW_LIMIT overrides."""
+    raw = os.getenv("AEGIS_ROW_LIMIT", "")
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_ROW_LIMIT
 
 
 class TranslationError(Exception):
@@ -44,10 +56,12 @@ class DeterministicTranslator:
         schema: RegistrySchema,
         abstract_query_hash: str = "default_hash",
         safety_version: str = "v1.0.0",
-        row_limit: int = 1000,
+        row_limit: int | None = None,
         relationships: list[AbstractRelationshipDef] | None = None,
     ) -> ExecutableQuery:
         """Translates abstract AST into parameterized physical SQL."""
+        if row_limit is None:
+            row_limit = configured_row_limit()
         tree = ast.tree.copy()
         repairs: list[TranslationRepair] = []
 
@@ -699,6 +713,11 @@ class DeterministicTranslator:
         for join_node in tree.find_all(exp.Join):
             on_clause = join_node.args.get("on")
             if on_clause is None:
+                if join_node.kind == "CROSS":
+                    # Explicit CROSS JOIN is deliberate (the safety engine
+                    # blocks implicit comma-joins); there is no ON condition
+                    # to validate against the relationship graph.
+                    continue
                 raise TranslationError(
                     "JOIN without an explicit ON clause is not permitted."
                     " All JOINs must reference a declared relationship"

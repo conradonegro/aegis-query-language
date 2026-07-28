@@ -1,4 +1,5 @@
 import logging
+import os
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -7,6 +8,21 @@ from app.compiler import ExecutableQuery
 from app.execution.models import ExecutionContext, QueryResult
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_FETCH_CAP = 1000
+
+
+def configured_fetch_cap() -> int:
+    """Python-side row materialization cap; AEGIS_ROW_LIMIT overrides.
+
+    Mirrors the translator's injected LIMIT so raising the env var lifts
+    both caps together.
+    """
+    raw = os.getenv("AEGIS_ROW_LIMIT", "")
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_FETCH_CAP
 
 class ExecutionEngine:
     """
@@ -58,9 +74,11 @@ class ExecutionEngine:
             # Extract standard dict response — fetchmany caps Python-side
             # materialization as defence-in-depth against the translator's
             # row-limit injection being absent or bypassed.
-            _MAX_ROWS = 1000
             columns = list(result.keys())
-            rows = [dict(row._mapping) for row in result.fetchmany(_MAX_ROWS)]
+            rows = [
+                dict(row._mapping)
+                for row in result.fetchmany(configured_fetch_cap())
+            ]
 
             metadata = {
                 "row_limit_applied": query.row_limit_applied,
