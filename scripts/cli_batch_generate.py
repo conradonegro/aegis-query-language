@@ -124,8 +124,12 @@ def _run_cli(system_prompt: str, user_prompt: str, model: str) -> str:
         raise TransportFailure(f"CLI timeout after {CLI_TIMEOUT_S}s") from exc
 
     if proc.returncode != 0:
-        stderr = " ".join(proc.stderr.split())[:200]
-        raise TransportFailure(f"CLI exit {proc.returncode}: {stderr}")
+        # Usage-limit notices and similar often land on stdout with an
+        # empty stderr — capture both so the failure reason is visible.
+        stderr = " ".join(proc.stderr.split())[:150]
+        stdout = " ".join(proc.stdout.split())[:150]
+        detail = stderr or stdout or "(no output)"
+        raise TransportFailure(f"CLI exit {proc.returncode}: {detail}")
 
     try:
         cli_envelope = json.loads(proc.stdout)

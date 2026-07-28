@@ -39,10 +39,14 @@ _STUB_RESULT = ExecutableQuery(
 # Unit tests — BackendHintContext / build_backend_hints
 # ---------------------------------------------------------------------------
 
-def test_backend_hints_contains_datetime() -> None:
+def test_backend_hints_contains_date_only() -> None:
+    """Day granularity: sub-day precision serves no SQL-generation purpose
+    and makes every request's system prompt unique — breaking dump/replay
+    keying and provider prompt caches."""
     ctx = BackendHintContext(tenant_id="test_tenant", now=FROZEN_DT)
     hints = build_backend_hints(ctx)
-    assert any("Current date/time (UTC): 2026-01-15T12:00:00Z" in h for h in hints)
+    assert any("Current date (UTC): 2026-01-15" in h for h in hints)
+    assert not any("12:00:00" in h for h in hints)
 
 
 def test_backend_hints_pass_validator() -> None:
@@ -170,7 +174,7 @@ def test_backend_hints_always_present(
             )
         assert response.status_code == 200
         assert any(
-            "Current date/time (UTC): 2026-01-15T12:00:00Z" in h
+            "Current date (UTC): 2026-01-15" in h
             for h in captured_hints
         )
     finally:

@@ -17,7 +17,11 @@ def build_backend_hints(ctx: BackendHintContext) -> list[str]:
     Framed as orientation context, not rules. All generated hints are passed
     through validate_hints() as a safety net against accidental misconfiguration.
     """
+    # Day granularity only: sub-day precision serves no SQL-generation
+    # purpose, and a per-second timestamp makes every request's system
+    # prompt unique — defeating provider prompt caches and the dump/replay
+    # pipeline's prompt-keyed response cache.
     hints = [
-        f"Current date/time (UTC): {ctx.now.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        f"Current date (UTC): {ctx.now.strftime('%Y-%m-%d')}"
     ]
     return validate_hints(hints)

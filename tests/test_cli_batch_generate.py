@@ -4,6 +4,7 @@ as model refusals, and only validated envelopes reach responses.jsonl."""
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 from types import ModuleType
 
@@ -174,3 +175,16 @@ def test_run_batch_routes_failures_to_failures_file(tmp_path: Path) -> None:
     assert [r["key"] for r in responses] == ["good"]
     assert [f["key"] for f in failures] == ["broken"]
     assert "timeout" in failures[0]["error"]
+
+
+def test_run_cli_failure_includes_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI failures often print the reason (e.g. usage-limit notices) to
+    stdout with empty stderr — the failure record must include it."""
+    stub = tmp_path / "claude"
+    stub.write_text("#!/bin/sh\necho 'usage limit reached'\nexit 1\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    with pytest.raises(mod.TransportFailure, match="usage limit reached"):
+        mod._run_cli("sys", "user", "haiku")
