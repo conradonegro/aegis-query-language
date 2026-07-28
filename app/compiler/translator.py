@@ -101,8 +101,10 @@ class DeterministicTranslator:
 
         maps = self._build_schema_maps(schema)
         scope = self._collect_table_scope(tree)
+        declared_edges = self._build_edge_index(relationships or [])
         literals, column_datatypes = self._walk_tree_nodes(
-            tree, maps, scope, repairs, cte_aliases, cte_col_aliases
+            tree, maps, scope, repairs, cte_aliases, cte_col_aliases,
+            declared_edges,
         )
         self._validate_temporal_expressions(tree, column_datatypes)
         temporal_literal_ids = self._collect_temporal_literal_ids(
@@ -228,6 +230,7 @@ class DeterministicTranslator:
         repairs: list[TranslationRepair],
         cte_aliases: set[str],
         cte_col_aliases: set[str],
+        declared_edges: set[frozenset[str]] | None = None,
     ) -> tuple[list[exp.Literal], dict[int, str]]:
         """Walks the copied AST, mutating table/column nodes in-place."""
         literals_to_replace: list[exp.Literal] = []
@@ -256,7 +259,7 @@ class DeterministicTranslator:
                 else:
                     self._resolve_column_without_prefix(
                         node_inst, c_name, maps, scope, column_datatypes,
-                        cte_col_aliases,
+                        cte_col_aliases, declared_edges or set(),
                     )
             elif isinstance(node_inst, exp.Literal):
                 literals_to_replace.append(node_inst)
@@ -436,6 +439,7 @@ class DeterministicTranslator:
         scope: _TableScope,
         column_datatypes: dict[int, str],
         cte_col_aliases: set[str],
+        declared_edges: set[frozenset[str]],
     ) -> None:
         if c_name in cte_col_aliases:
             # CTE-derived output column (declared with AS inside a CTE's SELECT).
@@ -445,10 +449,24 @@ class DeterministicTranslator:
         owning_tables = maps.column_ownership.get(c_name, set())
         scoped_owning_tables = owning_tables.intersection(scope.tables_in_scope)
         if len(scoped_owning_tables) > 1:
-            raise TranslationError(
-                f"Ambiguous naked column '{c_name}'. Belongs to multiple scoped"
-                f" tables: {list(scoped_owning_tables)}. Explicit aliasing required."
+            # When every candidate pair is equated by a declared
+            # relationship (the column is the join key connecting the
+            # scoped tables), the values are identical on all owners and
+            # any resolution is correct — pick deterministically.
+            candidates = sorted(scoped_owning_tables)
+            equivalent = all(
+                frozenset({f"{a}.{c_name}", f"{b}.{c_name}"}) in declared_edges
+                for i, a in enumerate(candidates)
+                for b in candidates[i + 1:]
             )
+            if equivalent:
+                scoped_owning_tables = {candidates[0]}
+            else:
+                raise TranslationError(
+                    f"Ambiguous naked column '{c_name}'. Belongs to multiple"
+                    f" scoped tables: {list(scoped_owning_tables)}."
+                    f" Explicit aliasing required."
+                )
         if len(scoped_owning_tables) == 1:
             unique_owning_table = scoped_owning_tables.pop()
             full_alias = f"{unique_owning_table}.{c_name}"

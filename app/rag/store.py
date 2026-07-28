@@ -52,8 +52,11 @@ def _score_value(
     elif val in query_full:
         best = max(best, 0.9)
 
-    # 3. Fuzzy fallback.
-    if best < 0.85:
+    # 3. Fuzzy fallback — gated on sharing at least one whole word with
+    # the query. Entity lookups virtually always share a word ("Aaron
+    # Doran" ↔ "aaron doran"); the gate lets the store index six-figure
+    # value counts without running difflib against every non-candidate.
+    if best < 0.85 and set(val.split()) & query_words:
         best = max(
             best,
             difflib.SequenceMatcher(None, val, query_full).ratio(),

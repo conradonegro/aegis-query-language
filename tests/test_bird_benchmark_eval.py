@@ -93,3 +93,20 @@ def test_build_intent_appends_evidence() -> None:
 def test_build_intent_without_evidence_is_bare_question() -> None:
     assert mod._build_intent("How many customers?", "") == "How many customers?"
     assert mod._build_intent("How many customers?", None) == "How many customers?"
+
+
+@pytest.mark.asyncio
+async def test_gold_cache_serves_second_call_without_engine(
+    tmp_path: Path,
+) -> None:
+    """Gold SQL results are deterministic across runs — the cache must
+    serve repeat executions without touching the database."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    cache = tmp_path / "gold_cache.db"
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    rows1 = await mod._run_gold_sql(engine, "SELECT 41 + 1", "db1", cache)
+    await engine.dispose()
+    # engine=None: any real execution attempt would crash
+    rows2 = await mod._run_gold_sql(None, "SELECT 41 + 1", "db1", cache)
+    assert rows1 == rows2 == [(42,)]

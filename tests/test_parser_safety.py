@@ -375,3 +375,11 @@ def test_safety_engine_allows_array_agg() -> None:
     safety = SafetyEngine()
     ast = parser.parse(AbstractQuery(sql="SELECT ARRAY_AGG(t.a) FROM t"))
     assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_group_concat() -> None:
+    """GROUP_CONCAT (MySQL habit) transpiles to STRING_AGG in postgres."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql="SELECT GROUP_CONCAT(t.a) FROM t"))
+    assert safety.validate(ast).tree is not None

@@ -1095,3 +1095,68 @@ def test_asc_ordering_gets_nulls_first(
     ))
     executable = translator.translate(ast, mock_schema)
     assert "ASC NULLS FIRST" in executable.sql
+
+
+@pytest.fixture
+def customers_schema() -> RegistrySchema:
+    safety_all = SafetyClassification(
+        allowed_in_select=True, allowed_in_where=True,
+        allowed_in_group_by=True, aggregation_allowed=True,
+        join_participation_allowed=True,
+    )
+
+    def table(name: str, cols: list[str]) -> AbstractTableDef:
+        return AbstractTableDef(
+            alias=name, description=name, physical_target=f"public.{name}",
+            columns=[
+                AbstractColumnDef(
+                    alias=c, description="", physical_target=c,
+                    safety=safety_all,
+                )
+                for c in cols
+            ],
+        )
+
+    return RegistrySchema(
+        version="1.0",
+        tables=[
+            table("customers", ["customerid", "segment"]),
+            table("yearmonth", ["customerid", "consumption"]),
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="yearmonth", source_column="customerid",
+                target_table="customers", target_column="customerid",
+            ),
+        ],
+    )
+
+
+def test_ambiguous_naked_column_resolved_when_join_equivalent(
+    translator: DeterministicTranslator, customers_schema: RegistrySchema
+) -> None:
+    """A naked column owned by multiple scoped tables resolves when the
+    candidate columns are equated by a declared relationship — the join
+    guarantees identical values, so any owner is correct."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT COUNT(DISTINCT customerid) FROM customers "
+        "JOIN yearmonth ON customers.customerid = yearmonth.customerid"
+    ))
+    executable = translator.translate(
+        ast, customers_schema, relationships=customers_schema.relationships
+    )
+    assert "customerid" in executable.sql
+
+
+def test_ambiguous_naked_column_still_fails_without_equivalence(
+    translator: DeterministicTranslator, customers_schema: RegistrySchema
+) -> None:
+    """Ambiguity between columns NOT equated by a relationship stays a
+    hard error — guessing would silently change semantics."""
+    schema = customers_schema.model_copy(update={"relationships": []})
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT COUNT(DISTINCT customerid) FROM customers "
+        "JOIN yearmonth ON customers.customerid = yearmonth.customerid"
+    ))
+    with pytest.raises(TranslationError, match="Ambiguous naked column"):
+        translator.translate(ast, schema, relationships=[])

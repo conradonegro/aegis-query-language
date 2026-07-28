@@ -115,6 +115,7 @@ class SafetyEngine:
         exp.CurrentDate,     # CURRENT_DATE
         exp.CurrentTimestamp,
         exp.ArrayAgg,        # ARRAY_AGG — read-only aggregation
+        exp.GroupConcat,     # GROUP_CONCAT — renders as STRING_AGG in PG
         exp.RegexpLike,      # ~ regex match
         exp.NullSafeNEQ,     # IS DISTINCT FROM
         exp.Bracket,         # array subscript

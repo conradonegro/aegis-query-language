@@ -94,20 +94,65 @@ def _build_intent(question: str, evidence: str | None) -> str:
 # Gold SQL execution
 # ---------------------------------------------------------------------------
 
+def _gold_cache_key(db_id: str, sql: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(f"{db_id}\x00{sql}".encode()).hexdigest()
+
+
 async def _run_gold_sql(
     engine: Any,
     sql: str,
     db_id: str,
+    cache_path: Path | None = None,
 ) -> list[tuple[Any, ...]]:
     """Execute gold SQL against the physical database.
 
     Uses raw driver execution: gold SQL is trusted verbatim text with no
     bind parameters, and literals like '%:57' would be misparsed as bind
     parameters by SQLAlchemy text().
+
+    Gold results are deterministic (static benchmark data), so they are
+    cached across runs in a local sqlite file when cache_path is given.
     """
-    async with engine.connect() as conn:
-        result = await conn.exec_driver_sql(sql)
-        return [tuple(r) for r in result.fetchall()]
+    import pickle
+
+    key = _gold_cache_key(db_id, sql)
+    if cache_path is not None:
+        conn = sqlite3.connect(cache_path)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS gold_cache"
+                " (key TEXT PRIMARY KEY, rows BLOB)"
+            )
+            hit = conn.execute(
+                "SELECT rows FROM gold_cache WHERE key = ?", (key,)
+            ).fetchone()
+            if hit:
+                cached: list[tuple[Any, ...]] = pickle.loads(hit[0])
+                return cached
+        finally:
+            conn.close()
+
+    async with engine.connect() as conn_db:
+        result = await conn_db.exec_driver_sql(sql)
+        rows = [tuple(r) for r in result.fetchall()]
+
+    if cache_path is not None:
+        conn = sqlite3.connect(cache_path)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS gold_cache"
+                " (key TEXT PRIMARY KEY, rows BLOB)"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO gold_cache (key, rows) VALUES (?, ?)",
+                (key, pickle.dumps(rows)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +198,7 @@ async def _evaluate_question(
     api_key: str,
     entry: dict[str, Any],
     provider_id: str | None,
+    gold_cache: Path | None = None,
 ) -> dict[str, Any]:
     question_id = entry.get("question_id", "?")
     db_id: str = entry["db_id"]
@@ -191,7 +237,7 @@ async def _evaluate_question(
         result["source_database_used"] = body.get("source_database_used")
 
         # Compare generated results with gold results (official BIRD EX)
-        gold_rows = await _run_gold_sql(engine, gold_sql, db_id)
+        gold_rows = await _run_gold_sql(engine, gold_sql, db_id, gold_cache)
         gen_rows = [tuple(row.values()) for row in body.get("results", [])]
 
         result["match"] = rows_match(gold_rows, gen_rows)
@@ -475,6 +521,8 @@ async def main(args: argparse.Namespace) -> None:
         results: list[dict[str, Any]] = []
         semaphore = asyncio.Semaphore(args.concurrency)
 
+        gold_cache = Path(args.gold_cache) if args.gold_cache else None
+
         async def _bound_eval(entry: dict[str, Any]) -> dict[str, Any]:
             async with semaphore:
                 return await _evaluate_question(
@@ -484,6 +532,7 @@ async def main(args: argparse.Namespace) -> None:
                     args.api_key,
                     entry,
                     args.provider_id,
+                    gold_cache,
                 )
 
         tasks = [asyncio.create_task(_bound_eval(entry)) for entry in dataset]
@@ -578,6 +627,14 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         default=None,
         help="Optional path to write detailed JSON results",
+    )
+    parser.add_argument(
+        "--gold-cache",
+        default="benchmarks/gold_cache.db",
+        help=(
+            "SQLite path caching gold SQL results across runs"
+            " (empty string disables)"
+        ),
     )
     parser.add_argument(
         "--store",

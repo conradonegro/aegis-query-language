@@ -27,6 +27,35 @@ engine = create_async_engine(DATABASE_URL)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
+
+
+def _rag_config(
+    dtype: str, is_pk: bool, distinct_count: int | None
+) -> tuple[bool, str | None, int | None, str | None, bool]:
+    """RAG configuration for a discovered column.
+
+    Enables semantic value matching for text columns so the LLM gets
+    value-level hints even when the exact value isn't in the samples:
+      - text, not PK, 9-200 distinct -> most_frequent top 100
+      - 201-50,000 distinct -> "high" hint, ALL values indexed
+        (frequency ranking is meaningless for near-unique entity-name
+        columns — every player/card/user name occurs ~once; entity
+        lookup needs the full value set)
+      - >50,000 / non-text / PK -> disabled
+
+    Values are populated at compile time via refresh_on_compile=True.
+    """
+    is_text = dtype.lower() in ("text", "character varying", "varchar")
+    if not is_text or is_pk or distinct_count is None:
+        return False, None, None, None, False
+    if 9 <= distinct_count <= 200:
+        hint = "low" if distinct_count <= 50 else "medium"
+        return True, hint, min(distinct_count, 100), "most_frequent", True
+    if 200 < distinct_count <= 50_000:
+        return True, "high", distinct_count, "distinct", True
+    return False, None, None, None, False
+
+
 async def _run_discovery(session: AsyncSession) -> None:
     """Core discovery logic — tables, columns, and FK relationships."""
     new_version = MetadataVersion(
@@ -136,42 +165,20 @@ async def _run_discovery(session: AsyncSession) -> None:
                     f'SELECT "{col_name}" FROM "{tbl_name}"'
                     f' WHERE "{col_name}" IS NOT NULL'
                     f' GROUP BY "{col_name}"'
-                    f' ORDER BY COUNT(*) DESC LIMIT 3'
+                    f' ORDER BY COUNT(*) DESC LIMIT 8'
                 )
                 sample_res = await session.execute(sample_sql)
                 sample_vals = [str(row[0]) for row in sample_res.fetchall()]
         except Exception:
             pass  # Non-fatal — skip sample values for this column
 
-        # RAG configuration: enable semantic value matching for medium-
-        # cardinality text columns so the LLM gets value-level hints even
-        # when the exact value isn't in the top-3 prompt samples.
-        #
-        # Strategy:
-        #  - text columns, not PKs, 9-200 distinct values → rag_enabled
-        #  - ≤50 distinct → "low" cardinality hint (all indexed)
-        #  - 51-200 → "medium" hint (top 100 indexed)
-        #  - >200 or non-text or PK → skip (too noisy / not categorical)
-        #
-        # Values are populated at compile time via refresh_on_compile=True,
-        # which queries the runtime DB using the "most_frequent" strategy.
-        rag_enabled = False
-        rag_cardinality_hint: str | None = None
-        rag_limit: int | None = None
-        rag_sample_strategy: str | None = None
-        rag_refresh = False
-        _is_text = dtype.lower() in ("text", "character varying", "varchar")
-        if (
-            _is_text
-            and not is_pk
-            and distinct_count is not None
-            and 9 <= distinct_count <= 200
-        ):
-            rag_enabled = True
-            rag_cardinality_hint = "low" if distinct_count <= 50 else "medium"
-            rag_limit = min(distinct_count, 100)
-            rag_sample_strategy = "most_frequent"
-            rag_refresh = True
+        (
+            rag_enabled,
+            rag_cardinality_hint,
+            rag_limit,
+            rag_sample_strategy,
+            rag_refresh,
+        ) = _rag_config(dtype, is_pk, distinct_count)
 
         # Map Column Object
         col_obj = MetadataColumn(

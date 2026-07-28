@@ -219,3 +219,32 @@ def test_strict_mode_off_allows_ambiguous_match(
     )
     assert len(hints.column_hints) == 1
     assert "Nvidia" in hints.column_hints[0]
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy-fallback word gate — required to index high-cardinality columns
+# ---------------------------------------------------------------------------
+
+
+def test_fuzzy_fallback_runs_when_word_shared() -> None:
+    s = InMemoryVectorStore()
+    s.index_value(CategoricalValue(
+        tenant_id="t", abstract_column="p.name",
+        artifact_version="v1", value="Anna Sartorri",
+    ))
+    # 'anna' is shared; the slightly-off full match resolves via fuzzy.
+    res = s.search("records for Anna Sartorri please", tenant_id="t")
+    assert res.outcome != RAGOutcome.NO_MATCH
+
+
+def test_fuzzy_fallback_gated_without_shared_word() -> None:
+    """Values sharing no whole word with the query skip the expensive
+    difflib comparison — the enabler for ~120k indexed values."""
+    s = InMemoryVectorStore()
+    s.index_value(CategoricalValue(
+        tenant_id="t", abstract_column="p.name",
+        artifact_version="v1", value="an sartori",
+    ))
+    # near the full query textually, but zero shared words
+    res = s.search("ana sartorri", tenant_id="t")
+    assert res.outcome == RAGOutcome.NO_MATCH
