@@ -117,17 +117,83 @@ def test_safety_engine_blocks_anonymous_function() -> None:
         safety.validate(ast)
 
 
-def test_safety_engine_blocks_window_function() -> None:
-    """Window functions (exp.Window) are not in the ALLOW_LIST and must be rejected."""
+@pytest.mark.parametrize("window_query", [
+    "SELECT ROW_NUMBER() OVER (ORDER BY id) FROM users",
+    "SELECT RANK() OVER (PARTITION BY dept ORDER BY salary DESC) FROM users",
+    "SELECT LAG(total) OVER (ORDER BY created_at) FROM orders",
+    "SELECT SUM(total) OVER (PARTITION BY user_id) FROM orders",
+])
+def test_safety_engine_allows_window_functions(window_query: str) -> None:
+    """Window functions are read-only analytics; permitted for BIRD-style
+    top-N-per-group questions."""
     parser = SQLParser()
     safety = SafetyEngine()
-    try:
-        ast = parser.parse(
-            AbstractQuery(sql="SELECT ROW_NUMBER() OVER (ORDER BY id) FROM users")
+    ast = parser.parse(AbstractQuery(sql=window_query))
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_age_function() -> None:
+    """AGE() parses as exp.Anonymous but is an approved read-only function."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(
+        AbstractQuery(
+            sql="SELECT AGE(CAST(a.d AS DATE), CAST(a.e AS DATE)) FROM a"
         )
-    except Exception:
-        return
-    with pytest.raises(SafetyViolationError):
+    )
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_filter_clause() -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(
+        AbstractQuery(sql="SELECT COUNT(*) FILTER (WHERE t.x > 1) FROM t")
+    )
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_dpipe_concat() -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql="SELECT t.a || '-' || t.b FROM t"))
+    assert safety.validate(ast).tree is not None
+
+
+@pytest.mark.parametrize("query", [
+    "SELECT STRPOS(t.a, 'x') FROM t",
+    "SELECT SPLIT_PART(t.a, ',', 1) FROM t",
+])
+def test_safety_engine_allows_strpos_and_split_part(query: str) -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql=query))
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_explicit_cross_join() -> None:
+    """Deliberate CROSS JOIN (e.g. against a single-row totals CTE) is
+    permitted; cost is bounded by statement_timeout."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(
+        AbstractQuery(
+            sql=(
+                "WITH totals AS (SELECT COUNT(*) AS n FROM t) "
+                "SELECT t.x, totals.n FROM t CROSS JOIN totals"
+            )
+        )
+    )
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_still_blocks_comma_join() -> None:
+    """Accidental comma-join stays blocked: it is almost always a missing
+    ON condition, and produces silently wrong Cartesian products."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql="SELECT a.x FROM a, b WHERE a.id = b.id"))
+    with pytest.raises(SafetyViolationError, match="(?i)implicit"):
         safety.validate(ast)
 
 
@@ -273,16 +339,17 @@ def test_safety_engine_union_deny_list_enforced_in_branch() -> None:
         safety.validate(SQLAst(tree=union_tree))
 
 
-def test_safety_engine_union_cross_join_blocked_in_branch() -> None:
-    """A cross JOIN inside a UNION branch must still be rejected."""
+def test_safety_engine_union_comma_join_blocked_in_branch() -> None:
+    """An implicit comma-join inside a UNION branch must still be rejected —
+    validation walks into every branch, not just the first."""
     parser = SQLParser()
     safety = SafetyEngine()
     ast = parser.parse(AbstractQuery(
         sql=(
             "SELECT id FROM users"
             " UNION ALL"
-            " SELECT id FROM users CROSS JOIN orders"
+            " SELECT id FROM users, orders"
         )
     ))
-    with pytest.raises(SafetyViolationError, match="(?i)cross JOIN"):
+    with pytest.raises(SafetyViolationError, match="(?i)implicit"):
         safety.validate(ast)

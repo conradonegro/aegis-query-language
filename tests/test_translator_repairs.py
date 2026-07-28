@@ -733,12 +733,12 @@ def test_where_only_aggregates_moves_to_having_and_removes_where(
     assert result.translation_repairs[0].type == "where_aggregation_relocation"
 
 
-def test_explicit_cross_join_blocked(safety_engine: SafetyEngine) -> None:
-    """CROSS JOIN (no ON condition) must also be blocked."""
+def test_explicit_cross_join_allowed(safety_engine: SafetyEngine) -> None:
+    """Explicit CROSS JOIN is deliberate and permitted; cost is bounded by
+    statement_timeout. Only implicit comma-joins stay blocked."""
     tree = sqlglot.parse_one("SELECT posts.id FROM posts CROSS JOIN users")
     ast = SQLAst(tree=tree)
-    with pytest.raises(SafetyViolationError, match="Implicit or cross JOIN detected"):
-        safety_engine.validate(ast)
+    assert safety_engine.validate(ast).tree is not None
 
 
 def test_explicit_join_with_on_passes_safety(safety_engine: SafetyEngine) -> None:
@@ -749,3 +749,23 @@ def test_explicit_join_with_on_passes_safety(safety_engine: SafetyEngine) -> Non
     ast = SQLAst(tree=tree)
     validated = safety_engine.validate(ast)
     assert validated is not None
+
+
+def test_translator_allows_explicit_cross_join_of_cte(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """Explicit CROSS JOIN against a single-row aggregate CTE translates
+    cleanly — the ON requirement applies only to conditional joins."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "WITH totals AS (SELECT COUNT(users.id) AS n FROM users) "
+        "SELECT users.name, totals.n FROM users CROSS JOIN totals"
+    ))
+    executable = translator.translate(
+        ast, mock_schema, relationships=[
+            AbstractRelationshipDef(
+                source_table="users", source_column="id",
+                target_table="orders", target_column="id",
+            )
+        ],
+    )
+    assert "CROSS JOIN totals" in executable.sql

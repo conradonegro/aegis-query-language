@@ -275,15 +275,16 @@ def test_join_inequality_predicate_blocked() -> None:
 
 
 def test_join_without_on_clause_blocked() -> None:
-    """A CROSS JOIN (no ON clause) is rejected by the safety engine before
-    reaching the translator; the translator's own check is defence-in-depth."""
+    """An implicit comma-join (no ON clause) is rejected by the safety engine
+    before reaching the translator; the translator's own check is
+    defence-in-depth."""
     parser = SQLParser()
     safety = SafetyEngine()
 
     ast = parser.parse(AbstractQuery(
-        sql="SELECT users.id FROM users CROSS JOIN orders"
+        sql="SELECT users.id FROM users, orders"
     ))
-    with pytest.raises(SafetyViolationError, match="cross JOIN"):
+    with pytest.raises(SafetyViolationError, match="(?i)implicit"):
         safety.validate(ast)
 
 

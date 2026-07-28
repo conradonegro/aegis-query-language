@@ -109,9 +109,24 @@ class SafetyEngine:
         exp.Extract,
         exp.StrToDate,       # TO_DATE(text, format) — PostgreSQL date parsing
         exp.TimestampTrunc,  # DATE_TRUNC('part', temporal) — PostgreSQL truncation
+        exp.StrPosition,     # STRPOS(text, substring)
+        exp.SplitPart,       # SPLIT_PART(text, delimiter, n)
+        exp.DPipe,           # || string concatenation
+        # Window functions — read-only analytics
+        exp.Window,
+        exp.RowNumber, exp.Rank, exp.DenseRank, exp.PercentRank,
+        exp.Lag, exp.Lead, exp.Ntile,
+        exp.FirstValue, exp.LastValue, exp.CumeDist,
+        # Aggregate FILTER (WHERE ...) clause
+        exp.Filter,
         # Alias
         exp.Alias, exp.ColumnPosition, exp.TableAlias, exp.Tuple
     )
+
+    # exp.Anonymous is the parser's catch-all for functions sqlglot has no
+    # dedicated node for. It stays in the DENY_LIST, with these specific
+    # read-only functions exempted by name.
+    ALLOWED_ANONYMOUS_FUNCTIONS = frozenset({"AGE"})
 
     def validate(self, ast: SQLAst) -> ValidatedAST:
         """Runs the validation rules. Raises SafetyViolationError if blocked."""
@@ -136,6 +151,12 @@ class SafetyEngine:
             node_type = type(node_inst)
 
             if issubclass(node_type, self.DENY_LIST):
+                 if (
+                     isinstance(node_inst, exp.Anonymous)
+                     and str(node_inst.this).upper()
+                     in self.ALLOWED_ANONYMOUS_FUNCTIONS
+                 ):
+                     continue
                  raise SafetyViolationError(
                      f"Explicitly denied node type found: {node_type.__name__}"
                  )
@@ -146,14 +167,17 @@ class SafetyEngine:
                      f"Node type not in strict allow-list: {node_type.__name__}"
                  )
 
-        # Implicit cross-join detection: any JOIN without an explicit ON or USING
-        # condition is a cross-product (either `FROM a, b` parsed as a comma join,
-        # or `... CROSS JOIN b`). These are blocked categorically because they
-        # bypass relationship graph validation.
+        # Implicit-join detection: a JOIN without ON/USING that was not
+        # written as an explicit CROSS JOIN is almost always a missing join
+        # condition (`FROM a, b`) and produces a silently wrong Cartesian
+        # product. Explicit CROSS JOIN is deliberate (typically against a
+        # single-row aggregate CTE) and its cost is bounded by
+        # statement_timeout at execution.
         for join_node in tree.find_all(exp.Join):
             has_on = join_node.args.get("on") is not None
             has_using = join_node.args.get("using") is not None
-            if not has_on and not has_using:
+            is_explicit_cross = join_node.kind == "CROSS"
+            if not has_on and not has_using and not is_explicit_cross:
                 raise SafetyViolationError(
                     "Implicit or cross JOIN detected: every JOIN must have an "
                     "explicit ON or USING condition."
