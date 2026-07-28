@@ -24,9 +24,15 @@ _DUMP_PATH = os.getenv("LLM_DUMP_PATH", "benchmarks/prompts.jsonl")
 _REPLAY_PATH = os.getenv("LLM_REPLAY_PATH", "benchmarks/responses.jsonl")
 
 
-def _prompt_key(user_prompt: str) -> str:
-    """Stable hash of the user prompt for keying dump/replay entries."""
-    return hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
+def _prompt_key(system_prompt: str, user_prompt: str) -> str:
+    """Stable hash over BOTH prompts for keying dump/replay entries.
+
+    Schema context (relationships, hints) renders into the system prompt;
+    keying on the user prompt alone would serve stale responses after any
+    schema-context change.
+    """
+    combined = system_prompt + "\x00" + user_prompt
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:16]
 
 
 _dump_initialized = False
@@ -48,7 +54,7 @@ class DumpPromptGateway:
             _dump_initialized = True
 
     async def generate(self, prompt: PromptEnvelope) -> LLMResult:
-        key = _prompt_key(prompt.user_prompt)
+        key = _prompt_key(prompt.system_instruction, prompt.user_prompt)
         entry = {
             "key": key,
             "system_prompt": prompt.system_instruction,
@@ -94,7 +100,7 @@ class ReplayGateway:
         )
 
     async def generate(self, prompt: PromptEnvelope) -> LLMResult:
-        key = _prompt_key(prompt.user_prompt)
+        key = _prompt_key(prompt.system_instruction, prompt.user_prompt)
         if key not in self._responses:
             raise LLMGenerationError(
                 f"ReplayGateway: no response for prompt key {key}",

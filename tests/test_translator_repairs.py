@@ -1068,3 +1068,30 @@ def test_round_arithmetic_expression_cast_to_numeric(
     ))
     executable = translator.translate(ast, mock_schema)
     assert "ROUND(CAST(" in executable.sql
+
+
+def test_desc_ordering_gets_nulls_last(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """PostgreSQL sorts NULLs first on DESC — a superlative query with
+    ORDER BY x DESC LIMIT 1 would return a NULL row. The translator adds
+    NULLS LAST to DESC sort keys without an explicit NULLS clause."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT orders.id FROM orders ORDER BY orders.id DESC LIMIT 1"
+    ))
+    executable = translator.translate(ast, mock_schema)
+    assert "DESC NULLS LAST" in executable.sql
+
+
+def test_asc_ordering_gets_nulls_first(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """sqlglot normalizes NULL ordering when generating postgres from a
+    dialect-less parse (nulls-are-small semantics) — the same normalization
+    BIRD's official SQLite->PG gold transpile applies, so gold and
+    generated queries agree on NULL placement."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT orders.id FROM orders ORDER BY orders.id ASC"
+    ))
+    executable = translator.translate(ast, mock_schema)
+    assert "ASC NULLS FIRST" in executable.sql

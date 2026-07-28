@@ -288,3 +288,17 @@ def test_prompt_rule_12_output_shape() -> None:
 
     assert "EXACTLY the columns" in envelope.system_instruction
     assert "exactly one column" in envelope.system_instruction
+
+
+def test_prompt_rule_13_no_concatenation() -> None:
+    """Rule 13: return values as stored; never concatenate columns."""
+    builder = PromptBuilder()
+    intent = UserIntent(natural_language_query="test")
+    schema = FilteredSchema(
+        version="1.0", tables=[], relationships=[], omitted_columns={}
+    )
+    envelope = builder.build_prompt(
+        intent, schema, PromptHints(column_hints=[]), chat_history=[]
+    )
+    assert "NEVER concatenate" in envelope.system_instruction
+    assert "separate columns" in envelope.system_instruction

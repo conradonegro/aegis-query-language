@@ -114,6 +114,7 @@ class SafetyEngine:
         exp.DPipe,           # || string concatenation
         exp.CurrentDate,     # CURRENT_DATE
         exp.CurrentTimestamp,
+        exp.ArrayAgg,        # ARRAY_AGG — read-only aggregation
         exp.RegexpLike,      # ~ regex match
         exp.NullSafeNEQ,     # IS DISTINCT FROM
         exp.Bracket,         # array subscript

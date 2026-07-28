@@ -368,3 +368,10 @@ def test_safety_engine_allows_read_only_operators(query: str) -> None:
     safety = SafetyEngine()
     ast = parser.parse(AbstractQuery(sql=query))
     assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_array_agg() -> None:
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql="SELECT ARRAY_AGG(t.a) FROM t"))
+    assert safety.validate(ast).tree is not None

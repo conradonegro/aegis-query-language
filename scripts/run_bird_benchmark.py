@@ -73,6 +73,24 @@ def rows_match(
 
 
 # ---------------------------------------------------------------------------
+# Intent construction — question + BIRD evidence annotation
+# ---------------------------------------------------------------------------
+
+
+def _build_intent(question: str, evidence: str | None) -> str:
+    """Appends BIRD's per-question evidence to the intent.
+
+    Evidence is official model input in the BIRD protocol (external
+    knowledge every benchmarked system receives, e.g. "Average Monthly
+    consumption = AVG(Consumption) / 12"). Concatenating it onto the
+    question mirrors the official prompt construction.
+    """
+    if not evidence or not evidence.strip():
+        return question
+    return f"{question}\n\nHint (verified domain knowledge): {evidence.strip()}"
+
+
+# ---------------------------------------------------------------------------
 # Gold SQL execution
 # ---------------------------------------------------------------------------
 
@@ -138,7 +156,7 @@ async def _evaluate_question(
 ) -> dict[str, Any]:
     question_id = entry.get("question_id", "?")
     db_id: str = entry["db_id"]
-    question: str = entry["question"]
+    question: str = _build_intent(entry["question"], entry.get("evidence"))
     gold_sql: str = entry["SQL"]
 
     result: dict[str, Any] = {

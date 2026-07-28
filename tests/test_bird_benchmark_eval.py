@@ -82,3 +82,14 @@ async def test_run_gold_sql_tolerates_colons_in_literals() -> None:
     rows = await mod._run_gold_sql(engine, "SELECT '%:57'", "any")
     await engine.dispose()
     assert rows == [("%:57",)]
+
+
+def test_build_intent_appends_evidence() -> None:
+    intent = mod._build_intent("How many customers?", "Year 2012 = 201201-201212")
+    assert intent.startswith("How many customers?")
+    assert "Year 2012 = 201201-201212" in intent
+
+
+def test_build_intent_without_evidence_is_bare_question() -> None:
+    assert mod._build_intent("How many customers?", "") == "How many customers?"
+    assert mod._build_intent("How many customers?", None) == "How many customers?"
