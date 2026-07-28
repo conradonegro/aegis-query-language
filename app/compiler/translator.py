@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sqlglot import exp
+from sqlglot.optimizer.scope import traverse_scope
 
 from app.api.models import TranslationRepair
 from app.compiler.models import ExecutableQuery, ValidatedAST
@@ -40,6 +41,13 @@ class _TableScope:
     dynamic_table_aliases: dict[str, str]
     tables_in_scope: set[str]
     table_runtime_prefixes: dict[str, set[str]] = field(
+        default_factory=dict
+    )
+    # Per-column-node view of the aliases visible in that node's SELECT
+    # scope: id(column node) -> {table_name: aliases declared in scope}.
+    # Prevents an alias declared inside a CTE/subquery from being used to
+    # rewrite references in a different scope.
+    node_scope_prefixes: dict[int, dict[str, set[str]]] = field(
         default_factory=dict
     )
 
@@ -103,12 +111,17 @@ class DeterministicTranslator:
         parameters = self._parameterize_literals(
             tree, literals, temporal_literal_ids
         )
+        self._cast_round_arguments(tree)
         row_limit_applied = self._apply_row_limit(tree, row_limit, parameters)
 
         final_sql = tree.sql(dialect="postgres")
         # sqlglot renders positional params as $p1 in postgres dialect;
         # SQLAlchemy text() binding requires :p1 universally.
         final_sql = re.sub(r"\$(p\d+)\b", r":\1", final_sql)
+        # Any other colon (inline temporal literals like '12:30:00', or
+        # :: casts) would be misread by SQLAlchemy text() as a bind
+        # parameter — escape it. text() renders each \: as a literal colon.
+        final_sql = re.sub(r":(?!p\d+\b)", r"\\:", final_sql)
 
         return ExecutableQuery(
             sql=final_sql,
@@ -173,7 +186,35 @@ class DeterministicTranslator:
             dynamic_table_aliases=dynamic_table_aliases,
             tables_in_scope=tables_in_scope,
             table_runtime_prefixes=table_runtime_prefixes,
+            node_scope_prefixes=self._collect_scope_local_prefixes(tree),
         )
+
+    @staticmethod
+    def _collect_scope_local_prefixes(
+        tree: exp.Expression,
+    ) -> dict[int, dict[str, set[str]]]:
+        """Maps each column node to the table aliases visible in its scope.
+
+        sqlglot's scope traversal covers SELECT scopes (CTEs, subqueries,
+        the outer query). Columns the traversal does not reach fall back to
+        the global alias view. Failure to build scopes (exotic trees) also
+        falls back — old behavior, never an error.
+        """
+        node_scope_prefixes: dict[int, dict[str, set[str]]] = {}
+        try:
+            scopes = traverse_scope(tree)
+        except Exception:
+            return node_scope_prefixes
+        for sc in scopes:
+            local: dict[str, set[str]] = {}
+            for table_node in sc.tables:
+                t_name = table_node.name.lower()
+                local.setdefault(t_name, set())
+                if table_node.alias:
+                    local[t_name].add(table_node.alias.lower())
+            for col in sc.columns:
+                node_scope_prefixes[id(col)] = local
+        return node_scope_prefixes
 
     # ------------------------------------------------------------------
     # AST tree walk and node resolution
@@ -293,9 +334,13 @@ class DeterministicTranslator:
             column_datatypes[id(node_inst)] = maps.alias_to_datatype.get(
                 full_alias, ""
             )
-            assigned_aliases = scope.table_runtime_prefixes.get(
-                resolved_table, set()
-            )
+            scope_local = scope.node_scope_prefixes.get(id(node_inst))
+            if scope_local is not None:
+                assigned_aliases = scope_local.get(resolved_table, set())
+            else:
+                assigned_aliases = scope.table_runtime_prefixes.get(
+                    resolved_table, set()
+                )
             runtime_prefix = self._resolve_runtime_prefix(
                 t_prefix,
                 resolved_table,
@@ -486,6 +531,14 @@ class DeterministicTranslator:
                 return False
             target_name = target.this.name.lower() if target.this else ""
             return target_name in self._TEMPORAL_TYPES
+        if isinstance(expr, (exp.CurrentDate, exp.CurrentTimestamp)):
+            return True
+        if (
+            isinstance(expr, exp.Anonymous)
+            and str(expr.this).upper() in self._TEMPORAL_FUNCTIONS
+        ):
+            # AGE(...) returns an interval regardless of its arguments.
+            return True
         return False
 
     # ------------------------------------------------------------------
@@ -495,6 +548,10 @@ class DeterministicTranslator:
     _TEMPORAL_TYPES: frozenset[str] = frozenset(
         {"date", "time", "timestamp", "timestamptz", "datetime", "interval"}
     )
+
+    # Allow-listed functions (parsed as exp.Anonymous) that always return
+    # a temporal value.
+    _TEMPORAL_FUNCTIONS: frozenset[str] = frozenset({"AGE"})
 
     def _collect_temporal_literal_ids(
         self, tree: exp.Expression, column_datatypes: dict[int, str]
@@ -632,9 +689,37 @@ class DeterministicTranslator:
                 continue
             param_name = f"p{param_counter}"
             parameters[param_name] = node_inst.this
-            node_inst.replace(exp.Parameter(this=exp.var(param_name)))
+            replacement: exp.Expression = exp.Parameter(this=exp.var(param_name))
+            if isinstance(node_inst.parent, exp.Concat):
+                # asyncpg cannot infer a parameter's type inside variadic
+                # CONCAT (IndeterminateDatatypeError) — cast explicitly.
+                replacement = exp.Cast(
+                    this=replacement, to=exp.DataType.build("TEXT")
+                )
+            node_inst.replace(replacement)
             param_counter += 1
         return parameters
+
+    @staticmethod
+    def _cast_round_arguments(tree: exp.Expression) -> None:
+        """Casts two-arg ROUND's first argument to numeric.
+
+        PostgreSQL has no round(double precision, int) overload; float
+        expressions fed to ROUND(x, n) fail with UndefinedFunctionError.
+        sqlglot's generator casts known-typed aggregates but leaves
+        arithmetic expressions uncast. Casting numeric-typed input is a
+        no-op, so the rewrite is unconditionally safe.
+        """
+        for round_node in tree.find_all(exp.Round):
+            if round_node.args.get("decimals") is None:
+                continue
+            arg = round_node.this
+            if isinstance(arg, exp.Cast):
+                continue
+            round_node.set(
+                "this",
+                exp.Cast(this=arg.copy(), to=exp.DataType.build("DECIMAL")),
+            )
 
     def _apply_row_limit(
         self,
@@ -842,16 +927,26 @@ class DeterministicTranslator:
     def _build_edge_index(
         relationships: list[AbstractRelationshipDef],
     ) -> set[frozenset[str]]:
-        """Builds a frozenset edge index for O(1) pair lookup."""
+        """Builds a frozenset edge index for O(1) pair lookup.
+
+        Beyond directly declared edges, adds transitive shared-parent
+        edges: when a.x and b.y are both declared FKs to the same parent
+        column p.z, the condition a.x = b.y is provably meaningful
+        (equality through the shared parent) and is treated as declared.
+        """
         declared_edges: set[frozenset[str]] = set()
+        parent_children: dict[str, set[str]] = {}
         for rel in relationships:
             if rel.source_column and rel.target_column:
-                declared_edges.add(
-                    frozenset({
-                        f"{rel.source_table}.{rel.source_column}",
-                        f"{rel.target_table}.{rel.target_column}",
-                    })
-                )
+                src = f"{rel.source_table}.{rel.source_column}"
+                tgt = f"{rel.target_table}.{rel.target_column}"
+                declared_edges.add(frozenset({src, tgt}))
+                parent_children.setdefault(tgt, set()).add(src)
+        for children in parent_children.values():
+            child_list = sorted(children)
+            for i, a in enumerate(child_list):
+                for b in child_list[i + 1:]:
+                    declared_edges.add(frozenset({a, b}))
         return declared_edges
 
     @staticmethod

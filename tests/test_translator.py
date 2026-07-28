@@ -875,7 +875,9 @@ def test_timestamp_literal_in_comparison_left_inline() -> None:
     validated = safety.validate(ast)
     result = translator.translate(validated, schema, abstract_query_hash="h")
 
-    assert "'2024-01-15 10:00:00'" in result.sql
+    # Colons inside the inline literal are escaped for SQLAlchemy text();
+    # they render back to plain colons at execution.
+    assert "'2024-01-15 10\\:00\\:00'" in result.sql
     assert not any(v == "2024-01-15 10:00:00" for v in result.parameters.values())
 
 

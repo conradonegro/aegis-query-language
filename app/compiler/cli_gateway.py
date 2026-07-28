@@ -14,7 +14,6 @@ import asyncio
 import json
 import logging
 import os
-import tempfile
 import time
 
 from app.compiler.interfaces import LLMGatewayProtocol
@@ -65,20 +64,36 @@ def _parse_cli_envelope(raw: str) -> tuple[str, int, int]:
 class ClaudeCLIGateway:
     """LLM gateway that invokes the ``claude`` CLI for each request."""
 
+    # Map short aliases to full model names that bill to the Claude
+    # subscription (not API credits). The bare "haiku" alias routes
+    # through API billing; the full name routes through subscription.
+    _MODEL_MAP: dict[str, str] = {
+        "haiku": "claude-haiku-4-5-20251001",
+        "sonnet": "sonnet",
+        "opus": "opus",
+    }
+
     def __init__(self, model: str = "haiku") -> None:
-        self.model = model
+        self.model = self._MODEL_MAP.get(model, model)
 
     async def generate(self, prompt: PromptEnvelope) -> LLMResult:
         start = time.perf_counter()
-        user_text, sys_prompt_path = self._prepare_input(prompt)
+        user_text = self._build_user_text(prompt)
 
         cmd = [
             _CLAUDE_BIN, "-p",
             "--model", self.model,
-            "--system-prompt-file", sys_prompt_path,
+            "--system-prompt", prompt.system_instruction,
             "--output-format", "json",
-            "--tools", "",
+            "--permission-mode", "acceptEdits",
+            "--no-session-persistence",
         ]
+
+        # Ensure HOME is set so the CLI can find its OAuth tokens.
+        env = os.environ.copy()
+        if "HOME" not in env:
+            import pathlib
+            env["HOME"] = str(pathlib.Path.home())
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -86,6 +101,7 @@ class ClaudeCLIGateway:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(input=user_text.encode("utf-8")),
@@ -101,17 +117,17 @@ class ClaudeCLIGateway:
                 "Install with: npm install -g @anthropic-ai/claude-code",
                 raw_response="",
             ) from e
-        finally:
-            os.unlink(sys_prompt_path)
-
-        if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="replace")[:500]
-            raise LLMGenerationError(
-                f"Claude CLI exited with code {proc.returncode}: {err}",
-                raw_response=err,
-            )
 
         raw = stdout.decode("utf-8", errors="replace")
+
+        if proc.returncode != 0:
+            # The CLI may still return JSON on stdout with error details.
+            err = stderr.decode("utf-8", errors="replace")[:500]
+            raise LLMGenerationError(
+                f"Claude CLI exited with code {proc.returncode}: "
+                f"{err or raw[:500]}",
+                raw_response=raw or err,
+            )
         text, p_tok, c_tok = _parse_cli_envelope(raw)
         elapsed = (time.perf_counter() - start) * 1000
         return LLMResult(
@@ -123,22 +139,15 @@ class ClaudeCLIGateway:
         )
 
     @staticmethod
-    def _prepare_input(prompt: PromptEnvelope) -> tuple[str, str]:
-        """Write system prompt to a temp file and build user text.
-        Returns (user_text, sys_prompt_path)."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as sys_f:
-            sys_f.write(prompt.system_instruction)
-            sys_prompt_path = sys_f.name
-
+    def _build_user_text(prompt: PromptEnvelope) -> str:
+        """Build the user-turn text, prepending chat history if present."""
         user_text = prompt.user_prompt
         if prompt.chat_history:
             history = [
                 f"[{m.role}]: {m.content}" for m in prompt.chat_history
             ]
             user_text = "\n".join(history) + "\n\n" + user_text
-        return user_text, sys_prompt_path
+        return user_text
 
 
 # Satisfy the protocol check at import time.

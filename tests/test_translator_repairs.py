@@ -843,3 +843,228 @@ def test_translator_leaves_plain_columns_unquoted(
     executable = translator.translate(ast, quoted_ident_schema)
     assert 'public.patient.sex' in executable.sql
     assert '"sex"' not in executable.sql
+
+
+# ---------------------------------------------------------------------------
+# Round-2 benchmark bug fixes (run 20260728-141731)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_accepts_age_function(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """AGE() returns an interval — EXTRACT(YEAR FROM AGE(...)) is valid."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT EXTRACT(YEAR FROM AGE(orders.created_at)) FROM orders"
+    ))
+    executable = translator.translate(ast, mock_schema)
+    assert "AGE" in executable.sql
+
+
+def test_extract_accepts_current_date(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT EXTRACT(YEAR FROM CURRENT_DATE) FROM orders"
+    ))
+    executable = translator.translate(ast, mock_schema)
+    assert "CURRENT_DATE" in executable.sql
+
+
+def test_round_with_decimals_casts_to_numeric(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """PostgreSQL has no round(double precision, int) overload — the
+    translator must cast the first argument to numeric."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT ROUND(AVG(orders.total_amount), 2) FROM orders"
+    ))
+    executable = translator.translate(ast, mock_schema)
+    assert "ROUND(CAST(AVG(phys_orders.total_amount) AS DECIMAL), 2)" \
+        in executable.sql
+
+
+def test_concat_string_params_are_cast_to_text(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """asyncpg cannot infer parameter types inside variadic CONCAT —
+    string literals parameterized there need an explicit text cast."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT CONCAT(users.name, ' ', users.name) FROM users"
+    ))
+    executable = translator.translate(ast, mock_schema)
+    assert "CAST(:p1 AS TEXT)" in executable.sql
+
+
+def test_inline_temporal_literal_colons_escaped(
+    translator: DeterministicTranslator,
+) -> None:
+    """Temporal literals stay inline; a time component's colons would be
+    parsed as bind parameters by SQLAlchemy text() unless escaped."""
+    schema = RegistrySchema(
+        version="1.0",
+        tables=[
+            AbstractTableDef(
+                alias="events", description="", physical_target="phys_events",
+                columns=[
+                    AbstractColumnDef(
+                        alias="id", description="", physical_target="id",
+                        safety=SafetyClassification(allowed_in_select=True),
+                    ),
+                    AbstractColumnDef(
+                        alias="happened_at", description="",
+                        data_type="timestamp", physical_target="happened_at",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True,
+                        ),
+                    ),
+                ],
+            ),
+        ],
+        relationships=[],
+    )
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT events.id FROM events "
+        "WHERE events.happened_at = '2013-01-01 12:30:00'"
+    ))
+    executable = translator.translate(ast, schema)
+    assert "12\\:30\\:00" in executable.sql
+
+
+def test_transitive_join_through_shared_parent_allowed(
+    translator: DeterministicTranslator,
+) -> None:
+    """A JOIN a.x = b.y where both a.x and b.y are declared FKs to the
+    same parent column is provably meaningful (equality through the
+    shared parent) and must not be blocked as hallucinated."""
+    safety_all = SafetyClassification(
+        allowed_in_select=True, allowed_in_where=True,
+        aggregation_allowed=True, join_participation_allowed=True,
+    )
+    schema = RegistrySchema(
+        version="1.0",
+        tables=[
+            AbstractTableDef(
+                alias=t, description=t, physical_target=f"public.{t}",
+                columns=[AbstractColumnDef(
+                    alias="id", description="", physical_target="id",
+                    safety=safety_all,
+                )],
+            )
+            for t in ("patient", "laboratory", "examination")
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="laboratory", source_column="id",
+                target_table="patient", target_column="id",
+            ),
+            AbstractRelationshipDef(
+                source_table="examination", source_column="id",
+                target_table="patient", target_column="id",
+            ),
+        ],
+    )
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT laboratory.id FROM laboratory "
+        "JOIN examination ON laboratory.id = examination.id"
+    ))
+    executable = translator.translate(
+        ast, schema, relationships=schema.relationships
+    )
+    assert "JOIN public.examination" in executable.sql
+
+
+def _formula_schema() -> RegistrySchema:
+    safety_all = SafetyClassification(
+        allowed_in_select=True, allowed_in_where=True,
+        allowed_in_group_by=True, aggregation_allowed=True,
+        join_participation_allowed=True,
+    )
+
+    def table(name: str, cols: list[str]) -> AbstractTableDef:
+        return AbstractTableDef(
+            alias=name, description=name, physical_target=f"public.{name}",
+            columns=[
+                AbstractColumnDef(
+                    alias=c, description="", physical_target=c,
+                    safety=safety_all,
+                )
+                for c in cols
+            ],
+        )
+
+    return RegistrySchema(
+        version="1.0",
+        tables=[
+            table("races", ["raceid", "year", "date"]),
+            table("driverstandings", ["raceid", "driverid", "position"]),
+            table("laptimes", ["raceid", "driverid", "lap"]),
+        ],
+        relationships=[
+            AbstractRelationshipDef(
+                source_table="driverstandings", source_column="raceid",
+                target_table="races", target_column="raceid",
+            ),
+            AbstractRelationshipDef(
+                source_table="laptimes", source_column="raceid",
+                target_table="races", target_column="raceid",
+            ),
+        ],
+    )
+
+
+def test_cte_alias_does_not_leak_into_outer_scope(
+    translator: DeterministicTranslator,
+) -> None:
+    """An alias declared inside a CTE ('races r') must not be used to
+    rewrite an unaliased reference to the same table in the outer query —
+    that produced 'missing FROM-clause entry for table r' at execution."""
+    schema = _formula_schema()
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "WITH champion AS ("
+        "  SELECT ds.driverid FROM driverstandings ds"
+        "  JOIN races r ON ds.raceid = r.raceid WHERE r.year = 2009"
+        ") "
+        "SELECT laptimes.lap FROM laptimes "
+        "JOIN races ON laptimes.raceid = races.raceid "
+        "JOIN champion ON laptimes.driverid = champion.driverid"
+    ))
+    executable = translator.translate(
+        ast, schema, relationships=schema.relationships
+    )
+    outer = executable.sql.split(") ", 1)[1]
+    assert "r.raceid" not in outer
+    assert "public.races.raceid" in outer
+
+
+def test_out_of_scope_alias_reference_repaired_to_physical(
+    translator: DeterministicTranslator,
+) -> None:
+    """A subquery alias referenced in the outer scope (model error) is
+    resolved to the physical table instead of emitting invalid SQL."""
+    schema = _formula_schema()
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT laptimes.lap FROM laptimes "
+        "JOIN races ON laptimes.raceid = races.raceid "
+        "WHERE r2.year = 2009 AND laptimes.raceid IN "
+        "(SELECT r2.raceid FROM races r2 WHERE r2.year = 2009)"
+    ))
+    executable = translator.translate(
+        ast, schema, relationships=schema.relationships
+    )
+    where_part = executable.sql.split("WHERE", 1)[1].split("IN")[0]
+    assert "r2.year" not in where_part
+    assert "public.races.year" in where_part
+
+
+def test_round_arithmetic_expression_cast_to_numeric(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """sqlglot casts aggregates inside ROUND but not arithmetic — float
+    division fed to two-arg ROUND has no PostgreSQL overload."""
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT ROUND((SUM(orders.total_amount) * 100 /"
+        " NULLIF(SUM(orders.total_amount), 0)), 2) FROM orders"
+    ))
+    executable = translator.translate(ast, mock_schema)
+    assert "ROUND(CAST(" in executable.sql

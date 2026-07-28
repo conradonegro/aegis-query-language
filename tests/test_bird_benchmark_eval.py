@@ -13,6 +13,8 @@ from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "run_bird_benchmark.py"
 
 
@@ -65,3 +67,18 @@ def test_rows_match_none_values() -> None:
 def test_rows_match_empty_result_sets() -> None:
     assert mod.rows_match([], [])
     assert not mod.rows_match([(1,)], [])
+
+
+@pytest.mark.asyncio
+async def test_run_gold_sql_tolerates_colons_in_literals() -> None:
+    """Gold SQL contains literals like '1:27' — SQLAlchemy text() would
+    parse ':27' as a bind parameter; raw driver execution must be used."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    # '%:57' puts a non-word char before the colon — the shape that makes
+    # SQLAlchemy text() see a bind parameter named '57' (BIRD formula_1
+    # gold queries filter lap times with exactly such LIKE patterns).
+    rows = await mod._run_gold_sql(engine, "SELECT '%:57'", "any")
+    await engine.dispose()
+    assert rows == [("%:57",)]

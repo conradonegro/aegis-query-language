@@ -353,3 +353,18 @@ def test_safety_engine_union_comma_join_blocked_in_branch() -> None:
     ))
     with pytest.raises(SafetyViolationError, match="(?i)implicit"):
         safety.validate(ast)
+
+
+@pytest.mark.parametrize("query", [
+    "SELECT CURRENT_DATE",
+    "SELECT t.a ~ 'pattern' FROM t",
+    "SELECT t.a IS DISTINCT FROM t.b FROM t",
+    "SELECT (t.a)[1] FROM t",
+])
+def test_safety_engine_allows_read_only_operators(query: str) -> None:
+    """CURRENT_DATE, regex match, IS DISTINCT FROM, and array subscript
+    are read-only constructs."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(AbstractQuery(sql=query))
+    assert safety.validate(ast).tree is not None

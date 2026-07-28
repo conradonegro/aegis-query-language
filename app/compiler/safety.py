@@ -112,6 +112,11 @@ class SafetyEngine:
         exp.StrPosition,     # STRPOS(text, substring)
         exp.SplitPart,       # SPLIT_PART(text, delimiter, n)
         exp.DPipe,           # || string concatenation
+        exp.CurrentDate,     # CURRENT_DATE
+        exp.CurrentTimestamp,
+        exp.RegexpLike,      # ~ regex match
+        exp.NullSafeNEQ,     # IS DISTINCT FROM
+        exp.Bracket,         # array subscript
         # Window functions — read-only analytics
         exp.Window,
         exp.RowNumber, exp.Rank, exp.DenseRank, exp.PercentRank,

@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 # ---------------------------------------------------------------------------
@@ -82,9 +81,14 @@ async def _run_gold_sql(
     sql: str,
     db_id: str,
 ) -> list[tuple[Any, ...]]:
-    """Execute gold SQL against the physical database."""
+    """Execute gold SQL against the physical database.
+
+    Uses raw driver execution: gold SQL is trusted verbatim text with no
+    bind parameters, and literals like '%:57' would be misparsed as bind
+    parameters by SQLAlchemy text().
+    """
     async with engine.connect() as conn:
-        result = await conn.execute(text(sql))
+        result = await conn.exec_driver_sql(sql)
         return [tuple(r) for r in result.fetchall()]
 
 
