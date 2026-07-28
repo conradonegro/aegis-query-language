@@ -1,2 +1,3 @@
 # BIRD SQL dump — download instructions in docs/BIRD_SETUP.md
 *.sql
+!02_restore_fks.sql

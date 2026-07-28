@@ -49,11 +49,24 @@ services:
         condition: service_healthy
     environment:
       PGPASSWORD: postgrespassword
-    command: >
-      psql -h db -U postgres -d aegis_data_warehouse
-      -f /bird/01_BIRD_dev.sql
+    command:
+      - /bin/sh
+      - -c
+      - |
+        psql -h db -U postgres -d aegis_data_warehouse -f /bird/01_BIRD_dev.sql &&
+        psql -h db -U postgres -d aegis_data_warehouse -f /bird/02_restore_fks.sql
     volumes:
       - ${BIRD_SQL_PATH:-./docker/bird_data/01_BIRD_dev.sql}:/bird/01_BIRD_dev.sql:ro
+      - ./docker/bird_data/02_restore_fks.sql:/bird/02_restore_fks.sql:ro
+
+  # ---------------------------------------------------------------------------
+  # aegis — override: lift the row cap for benchmark alignment. Official BIRD
+  # EX compares full result sets; the 1000-row product default guarantees
+  # mismatches on questions whose gold result exceeds it.
+  # ---------------------------------------------------------------------------
+  aegis:
+    environment:
+      AEGIS_ROW_LIMIT: "500000"
 
   # ---------------------------------------------------------------------------
   # discover — override: wait for bird-loader and populate semantic descriptions
