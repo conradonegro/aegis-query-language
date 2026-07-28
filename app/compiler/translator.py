@@ -44,6 +44,23 @@ class _TableScope:
     )
 
 
+_SAFE_IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def _physical_identifier(name: str) -> exp.Identifier:
+    """Builds an Identifier for a physical target, quoting when required.
+
+    PostgreSQL folds unquoted identifiers to lowercase, so any physical
+    name with spaces, punctuation, or uppercase letters (e.g. BIRD's
+    "First Date", "T-CHO") must render quoted or the emitted SQL is
+    invalid. Dotted names are schema-qualified paths ("public.patient")
+    and must stay unquoted so the dot keeps its separator meaning.
+    """
+    if "." in name or _SAFE_IDENTIFIER_RE.fullmatch(name):
+        return exp.Identifier(this=name)
+    return exp.Identifier(this=name, quoted=True)
+
+
 class DeterministicTranslator:
     """
     Translates an abstract validated AST into a parameterized physics execution
@@ -215,7 +232,7 @@ class DeterministicTranslator:
         if t_name in maps.alias_to_physical_table:
             node_inst.set(
                 "this",
-                exp.Identifier(this=maps.alias_to_physical_table[t_name]),
+                _physical_identifier(maps.alias_to_physical_table[t_name]),
             )
         else:
             raise TranslationError(
@@ -271,7 +288,7 @@ class DeterministicTranslator:
                 )
             node_inst.set(
                 "this",
-                exp.Identifier(this=maps.alias_to_physical_col[full_alias]),
+                _physical_identifier(maps.alias_to_physical_col[full_alias]),
             )
             column_datatypes[id(node_inst)] = maps.alias_to_datatype.get(
                 full_alias, ""
@@ -286,7 +303,7 @@ class DeterministicTranslator:
                 maps.alias_to_physical_table[resolved_table],
                 c_name,
             )
-            node_inst.set("table", exp.Identifier(this=runtime_prefix))
+            node_inst.set("table", _physical_identifier(runtime_prefix))
             self._check_column_safety(
                 c_name,
                 resolved_table,
@@ -353,9 +370,9 @@ class DeterministicTranslator:
         )
         node_inst.set(
             "this",
-            exp.Identifier(this=maps.alias_to_physical_col[owning_full_alias]),
+            _physical_identifier(maps.alias_to_physical_col[owning_full_alias]),
         )
-        node_inst.set("table", exp.Identifier(this=runtime_prefix))
+        node_inst.set("table", _physical_identifier(runtime_prefix))
         column_datatypes[id(node_inst)] = maps.alias_to_datatype.get(
             owning_full_alias, ""
         )
@@ -392,7 +409,7 @@ class DeterministicTranslator:
             full_alias = f"{unique_owning_table}.{c_name}"
             node_inst.set(
                 "this",
-                exp.Identifier(this=maps.alias_to_physical_col[full_alias]),
+                _physical_identifier(maps.alias_to_physical_col[full_alias]),
             )
             column_datatypes[id(node_inst)] = maps.alias_to_datatype.get(
                 full_alias, ""

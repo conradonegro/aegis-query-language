@@ -769,3 +769,77 @@ def test_translator_allows_explicit_cross_join_of_cte(
         ],
     )
     assert "CROSS JOIN totals" in executable.sql
+
+
+@pytest.fixture
+def quoted_ident_schema() -> RegistrySchema:
+    """Schema with physical column names requiring quoting (spaces, mixed
+    case, punctuation) — as produced by BIRD's thrombosis_prediction and
+    california_schools databases."""
+    safety_all = SafetyClassification(
+        allowed_in_select=True, allowed_in_where=True,
+        allowed_in_group_by=True, aggregation_allowed=True,
+    )
+    return RegistrySchema(
+        version="1.0",
+        tables=[
+            AbstractTableDef(
+                alias="patient", description="p", physical_target="public.patient",
+                columns=[
+                    AbstractColumnDef(
+                        alias="sex", description="", physical_target="sex",
+                        safety=safety_all,
+                    ),
+                    AbstractColumnDef(
+                        alias="First Date", description="", data_type="date",
+                        physical_target="First Date", safety=safety_all,
+                    ),
+                    AbstractColumnDef(
+                        alias="T-CHO", description="", data_type="integer",
+                        physical_target="T-CHO", safety=safety_all,
+                    ),
+                    AbstractColumnDef(
+                        alias="Free Meal Count (K-12)", description="",
+                        data_type="real",
+                        physical_target="Free Meal Count (K-12)",
+                        safety=safety_all,
+                    ),
+                ],
+            ),
+        ],
+        relationships=[],
+    )
+
+
+def test_translator_quotes_physical_columns_with_spaces(
+    translator: DeterministicTranslator, quoted_ident_schema: RegistrySchema
+) -> None:
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        'SELECT COUNT(*) FROM patient WHERE '
+        'EXTRACT(YEAR FROM patient."First Date") = 1997'
+    ))
+    executable = translator.translate(ast, quoted_ident_schema)
+    assert '"First Date"' in executable.sql
+    assert "patient.First Date" not in executable.sql
+
+
+def test_translator_quotes_hyphen_and_paren_columns(
+    translator: DeterministicTranslator, quoted_ident_schema: RegistrySchema
+) -> None:
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        'SELECT patient."T-CHO", patient."Free Meal Count (K-12)" FROM patient'
+    ))
+    executable = translator.translate(ast, quoted_ident_schema)
+    assert '"T-CHO"' in executable.sql
+    assert '"Free Meal Count (K-12)"' in executable.sql
+
+
+def test_translator_leaves_plain_columns_unquoted(
+    translator: DeterministicTranslator, quoted_ident_schema: RegistrySchema
+) -> None:
+    ast = ValidatedAST(tree=sqlglot.parse_one(
+        "SELECT patient.sex FROM patient"
+    ))
+    executable = translator.translate(ast, quoted_ident_schema)
+    assert 'public.patient.sex' in executable.sql
+    assert '"sex"' not in executable.sql
