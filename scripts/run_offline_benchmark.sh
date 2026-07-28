@@ -21,13 +21,13 @@ echo "=== Pass 1: dump prompts (expected: every question errors) ==="
 uv run python scripts/run_bird_benchmark.py \
   --questions "$QUESTIONS" --api-key "$API_KEY" --api-url "$API_URL" \
   --db-url "$DB_URL" --provider-id dump \
-  --limit "$LIMIT" --concurrency 4 --store /dev/null
+  --limit "$LIMIT" --concurrency 8 --store /dev/null
 
 echo "=== Pass 2: generate SQL via claude CLI (model=$MODEL) ==="
-uv run python scripts/cli_batch_generate.py --model "$MODEL" --concurrency 4
+uv run python scripts/cli_batch_generate.py --model "$MODEL" --concurrency 8
 
 echo "=== Pass 3: replay through translator/executor and score ==="
 uv run python scripts/run_bird_benchmark.py \
   --questions "$QUESTIONS" --api-key "$API_KEY" --api-url "$API_URL" \
   --db-url "$DB_URL" --provider-id replay \
-  --limit "$LIMIT" --concurrency 4
+  --limit "$LIMIT" --concurrency 10
