@@ -90,3 +90,32 @@ ALTER TABLE ONLY constructorstandings
 ALTER TABLE ONLY driverstandings
     ADD CONSTRAINT driverstandings_raceid_fkey FOREIGN KEY (raceid)
     REFERENCES races(raceid) NOT VALID;
+
+-- ============================================================================
+-- STEP 2: steward-curated relationships (NOT declared in any BIRD artifact).
+--
+-- These edges are absent from the BIRD SQLite DDL, dev_tables.json, and the
+-- official PG dump alike — but BIRD's own gold answers join through them
+-- (34 gold queries in mini-dev), and BIRD's database_description CSVs
+-- document the linkage as model input ("Gas Station ID", "the set printing
+-- code that the card is from"). They are what a data steward would declare
+-- for this warehouse: fact-table edges to their dimension tables.
+-- Provenance is kept explicit in this section so every curated edge is
+-- auditable and none is per-question tuning.
+-- ============================================================================
+
+-- debit_card_specializing (curated) ------------------------------------------
+ALTER TABLE ONLY transactions_1k
+    ADD CONSTRAINT transactions_1k_gasstationid_fkey FOREIGN KEY (gasstationid)
+    REFERENCES gasstations(gasstationid) NOT VALID;
+ALTER TABLE ONLY transactions_1k
+    ADD CONSTRAINT transactions_1k_customerid_fkey FOREIGN KEY (customerid)
+    REFERENCES customers(customerid) NOT VALID;
+ALTER TABLE ONLY transactions_1k
+    ADD CONSTRAINT transactions_1k_productid_fkey FOREIGN KEY (productid)
+    REFERENCES products(productid) NOT VALID;
+
+-- card_games (curated) --------------------------------------------------------
+ALTER TABLE ONLY cards
+    ADD CONSTRAINT cards_setcode_fkey FOREIGN KEY (setcode)
+    REFERENCES sets(code) NOT VALID;
