@@ -29,8 +29,15 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 
+_MAX_RAG_VALUE_AVG_LEN = 100.0
+_MAX_SAMPLE_VALUE_LEN = 80
+
+
 def _rag_config(
-    dtype: str, is_pk: bool, distinct_count: int | None
+    dtype: str,
+    is_pk: bool,
+    distinct_count: int | None,
+    avg_len: float | None = None,
 ) -> tuple[bool, str | None, int | None, str | None, bool]:
     """RAG configuration for a discovered column.
 
@@ -42,11 +49,16 @@ def _rag_config(
         columns — every player/card/user name occurs ~once; entity
         lookup needs the full value set)
       - >50,000 / non-text / PK -> disabled
+      - avg value length > 100 chars -> disabled: those are documents
+        (XML blobs, prose), not categorical values; indexing them floods
+        the store and the prompt
 
     Values are populated at compile time via refresh_on_compile=True.
     """
     is_text = dtype.lower() in ("text", "character varying", "varchar")
     if not is_text or is_pk or distinct_count is None:
+        return False, None, None, None, False
+    if avg_len is not None and avg_len > _MAX_RAG_VALUE_AVG_LEN:
         return False, None, None, None, False
     if 9 <= distinct_count <= 200:
         hint = "low" if distinct_count <= 50 else "medium"
@@ -54,6 +66,15 @@ def _rag_config(
     if 200 < distinct_count <= 50_000:
         return True, "high", distinct_count, "distinct", True
     return False, None, None, None, False
+
+
+def _truncate_samples(vals: list[str]) -> list[str]:
+    """Caps sample value length for prompt rendering — a sample longer
+    than _MAX_SAMPLE_VALUE_LEN chars conveys format, not identity."""
+    return [
+        v if len(v) <= _MAX_SAMPLE_VALUE_LEN else v[:_MAX_SAMPLE_VALUE_LEN] + "..."
+        for v in vals
+    ]
 
 
 async def _run_discovery(session: AsyncSession) -> None:
@@ -144,12 +165,21 @@ async def _run_discovery(session: AsyncSession) -> None:
         # as non-exhaustive at render time.
         sample_vals: list[str] = []
         sample_vals_exhaustive: bool = False
+        avg_len: float | None = None
         try:
             distinct_sql = text(
                 f'SELECT COUNT(DISTINCT "{col_name}") FROM "{tbl_name}"'
             )
             distinct_count_row = await session.execute(distinct_sql)
             distinct_count = distinct_count_row.scalar()
+            if dtype.lower() in ("text", "character varying", "varchar"):
+                avg_len_sql = text(
+                    f'SELECT AVG(LENGTH("{col_name}"))'
+                    f' FROM "{tbl_name}" WHERE "{col_name}" IS NOT NULL'
+                )
+                avg_len_row = await session.execute(avg_len_sql)
+                raw_avg = avg_len_row.scalar()
+                avg_len = float(raw_avg) if raw_avg is not None else None
             if distinct_count is not None and 0 < distinct_count <= 8:
                 exhaustive_sql = text(
                     f'SELECT "{col_name}" FROM "{tbl_name}"'
@@ -178,7 +208,8 @@ async def _run_discovery(session: AsyncSession) -> None:
             rag_limit,
             rag_sample_strategy,
             rag_refresh,
-        ) = _rag_config(dtype, is_pk, distinct_count)
+        ) = _rag_config(dtype, is_pk, distinct_count, avg_len)
+        sample_vals = _truncate_samples(sample_vals)
 
         # Map Column Object
         col_obj = MetadataColumn(
