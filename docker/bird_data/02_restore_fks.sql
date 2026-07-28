@@ -16,6 +16,10 @@
 -- Statements are independent; a failure in one (e.g. a unique-index
 -- collision on dirty data) must not block the rest, so this file runs
 -- without ON_ERROR_STOP.
+--
+-- Known expected failure: team_attributes.team_fifa_api_id -> team —
+-- BIRD's team table contains duplicate team_fifa_api_id values, so the
+-- prerequisite unique index cannot be created. 16 of 17 restore.
 -- ============================================================================
 
 -- card_games ----------------------------------------------------------------

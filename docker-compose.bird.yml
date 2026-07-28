@@ -67,6 +67,11 @@ services:
   aegis:
     environment:
       AEGIS_ROW_LIMIT: "500000"
+    # Benchmarks dir shared with the host so the dump/replay offline
+    # pipeline (provider_id=dump / replay) reads and writes the same
+    # prompts.jsonl / responses.jsonl the host-side generator uses.
+    volumes:
+      - ./benchmarks:/app/benchmarks
 
   # ---------------------------------------------------------------------------
   # discover — override: wait for bird-loader and populate semantic descriptions
