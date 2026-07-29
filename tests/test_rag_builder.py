@@ -200,7 +200,16 @@ async def test_builder_skips_sensitive_columns() -> None:
 
 
 @pytest.mark.asyncio
-async def test_builder_skips_high_cardinality() -> None:
+async def test_builder_indexes_high_cardinality() -> None:
+    """Inverted deliberately: this test previously asserted that "high"
+    columns were SKIPPED, which is the defect it locked in.
+
+    Discovery assigns rag_cardinality_hint="high" to the 201-50,000 distinct
+    band — the entity-name columns RAG exists to surface — while the builder
+    silently discarded every one of them (a live index reported
+    indexed=4483, cardinality=113). Enablement is now decided by value shape
+    in discovery, so the builder has no business second-guessing it here.
+    """
     col_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
     blob = _make_blob(col_id=col_id, cardinality="high", rag_values_hash="")
     store = await build_from_artifact(
@@ -211,7 +220,7 @@ async def test_builder_skips_high_cardinality() -> None:
         column_values={col_id: ["anything"]},
     )
     result = store.search("anything", tenant_id="default_tenant")
-    assert result.outcome == RAGOutcome.NO_MATCH
+    assert result.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
 
 
 @pytest.mark.asyncio
@@ -350,3 +359,31 @@ def test_indexed_values_carry_source_database() -> None:
     values = store._store["t1"]
     assert len(values) == 1
     assert values[0].source_database == "european_football_2"
+
+
+def test_high_cardinality_columns_are_indexed() -> None:
+    """The 201-50k band was silently discarded at index time by a
+    rag_cardinality_hint=="high" skip, so the entity-name columns it was
+    meant to add never reached the store (indexed=4483, cardinality=113)."""
+    artifact = {
+        "tables": [
+            {
+                "alias": "players",
+                "tenant_id": "t1",
+                "source_database": "european_football_2",
+                "columns": [
+                    {
+                        "id": "col-1",
+                        "alias": "player_name",
+                        "rag_enabled": True,
+                        "rag_cardinality_hint": "high",
+                        "rag_limit": 3,
+                    }
+                ],
+            }
+        ]
+    }
+    store = _build_inner(
+        artifact, "t1", "v1", {"col-1": ["Aaron Doran", "Shay Given"]}
+    )
+    assert len(store._store["t1"]) == 2

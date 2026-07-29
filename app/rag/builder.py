@@ -4,7 +4,6 @@ Builds an InMemoryVectorStore from a compiled registry artifact and
 pre-fetched metadata_column_values rows. The artifact is the source of truth:
 - Only rag_enabled columns are indexed
 - is_sensitive=True columns are always skipped (even if rag_enabled=True)
-- rag_cardinality_hint="high" columns are skipped
 - Values are fetched from metadata_column_values by the caller and passed in
 - A SHA256 hash of the sorted values is stored in the artifact and verified
   here to catch divergence between the artifact and the DB
@@ -31,6 +30,11 @@ _DEFAULT_RAG_LIMIT = 100
 _LIMIT_BY_CARDINALITY: dict[str | None, int] = {
     "low": 500,
     "medium": _DEFAULT_RAG_LIMIT,
+    # Entity-name columns need their full value set: discovery sets a
+    # per-column rag_limit for these, so this is only the fallback ceiling.
+    # Stated explicitly rather than defaulting to 100, which would silently
+    # truncate a 20k-value name column to its first hundred entries.
+    "high": 50_000,
     None: _DEFAULT_RAG_LIMIT,
 }
 
@@ -98,7 +102,6 @@ class _IndexStats:
     def __init__(self) -> None:
         self.indexed = 0
         self.skipped_sensitive = 0
-        self.skipped_cardinality = 0
         self.skipped_not_enabled = 0
 
 
@@ -126,13 +129,6 @@ def _index_column(
         logger.warning(
             "RAG: skipping %s — is_sensitive=True overrides rag_enabled",
             abstract_col,
-        )
-        return
-
-    if col_dict.get("rag_cardinality_hint") == "high":
-        stats.skipped_cardinality += 1
-        logger.warning(
-            "RAG: skipping %s — rag_cardinality_hint=high", abstract_col
         )
         return
 
@@ -214,12 +210,11 @@ def _build_inner(
     store.set_artifact_version(artifact_version)
     logger.info(
         "RAG index built: version=%s tenant=%s indexed=%d "
-        "skipped(sensitive=%d cardinality=%d not_enabled=%d)",
+        "skipped(sensitive=%d not_enabled=%d)",
         artifact_version[:12],
         tenant_id,
         stats.indexed,
         stats.skipped_sensitive,
-        stats.skipped_cardinality,
         stats.skipped_not_enabled,
     )
     return store

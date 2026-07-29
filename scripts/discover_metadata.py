@@ -30,6 +30,21 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 _MAX_RAG_VALUE_AVG_LEN = 100.0
+
+# A column earns a place in the RAG index only when most of its values look
+# like something a person could type in a question. Values that are opaque
+# identifiers (UUIDs, numeric ids), markup blobs, or single-letter codes can
+# never be matched from natural language, and they dominate index volume.
+# 0.5 = "a majority" — a property of the values themselves, never derived
+# from any benchmark's expected answers.
+_MIN_WORD_LIKE_RATIO = 0.5
+
+# A value counts as word-like when it starts with a letter and continues with
+# letters, spaces, or punctuation that occurs inside real names ("O'Shea",
+# "Wells Fargo & Co"). At least three characters, so single-letter codes and
+# two-digit codes never qualify. Written PostgreSQL-escaped (the doubled
+# quote is one literal apostrophe) because it is only ever embedded in SQL.
+_WORD_LIKE_PATTERN = "^[A-Za-z][A-Za-z .''&-]{2,}$"
 _MAX_SAMPLE_VALUE_LEN = 80
 
 
@@ -38,20 +53,31 @@ def _rag_config(
     is_pk: bool,
     distinct_count: int | None,
     avg_len: float | None = None,
+    word_like_ratio: float | None = None,
 ) -> tuple[bool, str | None, int | None, str | None, bool]:
     """RAG configuration for a discovered column.
 
-    Enables semantic value matching for text columns so the LLM gets
-    value-level hints even when the exact value isn't in the samples:
-      - text, not PK, 9-200 distinct -> most_frequent top 100
-      - 201-50,000 distinct -> "high" hint, ALL values indexed
-        (frequency ranking is meaningless for near-unique entity-name
-        columns — every player/card/user name occurs ~once; entity
-        lookup needs the full value set)
-      - >50,000 / non-text / PK -> disabled
-      - avg value length > 100 chars -> disabled: those are documents
-        (XML blobs, prose), not categorical values; indexing them floods
-        the store and the prompt
+    A column is indexed only when its values could plausibly appear in a
+    natural-language question:
+      - text, not PK, 9-50,000 distinct
+      - avg value length <= 100 (longer means documents — XML blobs, prose —
+        not categorical values; indexing them floods store and prompt)
+      - a majority of sampled values are word-shaped
+
+    The last rule is what excludes UUID and numeric-id columns. They are
+    text, non-PK and sit inside the cardinality band, yet can never be
+    matched from a question — and they dominated index volume
+    (cards.tcgplayerproductid 49,470 values at 0% word-like;
+    foreign_data.uuid 34,056 at 0%). It also drops single-letter code
+    columns, whose values are shorter than a word.
+
+    Within the band, 9-200 distinct uses frequency-ranked sampling, while
+    201-50,000 indexes all values: frequency ranking is meaningless for
+    near-unique entity-name columns, where every player/card/user name
+    occurs about once and entity lookup needs the full value set.
+
+    word_like_ratio=None means discovery could not sample the column; that
+    fails closed rather than indexing an unknown value population.
 
     Values are populated at compile time via refresh_on_compile=True.
     """
@@ -59,6 +85,8 @@ def _rag_config(
     if not is_text or is_pk or distinct_count is None:
         return False, None, None, None, False
     if avg_len is not None and avg_len > _MAX_RAG_VALUE_AVG_LEN:
+        return False, None, None, None, False
+    if word_like_ratio is None or word_like_ratio < _MIN_WORD_LIKE_RATIO:
         return False, None, None, None, False
     if 9 <= distinct_count <= 200:
         hint = "low" if distinct_count <= 50 else "medium"
@@ -166,6 +194,7 @@ async def _run_discovery(session: AsyncSession) -> None:
         sample_vals: list[str] = []
         sample_vals_exhaustive: bool = False
         avg_len: float | None = None
+        word_like_ratio: float | None = None
         try:
             distinct_sql = text(
                 f'SELECT COUNT(DISTINCT "{col_name}") FROM "{tbl_name}"'
@@ -180,6 +209,24 @@ async def _run_discovery(session: AsyncSession) -> None:
                 avg_len_row = await session.execute(avg_len_sql)
                 raw_avg = avg_len_row.scalar()
                 avg_len = float(raw_avg) if raw_avg is not None else None
+
+                # Fraction of DISTINCT values that look like natural language.
+                # Sampled over at most 1,000 distinct values to stay cheap on
+                # wide tables; distinct (not raw rows) so a single very
+                # common value cannot skew the shape.
+                word_like_sql = text(
+                    "SELECT AVG(CASE WHEN v ~ "
+                    f"'{_WORD_LIKE_PATTERN}'"
+                    " THEN 1.0 ELSE 0.0 END)"
+                    f' FROM (SELECT DISTINCT "{col_name}" AS v'
+                    f' FROM "{tbl_name}" WHERE "{col_name}" IS NOT NULL'
+                    " LIMIT 1000) s"
+                )
+                word_like_row = await session.execute(word_like_sql)
+                raw_ratio = word_like_row.scalar()
+                word_like_ratio = (
+                    float(raw_ratio) if raw_ratio is not None else None
+                )
             if distinct_count is not None and 0 < distinct_count <= 8:
                 exhaustive_sql = text(
                     f'SELECT "{col_name}" FROM "{tbl_name}"'
@@ -208,7 +255,9 @@ async def _run_discovery(session: AsyncSession) -> None:
             rag_limit,
             rag_sample_strategy,
             rag_refresh,
-        ) = _rag_config(dtype, is_pk, distinct_count, avg_len)
+        ) = _rag_config(
+            dtype, is_pk, distinct_count, avg_len, word_like_ratio
+        )
         sample_vals = _truncate_samples(sample_vals)
 
         # Map Column Object
