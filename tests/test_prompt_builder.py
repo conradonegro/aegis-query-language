@@ -302,3 +302,22 @@ def test_prompt_rule_13_no_concatenation() -> None:
     )
     assert "NEVER concatenate" in envelope.system_instruction
     assert "separate columns" in envelope.system_instruction
+
+
+def test_prompt_rule_12_forbids_echoing_the_named_entity() -> None:
+    """Rule 12+: the dominant remaining shape is the model prepending the
+    entity's identifying column to the attribute that was asked for —
+    'What is the publisher for Hawkman?' answered as (Hawkman, DC Comics).
+    The rule needs the explicit counter-example, not just a general
+    'no extra columns' statement."""
+    builder = PromptBuilder()
+    intent = UserIntent(natural_language_query="test")
+    schema = FilteredSchema(
+        version="1.0", tables=[], relationships=[], omitted_columns={}
+    )
+    hints = PromptHints(column_hints=[])
+    envelope = builder.build_prompt(intent, schema, hints, chat_history=[])
+    text = envelope.system_instruction
+
+    assert "never echo the entity" in text.lower()
+    assert "superlative" in text.lower()
