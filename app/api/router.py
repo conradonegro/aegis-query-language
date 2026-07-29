@@ -6,7 +6,9 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1268,6 +1270,35 @@ def _build_sample_sql(
     return f"SELECT DISTINCT {c} FROM {t} {where} LIMIT {limit}"
 
 
+async def _purge_ineligible_rag_values(
+    steward_session: AsyncSession, version_id: uuid.UUID
+) -> int:
+    """Delete materialised values for columns no longer eligible for RAG.
+
+    _run_strategy_refresh only visits eligible columns, so its per-column
+    DELETE never fires for a column that has just been marked sensitive or
+    had rag_enabled turned off. Without this purge, values extracted from
+    the production database stay at rest in the registry forever.
+    Returns the number of value rows deleted.
+    """
+    ineligible = select(MetadataColumn.column_id).where(
+        MetadataColumn.version_id == version_id,
+        or_(
+            MetadataColumn.is_sensitive.is_(True),
+            MetadataColumn.rag_enabled.is_(False),
+        ),
+    )
+    result = await steward_session.execute(
+        sa_delete(MetadataColumnValue).where(
+            MetadataColumnValue.version_id == version_id,
+            MetadataColumnValue.column_id.in_(ineligible),
+        )
+    )
+    # execute() is typed as returning Result, but DML always yields a
+    # CursorResult, which is where rowcount lives.
+    return int(cast(CursorResult[Any], result).rowcount or 0)
+
+
 async def _run_strategy_refresh(
     steward_session: AsyncSession,
     runtime_session: AsyncSession,
@@ -1275,9 +1306,12 @@ async def _run_strategy_refresh(
     tenant_id: str,
 ) -> int:
     """For every refresh_on_compile column in version, re-run its strategy and
-    replace existing values. Returns number of columns refreshed."""
-    from sqlalchemy import delete as sa_delete
+    replace existing values. Returns number of columns refreshed.
 
+    Sensitive columns are excluded: is_sensitive must prevent the values ever
+    being read out of the production database, not merely stop them being
+    indexed later.
+    """
     stmt = (
         select(MetadataColumn, MetadataTable.real_name.label("table_real_name"))
         .join(MetadataTable, MetadataColumn.table_id == MetadataTable.table_id)
@@ -1286,6 +1320,7 @@ async def _run_strategy_refresh(
             MetadataColumn.version_id == version_id,
             MetadataColumn.refresh_on_compile.is_(True),
             MetadataColumn.rag_enabled.is_(True),
+            MetadataColumn.is_sensitive.is_(False),
             MetadataVersion.tenant_id == tenant_id,
         )
     )
@@ -1334,7 +1369,12 @@ async def _run_strategy_refresh(
         await steward_session.flush()
         refreshed += 1
 
-    if refreshed:
+    # Runs unconditionally: a column that just became sensitive or had RAG
+    # disabled is absent from the loop above, so only this reaches its
+    # already-extracted values.
+    purged = await _purge_ineligible_rag_values(steward_session, version_id)
+
+    if refreshed or purged:
         await steward_session.commit()
     return refreshed
 
