@@ -14,7 +14,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import DataError, DBAPIError, ProgrammingError
+from sqlalchemy.exc import (
+    DataError,
+    DBAPIError,
+    InterfaceError,
+    OperationalError,
+    ProgrammingError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.meta_models import (
@@ -547,6 +553,7 @@ async def ambiguous_source_database_handler(
     return JSONResponse(status_code=400, content=error_resp.model_dump())
 
 
+@app.exception_handler(DBAPIError)
 @app.exception_handler(ProgrammingError)
 @app.exception_handler(DataError)
 async def dbapi_error_handler(
@@ -554,8 +561,32 @@ async def dbapi_error_handler(
 ) -> JSONResponse:
     """Database rejection of a generated query (bad SQL shape, bad data
     value) is a query problem, not an application fault — surface the
-    driver's reason instead of a bare 500. Infrastructure failures
-    (OperationalError etc.) intentionally stay 5xx."""
+    driver's reason instead of a bare 500.
+
+    Registered on DBAPIError itself, not just ProgrammingError/DataError:
+    SQLAlchemy's asyncpg dialect leaves several asyncpg exceptions as a plain
+    DBAPIError, so InvalidTextRepresentationError (CAST('18:55.797' AS
+    numeric)), QueryCanceledError (statement timeout) and multi-statement
+    input all escaped this handler and surfaced as bare 500s.
+
+    Genuine infrastructure failure still returns 5xx: OperationalError and
+    InterfaceError denote a DB restart, network blip or driver-level fault
+    rather than anything about the query, as does SQLAlchemy having
+    invalidated the connection.
+    """
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        raise exc
+    if exc.connection_invalidated:
+        return JSONResponse(
+            status_code=503,
+            content=ErrorResponse(
+                code=503,
+                message="Database connection unavailable.",
+                request_id=None,
+                explainability=None,
+            ).model_dump(),
+        )
+
     reason = str(exc.orig) if exc.orig is not None else str(exc)
     # asyncpg wraps the real message as "<class '...'>: actual message".
     reason = reason.split(">: ", 1)[-1]
