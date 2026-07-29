@@ -90,7 +90,9 @@ def test_extract_envelope_rejects_non_string_sql() -> None:
 def test_generate_one_retries_transport_failure_then_succeeds() -> None:
     attempts = 0
 
-    def runner(system_prompt: str, user_prompt: str, model: str) -> str:
+    def runner(
+        system_prompt: str, user_prompt: str, model: str, timeout_s: float = 0.0
+    ) -> str:
         nonlocal attempts
         attempts += 1
         if attempts < 3:
@@ -104,7 +106,9 @@ def test_generate_one_retries_transport_failure_then_succeeds() -> None:
 
 
 def test_generate_one_raises_after_exhausting_retries() -> None:
-    def runner(system_prompt: str, user_prompt: str, model: str) -> str:
+    def runner(
+        system_prompt: str, user_prompt: str, model: str, timeout_s: float = 0.0
+    ) -> str:
         raise mod.TransportFailure("CLI error: boom")
 
     entry = {"key": "k1", "system_prompt": "s", "user_prompt": "u"}
@@ -115,7 +119,9 @@ def test_generate_one_raises_after_exhausting_retries() -> None:
 def test_generate_one_retries_unparseable_model_output() -> None:
     attempts = 0
 
-    def runner(system_prompt: str, user_prompt: str, model: str) -> str:
+    def runner(
+        system_prompt: str, user_prompt: str, model: str, timeout_s: float = 0.0
+    ) -> str:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -131,7 +137,9 @@ def test_generate_one_retries_unparseable_model_output() -> None:
 def test_generate_one_does_not_retry_genuine_refusal() -> None:
     attempts = 0
 
-    def runner(system_prompt: str, user_prompt: str, model: str) -> str:
+    def runner(
+        system_prompt: str, user_prompt: str, model: str, timeout_s: float = 0.0
+    ) -> str:
         nonlocal attempts
         attempts += 1
         return '{"sql": null, "refused": true, "reason": "no such data"}'
@@ -151,7 +159,9 @@ def test_run_batch_routes_failures_to_failures_file(tmp_path: Path) -> None:
     responses_path = tmp_path / "responses.jsonl"
     failures_path = tmp_path / "failures.jsonl"
 
-    def runner(system_prompt: str, user_prompt: str, model: str) -> str:
+    def runner(
+        system_prompt: str, user_prompt: str, model: str, timeout_s: float = 0.0
+    ) -> str:
         if user_prompt == "bad":
             raise mod.TransportFailure("CLI timeout")
         return '{"sql": "SELECT 1"}'
@@ -188,3 +198,59 @@ def test_run_cli_failure_includes_stdout(
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     with pytest.raises(mod.TransportFailure, match="usage limit reached"):
         mod._run_cli("sys", "user", "haiku")
+
+
+# ---------------------------------------------------------------------------
+# Retry policy
+# ---------------------------------------------------------------------------
+
+
+def test_attempt_timeouts_escalate() -> None:
+    """A stalled call should be abandoned quickly and retried rather than
+    burning a long fixed timeout. Median call latency is ~17s, so the first
+    attempt is short; later attempts get headroom for genuinely slow API
+    windows."""
+    assert list(mod.ATTEMPT_TIMEOUTS_S) == sorted(mod.ATTEMPT_TIMEOUTS_S)
+    assert mod.ATTEMPT_TIMEOUTS_S[0] < 60
+    assert mod.MAX_ATTEMPTS == len(mod.ATTEMPT_TIMEOUTS_S)
+
+
+def test_generate_one_uses_escalating_timeouts_per_attempt() -> None:
+    seen: list[float] = []
+
+    def runner(
+        system_prompt: str, user_prompt: str, model: str, timeout_s: float
+    ) -> str:
+        seen.append(timeout_s)
+        if len(seen) < 3:
+            raise mod.TransportFailure("stalled")
+        return '{"sql": "SELECT 1"}'
+
+    entry = {"key": "k1", "system_prompt": "s", "user_prompt": "u"}
+    row = mod.generate_one(entry, "haiku", runner=runner, backoff_s=0.0)
+    assert row["key"] == "k1"
+    assert seen == list(mod.ATTEMPT_TIMEOUTS_S[:3])
+
+
+def test_generate_one_reports_each_retry() -> None:
+    """Retries were previously invisible unless the question failed outright,
+    which hid hours of throttling behind a single logged failure."""
+    retries: list[str] = []
+
+    def runner(
+        system_prompt: str, user_prompt: str, model: str, timeout_s: float
+    ) -> str:
+        if len(retries) < 2:
+            raise mod.TransportFailure("stalled")
+        return '{"sql": "SELECT 1"}'
+
+    entry = {"key": "k9", "system_prompt": "s", "user_prompt": "u"}
+    mod.generate_one(
+        entry,
+        "haiku",
+        runner=runner,
+        backoff_s=0.0,
+        on_retry=lambda key, reason: retries.append(f"{key}:{reason}"),
+    )
+    assert len(retries) == 2
+    assert all(r.startswith("k9:") for r in retries)

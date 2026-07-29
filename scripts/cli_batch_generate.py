@@ -37,8 +37,20 @@ MODEL_MAP = {
     "opus": "opus",
 }
 
-MAX_ATTEMPTS = 3
-CLI_TIMEOUT_S = 120
+# Per-attempt timeouts, escalating. Median call latency is ~17s and the
+# slowest observed healthy call ~30s, so a call still running at 45s is
+# almost certainly stalled rather than slow: abandon it and retry, which
+# usually succeeds immediately. Later attempts get headroom in case the API
+# really is in a slow window.
+#
+# The previous policy (a flat 120s x 3 attempts) meant one stalled question
+# could burn six minutes. Across a throttled window that turned an ~18 minute
+# run into 2h27m.
+ATTEMPT_TIMEOUTS_S = (45.0, 90.0, 150.0)
+MAX_ATTEMPTS = len(ATTEMPT_TIMEOUTS_S)
+
+# Kept for callers that want the worst-case ceiling.
+CLI_TIMEOUT_S = ATTEMPT_TIMEOUTS_S[-1]
 
 # The CLI call must be pure prompt->answer inference: no tool use.
 _DISALLOWED_TOOLS = (
@@ -46,7 +58,7 @@ _DISALLOWED_TOOLS = (
     "NotebookEdit,TodoWrite,SlashCommand,Skill"
 )
 
-Runner = Callable[[str, str, str], str]
+Runner = Callable[[str, str, str, float], str]
 
 
 class TransportFailure(Exception):
@@ -94,7 +106,12 @@ def extract_envelope(text: str) -> dict[str, object] | None:
     return None
 
 
-def _run_cli(system_prompt: str, user_prompt: str, model: str) -> str:
+def _run_cli(
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    timeout_s: float = CLI_TIMEOUT_S,
+) -> str:
     """Invoke `claude -p` once and return the result text.
 
     Raises TransportFailure for any infrastructure-level problem.
@@ -118,10 +135,10 @@ def _run_cli(system_prompt: str, user_prompt: str, model: str) -> str:
             input=user_prompt,
             capture_output=True,
             text=True,
-            timeout=CLI_TIMEOUT_S,
+            timeout=timeout_s,
         )
     except subprocess.TimeoutExpired as exc:
-        raise TransportFailure(f"CLI timeout after {CLI_TIMEOUT_S}s") from exc
+        raise TransportFailure(f"CLI timeout after {timeout_s:g}s") from exc
 
     if proc.returncode != 0:
         # Usage-limit notices and similar often land on stdout with an
@@ -152,8 +169,17 @@ def generate_one(
     runner: Runner = _run_cli,
     max_attempts: int = MAX_ATTEMPTS,
     backoff_s: float = 2.0,
+    on_retry: Callable[[str, str], None] | None = None,
 ) -> dict[str, str]:
     """Obtain one validated response, retrying transport failures.
+
+    Each attempt gets a longer timeout (ATTEMPT_TIMEOUTS_S): a call that has
+    not returned in 45s is far more likely stalled than slow, so abandoning
+    and retrying it beats waiting.
+
+    *on_retry* is called with (key, reason) before each retry. Without it a
+    throttled window is invisible — only questions that exhaust every attempt
+    are ever logged, so hours of stalling can hide behind a single failure.
 
     Returns a responses.jsonl row. Raises TransportFailure when no
     validated envelope could be obtained within max_attempts.
@@ -161,9 +187,14 @@ def generate_one(
     last_failure: TransportFailure | None = None
     for attempt in range(max_attempts):
         if attempt:
+            if on_retry is not None and last_failure is not None:
+                on_retry(entry["key"], str(last_failure))
             time.sleep(backoff_s * attempt)
+        timeout_s = ATTEMPT_TIMEOUTS_S[min(attempt, len(ATTEMPT_TIMEOUTS_S) - 1)]
         try:
-            text = runner(entry["system_prompt"], entry["user_prompt"], model)
+            text = runner(
+                entry["system_prompt"], entry["user_prompt"], model, timeout_s
+            )
         except TransportFailure as exc:
             last_failure = exc
             continue
@@ -197,8 +228,15 @@ def run_batch(
     """
     ok = 0
     failed = 0
+    retries = 0
     write_lock = Lock()
     start = time.time()
+
+    def note_retry(key: str, reason: str) -> None:
+        nonlocal retries
+        with write_lock:
+            retries += 1
+            print(f"  retry key={key}: {reason[:90]}", flush=True)
 
     with (
         open(responses_path, "a") as out_f,
@@ -207,7 +245,13 @@ def run_batch(
     ):
         futures = {
             pool.submit(
-                generate_one, entry, model, runner, MAX_ATTEMPTS, backoff_s
+                generate_one,
+                entry,
+                model,
+                runner,
+                MAX_ATTEMPTS,
+                backoff_s,
+                note_retry,
             ): entry
             for entry in entries
         }
@@ -246,6 +290,16 @@ def run_batch(
                 f"({rate:.1f}/min, ETA {eta:.0f}s)",
                 flush=True,
             )
+    if retries:
+        # A high retry count against a low failure count means the API was
+        # slow, not that the prompts were bad — the distinction that made a
+        # ~18 minute run take 2h27m look like a clean run.
+        print(
+            f"\n{retries} retries across {len(entries)} questions "
+            f"({retries / len(entries):.1f} per question) — "
+            "high values indicate API throttling, not prompt problems.",
+            flush=True,
+        )
     return ok, failed
 
 
