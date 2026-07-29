@@ -1,3 +1,5 @@
+import difflib
+
 import pytest
 
 from app.compiler.engine import CompilerEngine, RAGUncertaintyError
@@ -247,4 +249,59 @@ def test_fuzzy_fallback_gated_without_shared_word() -> None:
     ))
     # near the full query textually, but zero shared words
     res = s.search("ana sartorri", tenant_id="t")
+    assert res.outcome == RAGOutcome.NO_MATCH
+
+
+def test_fuzzy_fallback_still_matches_short_query() -> None:
+    """The difflib fallback is live for SHORT queries: 'nvidia korp' has
+    neither an exact nor a substring match against 'Nvidia Corp', so only
+    the fuzzy path can find it (ratio 0.909). This must survive the
+    upper-bound optimisation — the optimisation must not become a deletion."""
+    s = InMemoryVectorStore()
+    s.index_value(
+        CategoricalValue(
+            value="Nvidia Corp", abstract_column="c.name", tenant_id="t1"
+        )
+    )
+    res = s.search("nvidia korp", tenant_id="t1")
+    assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
+    assert res.match is not None
+    assert res.match.categorical_value.value == "Nvidia Corp"
+
+
+def test_fuzzy_fallback_not_called_for_long_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A short value can never clear the threshold against a long query:
+    ratio() <= 2*len(val)/(len(val)+len(query)). difflib.ratio() must not be
+    called at all. Each seeded value shares a whole word with the query (so
+    the shared-word gate passes) but is NOT a substring of it (so the 0.9
+    substring path does not short-circuit first) — this pins the precheck
+    itself, not the gate."""
+    s = InMemoryVectorStore()
+    for name in ("aaron o'brien", "doran mcgregor", "rating specialist"):
+        s.index_value(
+            CategoricalValue(
+                value=name, abstract_column="player.name", tenant_id="t1"
+            )
+        )
+
+    calls = 0
+    real_ratio = difflib.SequenceMatcher.ratio
+
+    def counting_ratio(self: "difflib.SequenceMatcher[str]") -> float:
+        nonlocal calls
+        calls += 1
+        return real_ratio(self)
+
+    monkeypatch.setattr(difflib.SequenceMatcher, "ratio", counting_ratio)
+
+    long_query = (
+        "What is the overall rating for the football player aaron doran "
+        "and how does that compare with the average rating of all other "
+        "players in the same league during the 2015 season?"
+    )
+    res = s.search(long_query, tenant_id="t1")
+
+    assert calls == 0
     assert res.outcome == RAGOutcome.NO_MATCH

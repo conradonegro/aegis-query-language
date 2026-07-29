@@ -22,6 +22,8 @@ def _score_value(
     query_words: set[str],
     query_full: str,
     quoted_phrases: list[str],
+    matcher: "difflib.SequenceMatcher[str]",
+    threshold: float,
 ) -> float:
     """Score a single normalized value against the pre-processed query.
 
@@ -29,6 +31,8 @@ def _score_value(
       1. Quoted-phrase matching (exact or substring → 0.95-1.0)
       2. Word/substring matching against the full query (0.88-1.0)
       3. Fuzzy difflib ratio as fallback
+
+    *matcher* must already have seq2 set to *query_full* by the caller.
     """
     val_word_count = len(val.split())
 
@@ -56,11 +60,23 @@ def _score_value(
     # the query. Entity lookups virtually always share a word ("Aaron
     # Doran" ↔ "aaron doran"); the gate lets the store index six-figure
     # value counts without running difflib against every non-candidate.
+    #
+    # The shared-word gate alone is not enough: it still admitted ~65k
+    # values per query. real_quick_ratio() is 2*min(la,lb)/(la+lb) and
+    # quick_ratio() is a character-multiset bound; both are guaranteed
+    # >= ratio(), so skipping when either falls below the caller's
+    # threshold cannot change which values clear it. A short value can
+    # never approach a long query — clearing 0.85 needs
+    # len(val) >= 0.739 * len(query) — which made this branch ~98% of
+    # scan time while contributing no matches at BIRD query lengths. It
+    # stays live for short queries, where it does real work.
     if best < 0.85 and set(val.split()) & query_words:
-        best = max(
-            best,
-            difflib.SequenceMatcher(None, val, query_full).ratio(),
-        )
+        matcher.set_seq1(val)
+        if (
+            matcher.real_quick_ratio() >= threshold
+            and matcher.quick_ratio() >= threshold
+        ):
+            best = max(best, matcher.ratio())
     return best
 
 
@@ -96,11 +112,23 @@ class InMemoryVectorStore(VectorStoreProtocol):
         query_words = set(query_normalized.split())
         quoted_phrases = _extract_quoted_phrases(query_normalized)
 
+        # One matcher for the whole scan: set_seq2 caches the b2j index of
+        # the long query string, which SequenceMatcher(None, val, query)
+        # would otherwise rebuild on every value. autojunk keeps its default
+        # (True) so ratio() results are identical to the previous form.
+        matcher = difflib.SequenceMatcher()
+        matcher.set_seq2(query_normalized)
+
         matches: list[ValueMatch] = []
         for cat_val in tenant_values:
             val_normalized = cat_val.value.lower().strip()
             score = _score_value(
-                val_normalized, query_words, query_normalized, quoted_phrases
+                val_normalized,
+                query_words,
+                query_normalized,
+                quoted_phrases,
+                matcher,
+                threshold,
             )
             if score >= threshold:
                 matches.append(
