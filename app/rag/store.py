@@ -11,6 +11,19 @@ _QUOTED_RE = re.compile(r"""['"]([^'"]{2,})['"]""")
 # Short queries like "Nvidia revenue" should still give 1.0 for "Nvidia".
 _SHORT_QUERY_WORD_LIMIT = 4
 
+# A substring shorter than this carries no evidence that the user meant the
+# value — single letters are substrings of almost any English question.
+_MIN_SUBSTRING_MATCH_LEN = 3
+
+
+def _is_word_boundary_match(val: str, query_full: str) -> bool:
+    """True when *val* occurs in *query_full* delimited by word boundaries.
+
+    Guards against coincidental infixes ('art' inside 'artifact'), which are
+    not evidence that the user meant that value.
+    """
+    return re.search(rf"(?<!\w){re.escape(val)}(?!\w)", query_full) is not None
+
 
 def _extract_quoted_phrases(query: str) -> list[str]:
     """Return lowercased phrases found between single or double quotes."""
@@ -53,7 +66,10 @@ def _score_value(
             best = max(best, 1.0)
         else:
             best = max(best, 0.88)
-    elif val in query_full:
+    elif (
+        len(val) >= _MIN_SUBSTRING_MATCH_LEN
+        and _is_word_boundary_match(val, query_full)
+    ):
         best = max(best, 0.9)
 
     # 3. Fuzzy fallback — gated on sharing at least one whole word with
@@ -156,7 +172,14 @@ class InMemoryVectorStore(VectorStoreProtocol):
                     )
                 )
 
-        matches.sort(key=lambda x: x.similarity_score, reverse=True)
+        # Rank by score, then by specificity. Sorting on score alone is
+        # stable, which meant equal-scoring values were ordered by artifact
+        # insertion order — the same question could surface different hints
+        # purely from table ordering.
+        matches.sort(
+            key=lambda x: (x.similarity_score, len(x.categorical_value.value)),
+            reverse=True,
+        )
         matches = matches[:limit]
 
         if not matches:

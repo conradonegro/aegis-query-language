@@ -109,15 +109,20 @@ def test_rag_exact_word_match_scores_1() -> None:
 
 
 def test_rag_substring_match_scores_0_9() -> None:
-    """A substring match (value is a substring of the query or vice-versa)
-    scores 0.9."""
+    """A substring match that is not a standalone query token still scores 0.9.
+
+    Deliberate narrowing: this previously used the query "NvidiaGPU", where
+    "Nvidia" is a bare infix. Infix matching is no longer accepted — it was
+    what let single-character values score 0.9 against nearly any question
+    (see test_substring_match_requires_word_boundary for the rejected case).
+    The value must now sit on a word boundary, as it does before the hyphen
+    here, while still not being a whitespace-delimited token of the query.
+    """
     store = InMemoryVectorStore()
-    # "NvidiaGPU" is not an exact word in the query but is a substring case
     store.index_value(
         CategoricalValue(value="Nvidia", abstract_column="brands", tenant_id="t")
     )
-    # Query contains "NvidiaGPU" which has "Nvidia" as a substring — score 0.9
-    res = store.search("NvidiaGPU", tenant_id="t")
+    res = store.search("Nvidia-GPU", tenant_id="t")
     assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
     assert res.match is not None
     assert res.match.similarity_score == 0.9
@@ -362,3 +367,74 @@ def test_search_unscoped_when_no_source_database() -> None:
     assert res.outcome == RAGOutcome.AMBIGUOUS_MATCH
     assert res.candidates is not None
     assert len(res.candidates) == 2
+
+
+def test_single_character_values_do_not_match() -> None:
+    """Single-letter codes were 91% of all injected values (median length 1)
+    because a raw substring test scores 'R' 0.9 against almost any English
+    question. Top offenders across a 500-question run: 'R' x437, 'G' x371."""
+    s = InMemoryVectorStore()
+    for code in ("R", "G", "B", "U", "W"):
+        s.index_value(
+            CategoricalValue(
+                value=code, abstract_column="cards.colorindicator", tenant_id="t1"
+            )
+        )
+    res = s.search(
+        "What is the ratio of customers who pay in EUR against customers"
+        " who pay in CZK?",
+        tenant_id="t1",
+    )
+    assert res.outcome == RAGOutcome.NO_MATCH
+
+
+def test_substring_match_requires_word_boundary() -> None:
+    """'art' must not match inside 'artifact' — a coincidental infix is not
+    evidence that the user meant that value."""
+    s = InMemoryVectorStore()
+    s.index_value(
+        CategoricalValue(value="art", abstract_column="cards.type", tenant_id="t1")
+    )
+    res = s.search("List every artifact card in the set", tenant_id="t1")
+    assert res.outcome == RAGOutcome.NO_MATCH
+
+
+def test_word_boundary_substring_still_matches() -> None:
+    """A genuine multi-word phrase match must still score 0.9."""
+    s = InMemoryVectorStore()
+    s.index_value(
+        CategoricalValue(
+            value="Post Cards", abstract_column="events.name", tenant_id="t1"
+        )
+    )
+    res = s.search("how much was spent on post cards last year", tenant_id="t1")
+    assert res.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
+    assert res.match is not None
+    assert res.match.similarity_score == 0.9
+
+
+def test_ties_broken_by_specificity_not_insertion_order() -> None:
+    """Equal scores must rank the more specific (longer) value first. Sorting
+    on score alone is stable, so ties previously resolved by artifact
+    insertion order — the same question could surface different hints purely
+    from table ordering."""
+    s = InMemoryVectorStore()
+    # Both are multi-word substrings of the query, so both score exactly 0.9
+    # via the same branch — a genuine tie. The shorter one is indexed first,
+    # so insertion order alone would rank it above the more specific value.
+    s.index_value(
+        CategoricalValue(
+            value="deck wins", abstract_column="decks.short", tenant_id="t1"
+        )
+    )
+    s.index_value(
+        CategoricalValue(
+            value="red deck wins", abstract_column="decks.name", tenant_id="t1"
+        )
+    )
+    res = s.search("how many red deck wins entries are there", tenant_id="t1")
+    assert res.outcome == RAGOutcome.AMBIGUOUS_MATCH
+    assert res.candidates is not None
+    scores = [c.similarity_score for c in res.candidates]
+    assert scores == [0.9, 0.9], "test must exercise a real tie"
+    assert res.candidates[0].categorical_value.value == "red deck wins"
