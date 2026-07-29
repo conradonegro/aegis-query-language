@@ -18,11 +18,15 @@ class VectorStoreProtocol(Protocol):
         tenant_id: str,
         limit: int = 5,
         threshold: float = 0.85,
+        source_database: str | None = None,
     ) -> RAGResult:
         """
         Searches the store for a semantic match against the query, isolated
         by tenant. Returns a strict RAGResult encapsulating the evaluated
         outcome.
+
+        source_database narrows the candidate values to one logical database.
+        None searches every database the tenant owns.
         """
         ...
 

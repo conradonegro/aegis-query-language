@@ -11,7 +11,7 @@ from app.compiler.parser import SQLParser
 from app.compiler.prompting import PromptBuilder
 from app.compiler.safety import SafetyEngine
 from app.compiler.translator import DeterministicTranslator, TranslationError
-from app.rag.models import CategoricalValue
+from app.rag.models import CategoricalValue, RAGResult
 from app.rag.store import InMemoryVectorStore
 from app.steward.models import (
     AbstractColumnDef,
@@ -431,3 +431,82 @@ async def test_compiler_engine_rejects_multi_statement_sql_in_json(
         await compiler_engine.compile(
             intent=intent, schema=mock_registry, hints=hints, tenant_id="test_tenant"
         )
+
+
+class _RecordingStore(InMemoryVectorStore):
+    """Captures the source_database the engine passes to the RAG lookup."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen_source_database: str | None = None
+        self.searched = False
+
+    def search(
+        self,
+        query: str,
+        tenant_id: str,
+        limit: int = 5,
+        threshold: float = 0.85,
+        source_database: str | None = None,
+    ) -> RAGResult:
+        self.searched = True
+        self.seen_source_database = source_database
+        return super().search(
+            query,
+            tenant_id,
+            limit=limit,
+            threshold=threshold,
+            source_database=source_database,
+        )
+
+
+@pytest.mark.asyncio
+async def test_rag_search_scoped_to_explicit_source_database(
+    compiler_engine: CompilerEngine,
+) -> None:
+    """The engine must resolve the source database BEFORE the RAG lookup and
+    pass it down, so value hints cannot come from an unrelated database."""
+    schema = RegistrySchema(
+        version="1.0.0",
+        tables=[
+            AbstractTableDef(
+                alias="users",
+                description="The users table",
+                physical_target="auth.users",
+                source_database="analytics",
+                columns=[
+                    AbstractColumnDef(
+                        alias="name", description="Name",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True
+                        ),
+                        physical_target="auth.users.name",
+                    ),
+                ],
+            )
+        ],
+        relationships=[],
+    )
+    store = _RecordingStore()
+    store.index_value(
+        CategoricalValue(
+            value="Alice",
+            abstract_column="users.name",
+            tenant_id="test_tenant",
+            source_database="analytics",
+        )
+    )
+    compiler_engine.set_vector_store(store, "test_tenant")
+
+    await compiler_engine.compile(
+        UserIntent(
+            natural_language_query="Show me Alice",
+            source_database="analytics",
+        ),
+        schema,
+        PromptHints(column_hints=[]),
+        tenant_id="test_tenant",
+    )
+
+    assert store.searched is True
+    assert store.seen_source_database == "analytics"

@@ -557,3 +557,46 @@ def test_auto_detected_source_database_includes_zero_token_overlap_table() -> No
     assert "yearmonth" in aliases
     assert "customers" in aliases, "customers must be included once DB is auto-detected"
     assert "loan" not in aliases
+
+
+# ─── Standalone source_database resolution (used by the RAG step) ────────────
+
+def test_resolve_source_database_agrees_with_filter_schema() -> None:
+    """RAG needs the database BEFORE filter_schema runs, so resolution must
+    be reachable on its own and agree with what filter_schema resolves."""
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    intent = UserIntent(natural_language_query="Show loan details for each client")
+
+    resolved = f.resolve_source_database(intent, schema)
+    via_filter = f.filter_schema(intent, schema).source_database_used
+
+    assert resolved == "financial"
+    assert resolved == via_filter
+
+
+def test_resolve_source_database_honours_explicit_scope() -> None:
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    intent = UserIntent(
+        natural_language_query="anything", source_database="formula_1"
+    )
+    assert f.resolve_source_database(intent, schema) == "formula_1"
+
+
+def test_resolve_source_database_unknown_raises() -> None:
+    f = DeterministicSchemaFilter(cutoff_threshold=1)
+    schema = _multi_db_schema()
+    intent = UserIntent(
+        natural_language_query="anything", source_database="nonexistent"
+    )
+    with pytest.raises(UnknownSourceDatabaseError):
+        f.resolve_source_database(intent, schema)
+
+
+def test_resolve_source_database_returns_none_when_undetected() -> None:
+    """No confident detection means unscoped RAG search, not an error."""
+    f = DeterministicSchemaFilter(cutoff_threshold=5)
+    schema = _multi_db_schema()
+    intent = UserIntent(natural_language_query="zzzz qqqq")
+    assert f.resolve_source_database(intent, schema) is None

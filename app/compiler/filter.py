@@ -338,6 +338,29 @@ class DeterministicSchemaFilter:
             scores=dict(sorted_dbs),
         )
 
+    def resolve_source_database(
+        self, intent: UserIntent, schema: RegistrySchema
+    ) -> str | None:
+        """Resolve the target source database from the intent alone.
+
+        Exposed separately because the RAG lookup runs before schema
+        filtering and must scope its value search to the same database.
+        Depends only on the intent and the schema — never on RAG output —
+        so calling it early cannot change what filter_schema decides.
+
+        Returns None when no database clears the detection threshold; that
+        is a deliberate signal for an unscoped RAG search rather than an
+        error, since withholding hints when the compiler is least certain
+        is the worse failure mode.
+        """
+        if intent.source_database:
+            if not self._apply_database_scope(schema, intent.source_database):
+                raise UnknownSourceDatabaseError(intent.source_database)
+            return intent.source_database
+        intent_tokens = self._tokenize(intent.natural_language_query)
+        detected, _scores = self._detect_source_database(schema, intent_tokens)
+        return detected
+
     def filter_schema(
         self,
         intent: UserIntent,

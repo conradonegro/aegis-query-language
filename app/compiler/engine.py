@@ -110,10 +110,27 @@ class CompilerEngine:
 
             included_cols = RAGIncludedColumns(columns=[])
 
+            # Resolve the source database first so RAG can scope its value
+            # search to it. Detection reads only the intent and schema — never
+            # RAG output — so hoisting it above RAG introduces no circular
+            # dependency. None (not confidently detected) deliberately falls
+            # back to an unscoped search rather than withholding hints.
+            rag_source_database = self.schema_filter.resolve_source_database(
+                intent, schema
+            )
+            explain_context["session"]["rag_source_database"] = (
+                rag_source_database
+            )
+
             # RAG runs on every query — follow-up or not — so value hints are
             # always available to the LLM even when the schema is reused.
             self._apply_rag_hints(
-                intent, hints, included_cols, explain_context, tenant_id
+                intent,
+                hints,
+                included_cols,
+                explain_context,
+                tenant_id,
+                rag_source_database,
             )
 
             if is_follow_up and prior_context:
@@ -322,6 +339,7 @@ class CompilerEngine:
         included_cols: RAGIncludedColumns,
         explain_context: dict[str, Any],
         tenant_id: str,
+        source_database: str | None = None,
     ) -> None:
         """Runs RAG lookup and injects matching column hints into PromptHints.
 
@@ -339,7 +357,10 @@ class CompilerEngine:
 
         strict = os.getenv("RAG_STRICT_MODE", "").lower() == "true"
         rag_result = store.search(
-            intent.natural_language_query, tenant_id=tenant_id, limit=5
+            intent.natural_language_query,
+            tenant_id=tenant_id,
+            limit=5,
+            source_database=source_database,
         )
         self._inject_rag_result(
             rag_result, hints, included_cols, strict

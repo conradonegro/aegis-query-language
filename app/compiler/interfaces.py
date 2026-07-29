@@ -31,6 +31,19 @@ class SchemaFilterProtocol(Protocol):
         """Returns True if the intent is a follow-up on the previous query context."""
         ...
 
+    def resolve_source_database(
+        self, intent: UserIntent, schema: RegistrySchema
+    ) -> str | None:
+        """
+        Resolves the target source database from the intent alone.
+
+        Called before the RAG lookup so value search can be scoped to the
+        same database the schema filter will settle on. Returns None when no
+        database clears the detection threshold, which means "search
+        unscoped" rather than "fail".
+        """
+        ...
+
     def filter_schema(
         self,
         intent: UserIntent,
