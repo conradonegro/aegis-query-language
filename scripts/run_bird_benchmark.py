@@ -23,6 +23,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import math
 import sqlite3
 import subprocess
 import sys
@@ -42,17 +43,48 @@ from sqlalchemy.ext.asyncio import create_async_engine
 # ---------------------------------------------------------------------------
 
 
+# Significant digits kept when comparing numbers. PostgreSQL float8 carries
+# ~15-17 significant digits, so 10 is comfortably inside the noise floor of
+# either representation while still separating genuinely different answers.
+_NUMERIC_SIG_DIGITS = 10
+
+
+def _as_number(value: Any) -> float | None:
+    """Return *value* as a float when it denotes a finite number, else None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        num = float(value)
+    elif isinstance(value, str):
+        try:
+            num = float(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return num if math.isfinite(num) else None
+
+
 def _normalize_value(value: Any) -> Any:
     """Bridge the JSON serialization boundary between gold and generated rows.
 
     Gold rows carry native driver types; generated rows arrive through the
     API's JSON layer where pydantic serializes Decimal as str(Decimal) and
     date/datetime as isoformat strings.
+
+    Numbers are canonicalised to a fixed number of significant digits rather
+    than compared by representation. Gold's CAST(... AS REAL) yields float8
+    while the model's plain `/` yields numeric, so the same arithmetic answer
+    arrives as a float on one side and a Decimal-turned-string on the other —
+    types that can never compare equal. Even Decimal against Decimal failed
+    when the scales differed ('100.0' vs '100.0000000000000000'). This
+    compares what the numbers *are*, not how the driver spelled them.
     """
-    if isinstance(value, Decimal):
-        return str(value)
     if isinstance(value, (datetime, date)):
         return value.isoformat()
+    num = _as_number(value)
+    if num is not None:
+        return float(f"{num:.{_NUMERIC_SIG_DIGITS}g}")
     return value
 
 

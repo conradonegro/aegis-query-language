@@ -110,3 +110,42 @@ async def test_gold_cache_serves_second_call_without_engine(
     # engine=None: any real execution attempt would crash
     rows2 = await mod._run_gold_sql(None, "SELECT 41 + 1", "db1", cache)
     assert rows1 == rows2 == [(42,)]
+
+
+# ---------------------------------------------------------------------------
+# Numeric type parity
+#
+# Gold rows carry native driver types; generated rows arrive JSON-serialized.
+# PostgreSQL returns float8 for gold's CAST(... AS REAL) but numeric for the
+# model's plain `/`, so the same arithmetic answer reaches the comparison as a
+# float on one side and a Decimal-turned-string on the other. Those can never
+# be equal, and 34 questions in run 20260729-120729 were scored wrong despite
+# agreeing to ~16 significant digits.
+# ---------------------------------------------------------------------------
+
+
+def test_rows_match_float_gold_vs_numeric_generated() -> None:
+    """gold CAST(x AS REAL) -> float; model's `/` -> numeric -> JSON string."""
+    assert mod.rows_match([(100.0,)], [("100.0000000000000000",)])
+
+
+def test_rows_match_decimal_scales_differ() -> None:
+    """Same value, different numeric scale, both via the JSON boundary."""
+    assert mod.rows_match([(Decimal("100.0"),)], [("100.0000000000000000",)])
+
+
+def test_rows_match_float_precision_tail() -> None:
+    """float8 and numeric division disagree in the last bit or two."""
+    assert mod.rows_match([(459.9562642112431,)], [("459.9562642112432",)])
+    assert mod.rows_match([(2.727272727272727,)], [("2.7272727272727273",)])
+
+
+def test_rows_match_still_rejects_genuinely_different_numbers() -> None:
+    assert not mod.rows_match([(9,)], [("136",)])
+    assert not mod.rows_match([(7.242696579592377,)], [("51.16206520043674",)])
+    assert not mod.rows_match([(1.0,)], [("1.001",)])
+
+
+def test_rows_match_does_not_coerce_non_numeric_text() -> None:
+    assert not mod.rows_match([("CZE",)], [("SVK",)])
+    assert mod.rows_match([("CZE",)], [("CZE",)])
