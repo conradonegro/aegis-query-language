@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -88,20 +88,115 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+EvalMode = Literal["official", "tolerant"]
+
+
 def rows_match(
     gold_rows: Sequence[tuple[Any, ...]],
     gen_rows: Sequence[tuple[Any, ...]],
+    mode: EvalMode = "official",
 ) -> bool:
-    """Official BIRD EX: set(predicted) == set(gold) over row tuples.
+    """Execution accuracy over row tuples. Row order ignored, duplicate rows
+    collapsed, column count and order significant.
 
-    Row order ignored, duplicate rows collapsed, column count/order
-    significant.
+    "official" is BIRD's calculate_ex verbatim — `set(predicted) ==
+    set(ground_truth)` with no normalisation. Both sides must therefore be
+    fetched as native driver values: Python's numeric tower already makes
+    int/float/Decimal of equal value compare (and hash) equal, so no
+    normalisation is needed or wanted. This is the only mode whose number is
+    comparable to published BIRD scores.
+
+    "tolerant" additionally canonicalises numbers to a fixed number of
+    significant digits, which forgives the last-digit disagreement between
+    gold's float8 (CAST(... AS REAL)) and a model's numeric division. Useful
+    for tracking whether the arithmetic is right, but it scores strictly
+    higher than official and must never be reported as a BIRD result.
     """
+    if mode == "official":
+        return set(gold_rows) == set(gen_rows)
 
     def norm(rows: Sequence[tuple[Any, ...]]) -> set[tuple[Any, ...]]:
         return {tuple(_normalize_value(v) for v in row) for row in rows}
 
     return norm(gold_rows) == norm(gen_rows)
+
+
+def calculate_row_match(
+    predicted_row: Sequence[Any], ground_truth_row: Sequence[Any]
+) -> tuple[int, int, int]:
+    """Column-level overlap for one row pair — BIRD's calculate_row_match.
+
+    Position within the row is ignored; a predicted value counts as matched
+    when it appears anywhere in the gold row.
+    """
+    matches = 0
+    pred_only = 0
+    for pred_val in predicted_row:
+        if pred_val in ground_truth_row:
+            matches += 1
+        else:
+            pred_only += 1
+    truth_only = sum(
+        1 for truth_val in ground_truth_row if truth_val not in predicted_row
+    )
+    return matches, pred_only, truth_only
+
+
+def calculate_f1_score(
+    predicted: Sequence[Sequence[Any]],
+    ground_truth: Sequence[Sequence[Any]],
+) -> float:
+    """BIRD Soft-F1: partial credit for partially-correct result tables.
+
+    Rows are aligned by position, columns compared as sets within each row,
+    and the totals treated as one classification problem.
+    """
+    if not predicted and not ground_truth:
+        return 1.0
+    if not predicted or not ground_truth:
+        return 0.0
+
+    tp = fp = fn = 0
+    for i, gt_row in enumerate(ground_truth):
+        if i >= len(predicted):
+            fn += len(gt_row)
+            continue
+        matches, pred_only, truth_only = calculate_row_match(
+            predicted[i], gt_row
+        )
+        tp += matches
+        fp += pred_only
+        fn += truth_only
+
+    precision = tp / (tp + fp) if tp + fp > 0 else 0.0
+    recall = tp / (tp + fn) if tp + fn > 0 else 0.0
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+def ves_reward(time_ratio: float) -> float:
+    """BIRD R-VES reward bands over gold_time / predicted_time."""
+    if time_ratio >= 2:
+        return 1.25
+    if time_ratio >= 1:
+        return 1.0
+    if time_ratio >= 0.5:
+        return 0.75
+    if time_ratio >= 0.25:
+        return 0.5
+    return 0.25
+
+
+def ves_score(reward: float) -> float:
+    """Per-question R-VES contribution: sqrt(reward) * 100.
+
+    A wrong query scores zero — R-VES rewards efficiency only among queries
+    that are already valid.
+    """
+    if reward <= 0:
+        return 0.0
+    return math.sqrt(reward) * 100
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +286,35 @@ async def _run_gold_sql(
 # API question submission
 # ---------------------------------------------------------------------------
 
+async def _rerun_generated_sql(
+    engine: Any, body: dict[str, Any]
+) -> list[tuple[Any, ...]] | None:
+    """Execute Aegis's own parameterised SQL through the benchmark's driver.
+
+    The explain payload carries both the physical SQL and its bound
+    parameters, so this runs exactly what Aegis ran — no re-translation — but
+    returns native driver values instead of the API's JSON-coerced ones.
+    That symmetry is what makes BIRD's raw set equality valid.
+
+    Returns None when the payload lacks the trace, so the caller can fall
+    back to the JSON rows.
+    """
+    from sqlalchemy import text
+
+    explain = body.get("explainability") or {}
+    translation = explain.get("translation") or {}
+    sql = translation.get("parameterized_sql")
+    params = translation.get("parameters")
+    if not sql:
+        return None
+    if isinstance(params, list):
+        params = {f"p{i + 1}": v for i, v in enumerate(params)}
+
+    async with engine.connect() as conn:
+        result = await conn.execute(text(sql), params or {})
+        return [tuple(r) for r in result.fetchall()]
+
+
 async def _submit_question(
     client: httpx.AsyncClient,
     api_url: str,
@@ -204,7 +328,7 @@ async def _submit_question(
         "intent": question,
         "source_database": db_id,
         "session_id": str(uuid.uuid4()),  # fresh per question — no context leakage
-        "explain": False,
+        "explain": True,
         "schema_hints": [],
     }
     if provider_id:
@@ -231,6 +355,7 @@ async def _evaluate_question(
     entry: dict[str, Any],
     provider_id: str | None,
     gold_cache: Path | None = None,
+    eval_mode: EvalMode = "official",
 ) -> dict[str, Any]:
     question_id = entry.get("question_id", "?")
     db_id: str = entry["db_id"]
@@ -246,6 +371,11 @@ async def _evaluate_question(
         "source_database_used": None,
         "status": "exception",
         "match": False,
+        "match_tolerant": False,
+        "soft_f1": 0.0,
+        "gold_ms": None,
+        "pred_ms": None,
+        "gold_timed": False,
         "error": None,
         "latency_ms": None,
     }
@@ -259,6 +389,15 @@ async def _evaluate_question(
         result["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
         if api_resp["status_code"] != 200:
+            detail = str(api_resp["body"].get("detail", ""))
+            if "explain=true requires admin scope" in detail:
+                raise SystemExit(
+                    "\nofficial eval mode needs the explain payload to fetch"
+                    " native driver values, and explain=true requires an"
+                    " admin-scope API key.\n"
+                    "Re-run with an admin key, or pass --eval-mode tolerant"
+                    " (whose number is NOT BIRD-comparable).\n"
+                )
             result["status"] = "api_error"
             result["error"] = api_resp["body"].get("message", str(api_resp["body"]))
             return result
@@ -268,11 +407,29 @@ async def _evaluate_question(
         result["generated_sql"] = generated_sql
         result["source_database_used"] = body.get("source_database_used")
 
-        # Compare generated results with gold results (official BIRD EX)
+        _t_gold = time.perf_counter()
         gold_rows = await _run_gold_sql(engine, gold_sql, db_id, gold_cache)
-        gen_rows = [tuple(row.values()) for row in body.get("results", [])]
+        result["gold_ms"] = (time.perf_counter() - _t_gold) * 1000
+        # A cache hit is not a real execution, so it cannot time gold. R-VES
+        # is reported only over questions actually executed in this run.
+        result["gold_timed"] = gold_cache is None
 
-        result["match"] = rows_match(gold_rows, gen_rows)
+        # Re-execute what Aegis produced through the same driver as gold, so
+        # both sides carry native PostgreSQL types. The API's JSON layer
+        # stringifies Decimal and date (see _coerce_row), which makes them
+        # incomparable to gold's native values under BIRD's raw set equality
+        # and silently lost correct answers. Falls back to the JSON rows when
+        # the explain payload is unavailable.
+        _t_pred = time.perf_counter()
+        gen_rows = await _rerun_generated_sql(engine, body)
+        result["pred_ms"] = (time.perf_counter() - _t_pred) * 1000
+        if gen_rows is None:
+            result["gold_timed"] = False
+            gen_rows = [tuple(row.values()) for row in body.get("results", [])]
+
+        result["match"] = rows_match(gold_rows, gen_rows, mode=eval_mode)
+        result["match_tolerant"] = rows_match(gold_rows, gen_rows, mode="tolerant")
+        result["soft_f1"] = calculate_f1_score(gen_rows, gold_rows)
         result["status"] = "success"
         result["gold_row_count"] = len(gold_rows)
         result["gen_row_count"] = len(gen_rows)
@@ -317,6 +474,36 @@ def _print_summary(results: list[dict[str, Any]], output: str | None) -> None:
     print(f"  Incorrect       : {total - matched - errored}")
     print(f"  Errors          : {errored}")
     print(f"  EX Accuracy     : {accuracy:.1f}%")
+
+    tolerant = sum(1 for r in results if r.get("match_tolerant"))
+    soft_f1 = sum(float(r.get("soft_f1") or 0.0) for r in results)
+    print(f"  Soft-F1         : {soft_f1 / total * 100 if total else 0.0:.1f}%")
+    print(
+        f"  [diagnostic] tolerant EX : {tolerant}"
+        f" ({tolerant / total * 100 if total else 0.0:.1f}%)"
+        f"  — representation-forgiving, NOT a BIRD-comparable number"
+    )
+
+    timed = [
+        r for r in results
+        if r.get("gold_timed") and r.get("pred_ms") and r.get("gold_ms")
+    ]
+    if timed:
+        total_reward = 0.0
+        for r in timed:
+            if not r["match"]:
+                continue
+            ratio = float(r["gold_ms"]) / float(r["pred_ms"])
+            total_reward += ves_score(ves_reward(ratio))
+        print(
+            f"  R-VES           : {total_reward / len(timed):.1f}"
+            f"  (over {len(timed)}/{total} questions executed this run)"
+        )
+    else:
+        print(
+            "  R-VES           : n/a — gold came from cache;"
+            " re-run without --gold-cache to time it"
+        )
     print("=" * 60)
 
     db_stats: dict[str, dict[str, int]] = {}
@@ -426,6 +613,8 @@ def _init_store(conn: sqlite3.Connection) -> None:
             source_database_used TEXT,
             status TEXT,
             match INTEGER,
+            match_tolerant INTEGER,
+            soft_f1 REAL,
             error TEXT,
             latency_ms REAL
         )
@@ -482,6 +671,8 @@ def _persist_results(
                 r.get("source_database_used"),
                 r.get("status", "exception"),
                 1 if r.get("match") else 0,
+                1 if r.get("match_tolerant") else 0,
+                float(r.get("soft_f1") or 0.0),
                 r.get("error"),
                 r.get("latency_ms"),
             )
@@ -499,9 +690,11 @@ def _persist_results(
                 source_database_used,
                 status,
                 match,
+                match_tolerant,
+                soft_f1,
                 error,
                 latency_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             result_rows,
         )
@@ -565,6 +758,7 @@ async def main(args: argparse.Namespace) -> None:
                     entry,
                     args.provider_id,
                     gold_cache,
+                    args.eval_mode,
                 )
 
         tasks = [asyncio.create_task(_bound_eval(entry)) for entry in dataset]
@@ -588,6 +782,7 @@ async def main(args: argparse.Namespace) -> None:
             "dirty": dirty,
             "timestamp": timestamp,
             "provider_id": args.provider_id,
+            "eval_mode": args.eval_mode,
             "total": total,
             "matched": matched,
             "errored": errored,
@@ -642,6 +837,17 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Max in-flight questions (default: 2; keep low for"
             " multi-database runs to avoid 429s)"
+        ),
+    )
+    parser.add_argument(
+        "--eval-mode",
+        choices=["official", "tolerant"],
+        default="official",
+        help=(
+            "Scoring semantics. 'official' is BIRD's calculate_ex verbatim and"
+            " is the only BIRD-comparable number. 'tolerant' additionally"
+            " forgives float8-vs-numeric representation differences; useful"
+            " for tracking arithmetic correctness, never for reporting."
         ),
     )
     parser.add_argument(

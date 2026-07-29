@@ -47,16 +47,18 @@ def test_rows_match_rejects_extra_column() -> None:
 
 def test_rows_match_decimal_gold_vs_json_string() -> None:
     # pydantic v2 serializes Decimal("12.50") as the string "12.50"
-    assert mod.rows_match([(Decimal("12.50"),)], [("12.50",)])
+    assert mod.rows_match([(Decimal("12.50"),)], [("12.50",)], mode="tolerant")
 
 
 def test_rows_match_date_gold_vs_iso_string() -> None:
-    assert mod.rows_match([(date(2013, 1, 1),)], [("2013-01-01",)])
+    assert mod.rows_match([(date(2013, 1, 1),)], [("2013-01-01",)], mode="tolerant")
 
 
 def test_rows_match_datetime_gold_vs_iso_string() -> None:
     assert mod.rows_match(
-        [(datetime(2013, 1, 1, 10, 30),)], [("2013-01-01T10:30:00",)]
+        [(datetime(2013, 1, 1, 10, 30),)],
+        [("2013-01-01T10:30:00",)],
+        mode="tolerant",
     )
 
 
@@ -126,26 +128,114 @@ async def test_gold_cache_serves_second_call_without_engine(
 
 def test_rows_match_float_gold_vs_numeric_generated() -> None:
     """gold CAST(x AS REAL) -> float; model's `/` -> numeric -> JSON string."""
-    assert mod.rows_match([(100.0,)], [("100.0000000000000000",)])
+    assert mod.rows_match([(100.0,)], [("100.0000000000000000",)], mode="tolerant")
 
 
 def test_rows_match_decimal_scales_differ() -> None:
     """Same value, different numeric scale, both via the JSON boundary."""
-    assert mod.rows_match([(Decimal("100.0"),)], [("100.0000000000000000",)])
+    assert mod.rows_match(
+        [(Decimal("100.0"),)], [("100.0000000000000000",)], mode="tolerant"
+    )
 
 
 def test_rows_match_float_precision_tail() -> None:
     """float8 and numeric division disagree in the last bit or two."""
-    assert mod.rows_match([(459.9562642112431,)], [("459.9562642112432",)])
-    assert mod.rows_match([(2.727272727272727,)], [("2.7272727272727273",)])
+    assert mod.rows_match(
+        [(459.9562642112431,)], [("459.9562642112432",)], mode="tolerant"
+    )
+    assert mod.rows_match(
+        [(2.727272727272727,)], [("2.7272727272727273",)], mode="tolerant"
+    )
 
 
 def test_rows_match_still_rejects_genuinely_different_numbers() -> None:
-    assert not mod.rows_match([(9,)], [("136",)])
-    assert not mod.rows_match([(7.242696579592377,)], [("51.16206520043674",)])
-    assert not mod.rows_match([(1.0,)], [("1.001",)])
+    assert not mod.rows_match([(9,)], [("136",)], mode="tolerant")
+    assert not mod.rows_match(
+        [(7.242696579592377,)], [("51.16206520043674",)], mode="tolerant"
+    )
+    assert not mod.rows_match([(1.0,)], [("1.001",)], mode="tolerant")
 
 
 def test_rows_match_does_not_coerce_non_numeric_text() -> None:
-    assert not mod.rows_match([("CZE",)], [("SVK",)])
-    assert mod.rows_match([("CZE",)], [("CZE",)])
+    assert not mod.rows_match([("CZE",)], [("SVK",)], mode="tolerant")
+    assert mod.rows_match([("CZE",)], [("CZE",)], mode="tolerant")
+
+
+# ---------------------------------------------------------------------------
+# Official BIRD metrics
+#
+# Ported from bird-bench/mini_dev evaluation scripts:
+#   EX      — calculate_ex:        set(predicted) == set(ground_truth)
+#   Soft-F1 — calculate_f1_score:  column-level TP/FP/FN over row-aligned pairs
+#   R-VES   — compute_ves:         sqrt(reward)*100 from the gold/pred time ratio
+# ---------------------------------------------------------------------------
+
+
+def test_official_mode_applies_no_numeric_normalization() -> None:
+    """Official EX is raw set equality. A last-digit difference between
+    float8 and numeric is a genuine mismatch there, and our official mode
+    must not paper over it — doing so would inflate a submitted score."""
+    assert not mod.rows_match(
+        [(459.9562642112431,)], [(Decimal("459.9562642112432"),)], mode="official"
+    )
+
+
+def test_official_mode_still_matches_across_numeric_types() -> None:
+    """Python's numeric tower gives int/float/Decimal equal hash and equality,
+    so value-equal numbers of different types DO match natively. This is what
+    our JSON boundary was destroying by stringifying Decimal."""
+    assert mod.rows_match([(100,)], [(100.0,)], mode="official")
+    assert mod.rows_match([(Decimal("100.0"),)], [(100.0,)], mode="official")
+    assert mod.rows_match(
+        [(Decimal("100.0"),)], [(Decimal("100.0000000000000000"),)], mode="official"
+    )
+
+
+def test_tolerant_mode_forgives_representation_tail() -> None:
+    assert mod.rows_match(
+        [(459.9562642112431,)], [(Decimal("459.9562642112432"),)], mode="tolerant"
+    )
+    assert not mod.rows_match([(9,)], [(136,)], mode="tolerant")
+
+
+def test_official_mode_ignores_row_order_and_duplicates() -> None:
+    assert mod.rows_match([(1,), (2,), (1,)], [(2,), (1,)], mode="official")
+
+
+def test_soft_f1_perfect_match() -> None:
+    assert mod.calculate_f1_score([(1, "a")], [(1, "a")]) == 1.0
+
+
+def test_soft_f1_both_empty_is_one() -> None:
+    assert mod.calculate_f1_score([], []) == 1.0
+
+
+def test_soft_f1_one_empty_is_zero() -> None:
+    assert mod.calculate_f1_score([(1,)], []) == 0.0
+    assert mod.calculate_f1_score([], [(1,)]) == 0.0
+
+
+def test_soft_f1_partial_credit_for_extra_column() -> None:
+    """Predicting (name, count) when gold is (name,) earns partial credit:
+    one true positive, one false positive, no false negatives."""
+    score = mod.calculate_f1_score([("x", 7)], [("x",)])
+    assert 0.0 < score < 1.0
+    assert score == pytest.approx(2 * (1 / 2) * 1.0 / ((1 / 2) + 1.0))
+
+
+def test_ves_reward_thresholds() -> None:
+    """Verbatim from compute_ves: faster than gold earns more."""
+    assert mod.ves_reward(2.5) == 1.25
+    assert mod.ves_reward(2.0) == 1.25
+    assert mod.ves_reward(1.5) == 1.0
+    assert mod.ves_reward(0.75) == 0.75
+    assert mod.ves_reward(0.3) == 0.5
+    assert mod.ves_reward(0.1) == 0.25
+
+
+def test_ves_score_is_sqrt_reward_scaled() -> None:
+    import math
+
+    assert mod.ves_score(1.0) == pytest.approx(math.sqrt(1.0) * 100)
+    assert mod.ves_score(1.25) == pytest.approx(math.sqrt(1.25) * 100)
+    assert mod.ves_score(0.0) == 0.0
