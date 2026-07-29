@@ -4,6 +4,7 @@ import pytest
 
 from app.rag.builder import (
     RagDivergenceError,
+    _build_inner,
     _compute_values_hash,
     build_from_artifact,
     build_test_store,
@@ -323,3 +324,29 @@ def test_build_test_store_custom_entries() -> None:
     store = build_test_store([("ACTIVE", "status.state", "t1")])
     result = store.search("ACTIVE", tenant_id="t1")
     assert result.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
+
+
+def test_indexed_values_carry_source_database() -> None:
+    """The builder must thread each table's source_database onto its values
+    so the store can scope lookups without importing compiler types."""
+    artifact = {
+        "tables": [
+            {
+                "alias": "players",
+                "tenant_id": "t1",
+                "source_database": "european_football_2",
+                "columns": [
+                    {
+                        "id": "col-1",
+                        "alias": "player_name",
+                        "rag_enabled": True,
+                        "rag_cardinality_hint": "low",
+                    }
+                ],
+            }
+        ]
+    }
+    store = _build_inner(artifact, "t1", "v1", {"col-1": ["Aaron Doran"]})
+    values = store._store["t1"]
+    assert len(values) == 1
+    assert values[0].source_database == "european_football_2"

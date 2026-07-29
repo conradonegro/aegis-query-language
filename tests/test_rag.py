@@ -305,3 +305,60 @@ def test_fuzzy_fallback_not_called_for_long_queries(
 
     assert calls == 0
     assert res.outcome == RAGOutcome.NO_MATCH
+
+
+def test_search_scoped_to_source_database() -> None:
+    """Values from another database must not be returned when the caller
+    knows which database the query targets. 87.7% of injected hints named
+    columns outside the question's own schema before scoping existed."""
+    s = InMemoryVectorStore()
+    s.index_value(
+        CategoricalValue(
+            value="Nvidia",
+            abstract_column="companies.name",
+            tenant_id="t1",
+            source_database="finance",
+        )
+    )
+    s.index_value(
+        CategoricalValue(
+            value="Nvidia",
+            abstract_column="cards.artist",
+            tenant_id="t1",
+            source_database="card_games",
+        )
+    )
+
+    scoped = s.search(
+        "Tell me about Nvidia", tenant_id="t1", source_database="finance"
+    )
+    assert scoped.outcome == RAGOutcome.SINGLE_HIGH_CONFIDENCE_MATCH
+    assert scoped.match is not None
+    assert scoped.match.categorical_value.abstract_column == "companies.name"
+
+
+def test_search_unscoped_when_no_source_database() -> None:
+    """source_database=None keeps the pre-scoping behaviour: search
+    everything. This is the deliberate fallback for queries where database
+    detection was not confident."""
+    s = InMemoryVectorStore()
+    s.index_value(
+        CategoricalValue(
+            value="Nvidia",
+            abstract_column="companies.name",
+            tenant_id="t1",
+            source_database="finance",
+        )
+    )
+    s.index_value(
+        CategoricalValue(
+            value="Nvidia",
+            abstract_column="cards.artist",
+            tenant_id="t1",
+            source_database="card_games",
+        )
+    )
+    res = s.search("Tell me about Nvidia", tenant_id="t1")
+    assert res.outcome == RAGOutcome.AMBIGUOUS_MATCH
+    assert res.candidates is not None
+    assert len(res.candidates) == 2

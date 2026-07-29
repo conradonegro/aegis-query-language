@@ -110,6 +110,7 @@ def _index_column(
     artifact_version: str,
     column_values: dict[str, list[str]],
     stats: _IndexStats,
+    source_database: str | None,
 ) -> None:
     """Index one column's values into the store.
 
@@ -174,6 +175,7 @@ def _index_column(
                 value=raw_val,
                 abstract_column=abstract_col,
                 tenant_id=table_tenant,
+                source_database=source_database,
                 artifact_version=artifact_version,
             )
         )
@@ -193,6 +195,7 @@ def _build_inner(
     for tbl_dict in artifact_blob.get("tables", []):
         table_alias: str = tbl_dict.get("alias", "")
         table_tenant: str = tbl_dict.get("tenant_id", tenant_id)
+        table_source_db: str | None = tbl_dict.get("source_database")
 
         for col_dict in tbl_dict.get("columns", []):
             col_alias: str = col_dict.get("alias", "")
@@ -205,6 +208,7 @@ def _build_inner(
                 artifact_version,
                 column_values,
                 stats,
+                table_source_db,
             )
 
     store.set_artifact_version(artifact_version)

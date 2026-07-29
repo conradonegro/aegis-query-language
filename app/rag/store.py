@@ -100,6 +100,7 @@ class InMemoryVectorStore(VectorStoreProtocol):
         tenant_id: str,
         limit: int = 5,
         threshold: float = 0.85,
+        source_database: str | None = None,
     ) -> RAGResult:
         tenant_values = self._store.get(tenant_id, [])
         if not tenant_values:
@@ -107,6 +108,23 @@ class InMemoryVectorStore(VectorStoreProtocol):
                 outcome=RAGOutcome.NO_MATCH,
                 reason="Tenant vector store is empty.",
             )
+
+        # Scope to one logical database when the caller has resolved it.
+        # None means unscoped — the deliberate fallback for queries where
+        # database detection was not confident, since withholding hints
+        # when the compiler is least certain is the worse failure mode.
+        if source_database is not None:
+            tenant_values = [
+                v for v in tenant_values if v.source_database == source_database
+            ]
+            if not tenant_values:
+                return RAGResult(
+                    outcome=RAGOutcome.NO_MATCH,
+                    reason=(
+                        f"No indexed values for source database "
+                        f"'{source_database}'."
+                    ),
+                )
 
         query_normalized = query.lower().strip()
         query_words = set(query_normalized.split())

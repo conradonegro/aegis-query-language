@@ -22,6 +22,13 @@ class CategoricalValue(BaseModel):
     tenant_id: str = Field(
         ..., description="The tenant ID this value is isolated to."
     )
+    source_database: str | None = Field(
+        default=None,
+        description=(
+            "Logical source database this value belongs to. Used to scope "
+            "lookups; None means the value participates in unscoped search."
+        ),
+    )
     artifact_version: str = Field(
         default="",
         description="The artifact version this value was indexed from.",
