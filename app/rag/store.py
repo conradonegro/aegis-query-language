@@ -16,13 +16,33 @@ _SHORT_QUERY_WORD_LIMIT = 4
 _MIN_SUBSTRING_MATCH_LEN = 3
 
 
+def _is_word_char(ch: str) -> bool:
+    """Mirrors regex \\w: alphanumeric (Unicode-aware) or underscore."""
+    return ch.isalnum() or ch == "_"
+
+
 def _is_word_boundary_match(val: str, query_full: str) -> bool:
     """True when *val* occurs in *query_full* delimited by word boundaries.
 
     Guards against coincidental infixes ('art' inside 'artifact'), which are
     not evidence that the user meant that value.
+
+    Deliberately hand-rolled rather than
+    re.search(rf"(?<!\\w){re.escape(val)}(?!\\w)", query_full): the pattern
+    embeds the value, so every distinct value is a distinct pattern. Python's
+    512-entry compiled-pattern cache thrashes completely against an index of
+    this size and recompiles on every call — measured 289x slower, 27.2s vs
+    94ms for a single query against 81,632 values.
     """
-    return re.search(rf"(?<!\w){re.escape(val)}(?!\w)", query_full) is not None
+    start = query_full.find(val)
+    while start != -1:
+        end = start + len(val)
+        before_ok = start == 0 or not _is_word_char(query_full[start - 1])
+        after_ok = end == len(query_full) or not _is_word_char(query_full[end])
+        if before_ok and after_ok:
+            return True
+        start = query_full.find(val, start + 1)
+    return False
 
 
 def _extract_quoted_phrases(query: str) -> list[str]:
