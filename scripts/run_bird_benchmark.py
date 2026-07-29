@@ -620,6 +620,27 @@ def _init_store(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    _add_missing_columns(
+        conn,
+        "benchmark_results",
+        {"match_tolerant": "INTEGER", "soft_f1": "REAL"},
+    )
+
+
+def _add_missing_columns(
+    conn: sqlite3.Connection, table: str, columns: dict[str, str]
+) -> None:
+    """Add columns absent from an existing table.
+
+    CREATE TABLE IF NOT EXISTS is a no-op against a store created by an
+    earlier version, so new metrics would make every INSERT fail and silently
+    lose the run. Results stores are long-lived across many runs, so they must
+    be migrated rather than recreated.
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def _persist_results(

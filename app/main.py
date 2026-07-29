@@ -8,6 +8,7 @@ from typing import Any, cast
 from urllib.parse import urlparse, urlunparse
 
 import redis.asyncio as aioredis
+import sqlglot
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -549,6 +550,25 @@ async def ambiguous_source_database_handler(
         message=str(exc),
         request_id=None,
         explainability={"candidates": exc.candidates, "scores": exc.scores},
+    )
+    return JSONResponse(status_code=400, content=error_resp.model_dump())
+
+
+@app.exception_handler(sqlglot.errors.ParseError)
+async def parse_error_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Unparseable LLM SQL is a query problem, not an application fault.
+
+    This also covers multi-statement payloads, which the parser rejects as a
+    security control ("SELECT 1; DROP TABLE users") — that rejection must be
+    legible to the caller rather than surfacing as an opaque 500.
+    """
+    error_resp = ErrorResponse(
+        code=400,
+        message=f"SQL Parse Error: {str(exc)[:300]}",
+        request_id=None,
+        explainability=None,
     )
     return JSONResponse(status_code=400, content=error_resp.model_dump())
 

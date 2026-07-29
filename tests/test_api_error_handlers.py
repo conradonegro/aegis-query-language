@@ -64,3 +64,20 @@ async def test_invalidated_connection_stays_5xx() -> None:
     exc.connection_invalidated = True
     resp = await dbapi_error_handler(cast(Request, cast(Any, None)), exc)
     assert resp.status_code >= 500
+
+
+@pytest.mark.asyncio
+async def test_parse_error_maps_to_structured_400() -> None:
+    """Unparseable or multi-statement LLM output is a query problem, not an
+    application fault. Multi-statement rejection is also a security control,
+    so it must surface clearly rather than as an opaque 500."""
+    import sqlglot
+
+    from app.main import parse_error_handler
+
+    exc = sqlglot.errors.ParseError("Expected exactly 1 SQL statement, got 2.")
+    resp = await parse_error_handler(cast(Request, cast(Any, None)), exc)
+    assert resp.status_code == 400
+    body = json.loads(bytes(resp.body))
+    assert body["message"].startswith("SQL Parse Error:")
+    assert "1 SQL statement" in body["message"]
