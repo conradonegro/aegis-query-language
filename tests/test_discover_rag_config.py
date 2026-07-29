@@ -1,8 +1,11 @@
 """Tests for discovery's RAG/sample configuration rules."""
 
 import importlib.util
+import re
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "discover_metadata.py"
 
@@ -91,3 +94,57 @@ def test_rag_disabled_when_shape_unknown() -> None:
     fail closed rather than indexing an unknown value population."""
     enabled, *_ = mod._rag_config("text", False, 500, avg_len=12.0)
     assert not enabled
+
+
+# ---------------------------------------------------------------------------
+# Word-like value pattern
+# ---------------------------------------------------------------------------
+
+def _py_pattern() -> str:
+    """The constant is stored PostgreSQL-escaped ('' is one apostrophe)."""
+    pattern: str = mod._WORD_LIKE_PATTERN
+    return pattern.replace("''", "'")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Artifact",
+        "Aaron Doran",
+        "O'Shea",
+        "Wells Fargo & Co",
+        # Multi-value categoricals: a comma-joined list of real categories is
+        # still a categorical value, and these are prime filter targets
+        # (cards.types, cards.subtypes, examination.diagnosis).
+        "Artifact,Creature",
+        "SLE, SjS",
+        "Human,Wizard",
+        # Short clinical/currency codes are legitimate filter values.
+        "RA",
+        "APS",
+    ],
+)
+def test_word_like_pattern_accepts_categorical_values(value: str) -> None:
+    assert re.match(_py_pattern(), value), value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # Opaque identifiers — the population the rule exists to exclude.
+        "0000579f-7b35-4ed3-b44c-db2a538b4e0c",
+        "a9d5a0f2-1b3c-4d5e-8f90-1234567890ab",
+        "49470",
+        "5.3",
+        # Markup blobs (posts.tags).
+        "<c#><java>",
+        # Single characters (cards.colorindicator).
+        "R",
+        "G",
+        # Must start with a letter.
+        "-foo",
+        "2nd",
+    ],
+)
+def test_word_like_pattern_rejects_identifiers_and_codes(value: str) -> None:
+    assert not re.match(_py_pattern(), value), value

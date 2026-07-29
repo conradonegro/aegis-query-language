@@ -40,11 +40,26 @@ _MAX_RAG_VALUE_AVG_LEN = 100.0
 _MIN_WORD_LIKE_RATIO = 0.5
 
 # A value counts as word-like when it starts with a letter and continues with
-# letters, spaces, or punctuation that occurs inside real names ("O'Shea",
-# "Wells Fargo & Co"). At least three characters, so single-letter codes and
-# two-digit codes never qualify. Written PostgreSQL-escaped (the doubled
-# quote is one literal apostrophe) because it is only ever embedded in SQL.
-_WORD_LIKE_PATTERN = "^[A-Za-z][A-Za-z .''&-]{2,}$"
+# letters, spaces, or punctuation that occurs inside real categorical values:
+# names ("O'Shea", "Wells Fargo & Co") and comma- or slash-joined multi-value
+# categoricals ("Artifact,Creature", "SLE, SjS"). Those multi-value columns
+# are prime filter targets, and excluding them cost four otherwise-correct
+# answers; commas and slashes are safe to admit because identifier columns
+# are excluded by the no-digits rule, not by punctuation — UUID and numeric-id
+# columns measure 0% word-like with or without them.
+#
+# Digits are deliberately still excluded: admitting them would re-admit UUIDs
+# (~60% of which begin with a hex letter) and numeric ids stored as text,
+# which together dominated index volume.
+#
+# Two characters minimum, so single-letter code columns never qualify, but
+# real short codes ("RA", "APS") do. Substring matching separately requires
+# three characters (see app/rag/store.py), so a two-character value can only
+# ever match as a whole word.
+#
+# Written PostgreSQL-escaped (the doubled quote is one literal apostrophe)
+# because it is only ever embedded in SQL.
+_WORD_LIKE_PATTERN = "^[A-Za-z][A-Za-z ,.''&/-]{1,}$"
 _MAX_SAMPLE_VALUE_LEN = 80
 
 
