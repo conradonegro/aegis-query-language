@@ -383,3 +383,57 @@ def test_safety_engine_allows_group_concat() -> None:
     safety = SafetyEngine()
     ast = parser.parse(AbstractQuery(sql="SELECT GROUP_CONCAT(t.a) FROM t"))
     assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_allows_comma_join_of_single_row_aggregate_ctes() -> None:
+    """The ratio pattern: two CTEs that each compute one scalar, combined with
+    a comma. Both are guaranteed single-row (aggregate, no GROUP BY), so the
+    Cartesian product is 1x1 — none of the risk that makes comma-joins
+    dangerous. q1094 was rejected for this shape.
+    """
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(
+        AbstractQuery(
+            sql=(
+                "WITH ariel AS (SELECT MAX(pa.overall_rating) AS r FROM pa), "
+                "paulin AS (SELECT MAX(pb.overall_rating) AS r FROM pb) "
+                "SELECT ariel.r - paulin.r FROM ariel, paulin"
+            )
+        )
+    )
+    assert safety.validate(ast).tree is not None
+
+
+def test_safety_engine_blocks_comma_join_when_a_cte_can_return_many_rows() -> None:
+    """A GROUP BY makes the CTE multi-row, so the Cartesian product is
+    unbounded again and the relaxation must not apply."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(
+        AbstractQuery(
+            sql=(
+                "WITH per_team AS (SELECT t.id, COUNT(*) AS n FROM t GROUP BY t.id), "
+                "total AS (SELECT COUNT(*) AS n FROM t) "
+                "SELECT per_team.n, total.n FROM per_team, total"
+            )
+        )
+    )
+    with pytest.raises(SafetyViolationError, match="(?i)implicit"):
+        safety.validate(ast)
+
+
+def test_safety_engine_blocks_comma_join_of_base_tables_even_with_ctes() -> None:
+    """Mixing a base table into the comma join keeps it blocked."""
+    parser = SQLParser()
+    safety = SafetyEngine()
+    ast = parser.parse(
+        AbstractQuery(
+            sql=(
+                "WITH total AS (SELECT COUNT(*) AS n FROM t) "
+                "SELECT t.x, total.n FROM t, total"
+            )
+        )
+    )
+    with pytest.raises(SafetyViolationError, match="(?i)implicit"):
+        safety.validate(ast)

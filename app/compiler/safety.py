@@ -180,14 +180,80 @@ class SafetyEngine:
         # product. Explicit CROSS JOIN is deliberate (typically against a
         # single-row aggregate CTE) and its cost is bounded by
         # statement_timeout at execution.
+        self._validate_joins(tree)
+
+        return ValidatedAST(tree=tree)
+
+    def _validate_joins(self, tree: exp.Expression) -> None:
+        """Reject implicit joins, except provably single-row CTE pairings."""
+        single_row_ctes = self._single_row_cte_aliases(tree)
         for join_node in tree.find_all(exp.Join):
             has_on = join_node.args.get("on") is not None
             has_using = join_node.args.get("using") is not None
             is_explicit_cross = join_node.kind == "CROSS"
-            if not has_on and not has_using and not is_explicit_cross:
-                raise SafetyViolationError(
-                    "Implicit or cross JOIN detected: every JOIN must have an "
-                    "explicit ON or USING condition."
-                )
+            if has_on or has_using or is_explicit_cross:
+                continue
+            if self._joins_only_single_row_ctes(join_node, single_row_ctes):
+                continue
+            raise SafetyViolationError(
+                "Implicit or cross JOIN detected: every JOIN must have an "
+                "explicit ON or USING condition."
+            )
 
-        return ValidatedAST(tree=tree)
+    @staticmethod
+    def _single_row_cte_aliases(tree: exp.Expression) -> set[str]:
+        """Aliases of CTEs that provably return exactly one row.
+
+        A SELECT whose projections are all aggregates and which has no GROUP
+        BY returns exactly one row. Anything less certain is excluded, so the
+        caller can only ever relax the join rule on a bounded shape.
+        """
+        aliases: set[str] = set()
+        # sqlglot spells these args "with_"/"from_" in some versions.
+        with_node = tree.args.get("with") or tree.args.get("with_")
+        if not isinstance(with_node, exp.With):
+            return aliases
+        for cte in with_node.expressions:
+            inner = cte.this
+            if not isinstance(inner, exp.Select):
+                continue
+            if inner.args.get("group") is not None:
+                continue
+            projections = inner.expressions
+            if not projections:
+                continue
+            if all(
+                bool(list(proj.find_all(exp.AggFunc))) for proj in projections
+            ):
+                aliases.add(cte.alias_or_name)
+        return aliases
+
+    @staticmethod
+    def _joins_only_single_row_ctes(
+        join_node: exp.Join, single_row_ctes: set[str]
+    ) -> bool:
+        """True when this comma-join combines only single-row CTEs.
+
+        The ratio pattern ("what is the difference between X and Y") pairs two
+        scalar CTEs with a comma. Both sides being single-row makes the
+        Cartesian product exactly one row, so none of the silent row
+        explosion that makes comma joins dangerous can occur. Base tables are
+        never eligible.
+        """
+        if not single_row_ctes:
+            return False
+        parent = join_node.parent
+        if not isinstance(parent, exp.Select):
+            return False
+        sources: list[exp.Expression] = []
+        from_node = parent.args.get("from") or parent.args.get("from_")
+        if isinstance(from_node, exp.From):
+            sources.append(from_node.this)
+        for other in parent.args.get("joins") or []:
+            sources.append(other.this)
+        if not sources:
+            return False
+        return all(
+            isinstance(src, exp.Table) and src.name in single_row_ctes
+            for src in sources
+        )
