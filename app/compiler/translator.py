@@ -536,10 +536,29 @@ class DeterministicTranslator:
         Recognized forms:
           - exp.Column whose resolved datatype contains a temporal type token
           - exp.Cast whose target DataType is one of the temporal types
+          - parentheses around any recognized form
+          - MIN/MAX/COALESCE/GREATEST/LEAST over recognized forms: these
+            return one of their operands unchanged, so a temporal input
+            guarantees a temporal result
 
         Not recognized (returns False — caller raises): arithmetic, anonymous
         function calls, literals, parameters, anything else.
         """
+        if isinstance(expr, exp.Paren):
+            return self._resolves_to_temporal(expr.this, column_datatypes)
+        if isinstance(expr, self._TYPE_PRESERVING_FUNCS):
+            # These select one of their operands rather than computing a new
+            # value, so the result type follows the operands. Every operand
+            # must be temporal — MIN over a date is a date, but GREATEST over
+            # a date and a number is not something we should vouch for.
+            operands = [expr.this] if expr.this is not None else []
+            expressions = expr.args.get("expressions")
+            if isinstance(expressions, list):
+                operands.extend(expressions)
+            return bool(operands) and all(
+                self._resolves_to_temporal(operand, column_datatypes)
+                for operand in operands
+            )
         if isinstance(expr, exp.Column):
             dtype = column_datatypes.get(id(expr), "")
             return any(t in dtype for t in self._TEMPORAL_TYPES)
@@ -570,6 +589,16 @@ class DeterministicTranslator:
     # Allow-listed functions (parsed as exp.Anonymous) that always return
     # a temporal value.
     _TEMPORAL_FUNCTIONS: frozenset[str] = frozenset({"AGE"})
+
+    # Functions that return one of their operands unchanged, so the result
+    # type follows the operand types rather than being computed.
+    _TYPE_PRESERVING_FUNCS: tuple[type[exp.Expression], ...] = (
+        exp.Min,
+        exp.Max,
+        exp.Coalesce,
+        exp.Greatest,
+        exp.Least,
+    )
 
     def _collect_temporal_literal_ids(
         self, tree: exp.Expression, column_datatypes: dict[int, str]

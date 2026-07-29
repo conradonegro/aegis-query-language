@@ -1160,3 +1160,83 @@ def test_ambiguous_naked_column_still_fails_without_equivalence(
     ))
     with pytest.raises(TranslationError, match="Ambiguous naked column"):
         translator.translate(ast, schema, relationships=[])
+
+
+def _schema_with_aggregatable_date() -> RegistrySchema:
+    """orders.created_at in mock_schema is select-only; MIN() over it is
+    blocked by the aggregation rule before the temporal check is reached."""
+    return RegistrySchema(
+        version="1",
+        tables=[
+            AbstractTableDef(
+                alias="races",
+                description="races",
+                physical_target="races",
+                columns=[
+                    AbstractColumnDef(
+                        alias="date",
+                        description="race date",
+                        data_type="date",
+                        physical_target="date",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, aggregation_allowed=True
+                        ),
+                    ),
+                ],
+            )
+        ],
+        relationships=[],
+    )
+
+
+def test_extract_from_min_of_temporal_column(
+    translator: DeterministicTranslator,
+) -> None:
+    """MIN/MAX return one of their inputs, so MIN(date) is still a date.
+    q884 emitted EXTRACT(YEAR FROM MIN(races.date)) and was rejected."""
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one(
+            "SELECT EXTRACT(YEAR FROM MIN(races.date)) FROM races"
+        )
+    )
+    executable = translator.translate(ast, _schema_with_aggregatable_date())
+    assert "MIN(" in executable.sql.upper()
+
+
+def test_extract_from_max_of_temporal_column(
+    translator: DeterministicTranslator,
+) -> None:
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one(
+            "SELECT EXTRACT(YEAR FROM MAX(races.date)) FROM races"
+        )
+    )
+    executable = translator.translate(ast, _schema_with_aggregatable_date())
+    assert "MAX(" in executable.sql.upper()
+
+
+def test_extract_from_min_of_non_temporal_still_rejected(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """The relaxation must follow the inner type, not blanket-allow MIN."""
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one(
+            "SELECT EXTRACT(YEAR FROM MIN(o.total_amount)) FROM orders o"
+        )
+    )
+    with pytest.raises(
+        UnsafeExpressionError, match="does not resolve to a temporal"
+    ):
+        translator.translate(ast, mock_schema)
+
+
+def test_extract_from_parenthesised_temporal_column(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one(
+            "SELECT EXTRACT(YEAR FROM (o.created_at)) FROM orders o"
+        )
+    )
+    executable = translator.translate(ast, mock_schema)
+    assert "CREATED_AT" in executable.sql.upper()
