@@ -107,6 +107,7 @@ class DeterministicTranslator:
             declared_edges,
         )
         self._validate_temporal_expressions(tree, column_datatypes)
+        self._cast_like_operands(tree, column_datatypes, repairs)
         temporal_literal_ids = self._collect_temporal_literal_ids(
             tree, column_datatypes
         )
@@ -1137,6 +1138,49 @@ class DeterministicTranslator:
             else:
                 where_conditions.append(c)
         return where_conditions, having_conditions
+
+    def _cast_like_operands(
+        self,
+        tree: exp.Expression,
+        column_datatypes: dict[int, str],
+        repairs: list[TranslationRepair],
+    ) -> None:
+        """Cast temporal columns to text when they are the subject of LIKE.
+
+        SQLite accepts `date LIKE '1995%'` because it stores dates as text;
+        PostgreSQL raises "operator does not exist: date ~~ unknown". The
+        pattern match is unambiguous about intent, and rendering the date as
+        text is exactly what SQLite compared against, so the cast preserves
+        meaning rather than guessing at one.
+        """
+        targets: list[exp.Binary] = []
+        for node in tree.find_all(exp.Like, exp.ILike):
+            left = node.this
+            if isinstance(left, exp.Column) and self._col_is_temporal(
+                left, column_datatypes
+            ):
+                targets.append(node)
+
+        for node in targets:
+            original = node.sql(dialect="postgres")
+            node.set(
+                "this",
+                exp.Cast(
+                    this=node.this.copy(),
+                    to=exp.DataType.build("text"),
+                ),
+            )
+            repairs.append(
+                TranslationRepair(
+                    type="like_temporal_cast",
+                    original=original,
+                    resolved_to=node.sql(dialect="postgres"),
+                    reason=(
+                        "LIKE against a temporal column is invalid in "
+                        "PostgreSQL; cast the column to text."
+                    ),
+                )
+            )
 
     def _repair_where_aggregations(
         self, tree: exp.Expression, repairs: list[TranslationRepair]

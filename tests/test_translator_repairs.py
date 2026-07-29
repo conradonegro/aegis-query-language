@@ -1240,3 +1240,59 @@ def test_extract_from_parenthesised_temporal_column(
     )
     executable = translator.translate(ast, mock_schema)
     assert "CREATED_AT" in executable.sql.upper()
+
+
+def _schema_with_filterable_date() -> RegistrySchema:
+    return RegistrySchema(
+        version="1",
+        tables=[
+            AbstractTableDef(
+                alias="trans",
+                description="transactions",
+                physical_target="trans",
+                columns=[
+                    AbstractColumnDef(
+                        alias="date",
+                        description="transaction date",
+                        data_type="date",
+                        physical_target="date",
+                        safety=SafetyClassification(
+                            allowed_in_select=True, allowed_in_where=True
+                        ),
+                    ),
+                ],
+            )
+        ],
+        relationships=[],
+    )
+
+
+def test_like_on_temporal_column_is_cast_to_text(
+    translator: DeterministicTranslator,
+) -> None:
+    """SQLite allows `date LIKE '1995%'`; PostgreSQL raises
+    'operator does not exist: date ~~ unknown'. Casting the column to text
+    preserves the intent. q129 failed on exactly this."""
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one(
+            "SELECT trans.date FROM trans WHERE trans.date LIKE '1995%'"
+        )
+    )
+    executable = translator.translate(ast, _schema_with_filterable_date())
+    sql = executable.sql.upper()
+    assert "CAST(" in sql and "AS TEXT)" in sql
+    assert any(r.type == "like_temporal_cast" for r in executable.translation_repairs)
+
+
+def test_like_on_text_column_is_untouched(
+    translator: DeterministicTranslator, mock_schema: RegistrySchema
+) -> None:
+    """The cast must apply only to temporal columns."""
+    ast = ValidatedAST(
+        tree=sqlglot.parse_one("SELECT u.name FROM users u WHERE u.name LIKE 'A%'")
+    )
+    executable = translator.translate(ast, mock_schema)
+    assert "AS TEXT)" not in executable.sql.upper()
+    assert not [
+        r for r in executable.translation_repairs if r.type == "like_temporal_cast"
+    ]
