@@ -514,6 +514,14 @@ app.main
 
 ## 14. Key Invariants (Non-Negotiable)
 
+> **`CLAUDE.md` holds the canonical list.** This section elaborates on it with
+> the enforcing mechanism for each. If the two ever disagree, `CLAUDE.md` wins
+> and this section is stale — fix it here rather than editing around it.
+>
+> The reason for a single owner: this file and `CLAUDE.md` previously both
+> described the parser, drifted apart, and `CLAUDE.md` ended up claiming CTEs
+> and subqueries were rejected long after they were permitted.
+
 1. `PromptEnvelope` → LLM: **zero physical targets** (no `physical_target` field values exposed).
 2. `ExecutableQuery` output: **zero abstract aliases** (all resolved to physical targets before execution).
 3. `ValidatedAST` is **immutable** — translator produces a copy, never mutates in-place.
