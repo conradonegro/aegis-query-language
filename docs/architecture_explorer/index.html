@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aegis Architecture Explorer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="glass-header">
+            <div class="header-left">
+                <div class="logo">
+                    <div class="shield-icon"></div>
+                    <h1>Aegis</h1>
+                </div>
+                <p class="subtitle">Semantic Translation & Security Proxy</p>
+            </div>
+            
+            <div class="view-controls">
+                <button class="view-tab active" data-view="architecture">Architecture Map</button>
+                <button class="view-tab" data-view="flow">Query Flow</button>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="workspace">
+            <!-- Architecture Diagram View -->
+            <div class="view-container active" id="architecture-view">
+                <div class="diagram-area" id="diagram-area">
+                    <svg class="connections-layer" id="connections"></svg>
+                    <!-- Nodes injected via JS -->
+                </div>
+                
+                <aside class="details-panel glass-panel hidden" id="details-panel">
+                    <button class="close-btn" id="close-panel">&times;</button>
+                    <div class="panel-content" id="panel-content"></div>
+                </aside>
+            </div>
+
+            <!-- Query Flow View -->
+            <div class="view-container" id="flow-view">
+                <div class="flow-layout">
+                    <div class="flow-timeline" id="flow-timeline">
+                        <!-- Flow steps injected via JS -->
+                    </div>
+                    <div class="flow-visualization" id="flow-visualization">
+                        <!-- Visual animation/details of the step -->
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
