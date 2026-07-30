@@ -1,8 +1,11 @@
 # BIRD Benchmark — Improvement Backlog
 
+**Status:** **ACTIVE** — the only active initiative.
 **Created:** 2026-07-29 · **Branch:** `rag-precision-and-performance`
 **Purpose:** the single durable list of identified changes, to be worked through
 **one item at a time**, each discussed before implementation.
+**Next action:** step 0 of the recommended order — re-key the replay artifacts
+(zero tokens). See the callout immediately below.
 
 ---
 

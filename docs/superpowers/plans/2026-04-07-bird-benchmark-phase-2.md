@@ -1,5 +1,11 @@
 # BIRD Benchmark Phase 2 Implementation Plan
 
+> **SUPERSEDED — historical plan, not open work.**
+> Phases 0-3 shipped. Phase 4 was deferred after discovery found the plan incorrect — see the B5 appendix in `docs/initiatives/bird-benchmark.md`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Raise BIRD-SQL mini-dev benchmark accuracy from the current 40% baseline by addressing the four remaining classes of failures with root-cause fixes that generalize across all databases — no per-question tuning, no FK injection, no description edits.

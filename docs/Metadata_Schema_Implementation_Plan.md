@@ -1,5 +1,11 @@
 ## **Core tables**
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped — the `Metadata*` ORM in `app/api/meta_models.py`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 All tables below live in a dedicated schema `aegis_meta`. Primary keys are `uuid` (use `gen_random_uuid()` / `uuid_generate_v4()`).
 
 The listed columns are not exhaustive, you can suggest additions/removals/changes.

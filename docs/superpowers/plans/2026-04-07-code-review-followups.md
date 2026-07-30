@@ -1,5 +1,11 @@
 # Code Review Followups Implementation Plan
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped and verified: the `_resolve_session` user_id IDOR guard and the `pending_review` compile test are both in `main` and passing.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the seven non-BIRD findings from the 2026-04-07 code review (`docs/reviews/20260407_code_review.md`) as targeted, independently reviewable fixes. Finding #7 is intentionally excluded — it lives in the BIRD plan because it touches the same field family that Phase 2 of that plan extends.

@@ -1,5 +1,11 @@
 # Schema Hints Hardening — Implementation Plan
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped and verified in code. Current state: `docs/initiatives/schema-hints-hardening.md`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 ## Goal
 
 Eliminate `schema_hints` as an external prompt-injection surface while preserving

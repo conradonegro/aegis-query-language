@@ -1,5 +1,11 @@
 # Authentication Implementation Plan
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped — HMAC-SHA256 API key auth in `app/api/auth.py`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 ## Architecture Decisions
 - **API keys only, no JWTs.** Single `TenantCredential` table with a `scope` column: "query" or "admin".
 - **HMAC-SHA256 hashing** (stdlib `hmac` + `hashlib`). Constant-time comparison using `hmac.compare_digest`.

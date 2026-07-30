@@ -1,5 +1,11 @@
 # Docker Containerization Plan (IMP-013)
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped — `docker-compose.yml` / `docker-compose.bird.yml`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 ## Core Architecture Decisions
 
 - **Uv Built Image:** The application image is built via a `uv sync --frozen --no-dev --compile-bytecode` cache sequence. All services (`migrate`, `discover`, `aegis`) share this single image. Core service exposes `8000`.

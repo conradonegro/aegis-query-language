@@ -1,5 +1,11 @@
 # Aegis Metadata Schema Implementation Plan Feedback
 
+> **SUPERSEDED — historical plan, not open work.**
+> Feedback on a shipped plan. Retained for rationale only.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 Overall, this is a **phenomenal and incredibly mature plan** that perfectly aligns with Aegis's core architectural tenets of determinism, security, and read-only resilience. The decision to completely isolate the operational metadata layer (`aegis_meta` schema) from the runtime environment (which only ingests the compiled, versioned artifact) is exactly the right approach for a zero-trust orchestrator.
 
 Below is my critical feedback, categorized by project priorities.

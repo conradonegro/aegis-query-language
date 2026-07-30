@@ -1,5 +1,11 @@
 # RAG Precision and Performance Implementation Plan
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped as 7 commits (1ff0d38..b018646). Outcomes and measurements are in `docs/initiatives/bird-benchmark.md`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the RAG value-hint channel fast and precise — eliminate a fuzzy-match path that burns ~98% of scan time producing zero matches, scope value lookup to the detected source database, and replace the blanket distinct-count enablement rule with one based on intrinsic value shape.

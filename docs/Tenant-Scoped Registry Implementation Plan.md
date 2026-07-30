@@ -1,5 +1,11 @@
 # Tenant-Scoped Registry Implementation Plan (Option B)
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped and verified in code. Current state: `docs/initiatives/tenant-scoped-registry.md`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 ## Background
 
 `MetadataVersion` and `CompiledRegistryArtifact` have no `tenant_id`. `RegistryLoader.load_active_schema()` selects the latest active artifact globally, and the result is stored as a single `app.state.registry` singleton shared across all tenants. A tenant with valid credentials can query tables belonging to another tenant's namespace if the query tokens match those tables' descriptions or aliases.

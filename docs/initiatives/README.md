@@ -23,11 +23,44 @@ Two failure modes this replaces:
 
 | Initiative | File | Status |
 |---|---|---|
-| BIRD benchmark — execution accuracy | [bird-benchmark.md](bird-benchmark.md) | **active** |
-| Database selection / `source_database` scoping | [database-selection-design.md](database-selection-design.md) | shipped — design reference |
+| BIRD benchmark — execution accuracy | [bird-benchmark.md](bird-benchmark.md) | **active** — the only one |
+| Database selection / `source_database` scoping | [database-selection-design.md](database-selection-design.md) | shipped |
 | Tenant-scoped registry | [tenant-scoped-registry.md](tenant-scoped-registry.md) | shipped |
 | Schema hints hardening | [schema-hints-hardening.md](schema-hints-hardening.md) | shipped |
-| Bug log | [bug-log.md](bug-log.md) | rolling record |
+| Bug log | [bug-log.md](bug-log.md) | *not an initiative* — a rolling record, never "finished" |
+
+## Statuses
+
+| Status | Meaning |
+|---|---|
+| `active` | Being worked now. Should be rare — ideally one at a time. |
+| `shipped` | Done and verified in code. The file survives as design reference. |
+| `superseded` | Replaced by another document. Do not work from it. |
+| `parked` | Deliberately paused. Must say **why**, and what would restart it. |
+
+## When an initiative ends
+
+**Distil — don't archive.** A finished initiative holds two kinds of content
+with very different lifespans:
+
+- **Durable design knowledge** — why MAX not SUM, why the composite FK, the
+  verified sqlglot API facts. Valuable indefinitely.
+- **Process residue** — task lists, checkboxes, what shipped when. Dead weight,
+  and *actively harmful* once stale.
+
+So on completion: set the status, **strip the task tracking**, and keep the
+decisions, rationale and gotchas. The file stops being a plan and becomes the
+subsystem's design reference.
+
+This is not theoretical. Ten historical plan documents in `docs/` and
+`docs/superpowers/plans/` carried **205 unchecked `- [ ]` boxes for work that
+had entirely shipped**. Anyone grepping for open tasks would have found a
+backlog that did not exist — and nearly did. They are now marked
+`SUPERSEDED` at the top.
+
+**Promote what is repo-wide.** Test: *"will this bite someone who isn't working
+on this initiative?"* If yes, it belongs in `CLAUDE.md` (as the FastAPI
+exception-handler gotchas do). If it is subsystem-specific, it stays here.
 
 ## Conventions
 

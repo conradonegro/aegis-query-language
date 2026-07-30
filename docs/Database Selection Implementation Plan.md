@@ -1,5 +1,11 @@
 # Database Selection Implementation Plan
 
+> **SUPERSEDED — historical plan, not open work.**
+> Shipped. Design decisions live in `docs/initiatives/database-selection-design.md`.
+> Its unchecked `- [ ]` boxes are stale TDD-process markers, **not** a backlog.
+> Do not re-implement from this document.
+
+
 ## Goal
 
 Add a `source_database` field to tables in the metadata registry so the compiler pipeline
