@@ -49,6 +49,9 @@ ignore = []
 
 [tool.mypy]
 python_version = "3.12"
+# scripts/analysis/* import sibling helpers from scripts/ via sys.path at
+# runtime; this tells mypy where to resolve them. It disables no checks.
+mypy_path = "scripts"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
