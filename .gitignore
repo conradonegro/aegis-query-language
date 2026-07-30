@@ -174,3 +174,16 @@ docker/initdb/01_BIRD_dev.sql
 
 # Benchmark results — local store, changes every run
 benchmarks/results.db
+
+# BIRD benchmark artifacts.
+# prompts/batches are regenerable — a full re-dump takes ~48s — and run to
+# ~119 MB, so they stay out of git. responses*.jsonl are deliberately NOT
+# ignored: they cost real LLM usage to produce and are only ~1 MB in total.
+benchmarks/prompts.jsonl
+benchmarks/failures.jsonl
+benchmarks/run_*_details.json
+benchmarks/archive-*/prompts.jsonl
+benchmarks/archive-*/prompts_grouped.json
+benchmarks/archive-*/batches.json
+benchmarks/archive-*/agent_prompts/
+benchmarks/archive-*/agent_outputs/
