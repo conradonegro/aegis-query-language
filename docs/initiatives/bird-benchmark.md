@@ -223,7 +223,7 @@ Each error is a guaranteed-wrong question.
 | **B3** | Integer-division truncation + float4 `REAL/REAL` | ~+4 | **Correctness-only scope.** See the float section below. |
 | **B4** | Rule-12 output-shape misses | ~12 | Prompt change → batch. Previously parked. |
 | **B6** | **Prompt rule: return exactly ONE query** | ~2 | **NEW (user, 2026-07-30).** q83 and q173 both emit two SQL statements and are rejected by the parser's multi-statement control. Rather than weakening that control (forbidden, rule 8), tell the model up front to produce a single statement. Rule 6 already mandates `{"sql": "..."}` but never says *one statement*. Clean, general, and not gold-convention fitting — a multi-statement answer is wrong by any standard. May convert q83; q173 is likely still wrong on content (its first statement answers only half the question, and it says `FROM order`, an unquoted reserved word). **Prompt change → batch.** |
-| **B5** | Scope-aware column resolution refactor | ? | PARKED. q1526/q1014/q1225/q1115 — 3 of 4 self-fixed on regeneration, so re-derive the value before planning. Phase-4 notes and verified sqlglot API facts are in memory. |
+| **B5** | Scope-aware column resolution refactor | ? | PARKED. q1526/q1014/q1225/q1115 — 3 of 4 self-fixed on regeneration, so re-derive the value before planning. See the B5 appendix below for why the original plan was deferred and the verified sqlglot API facts. |
 
 ### The float8 investigation — measured, mostly abandoned by decision
 
@@ -368,8 +368,8 @@ weaken a security control.
   attributing a result to code. `docker inspect aegis_app --format '{{.Created}}'`
   vs `git log -1 --format=%ci <commit>`. A7 exists because this was missed.
 - Gold cache `benchmarks/gold_cache.db` survives resets (BIRD data is static).
-- Full reset: `feedback_bird_reset_procedure` — `down -v` + rebuild + admin key +
-  version approval + compile. Regenerate API keys per steps 3–4.
+- Full reset: see the reset-procedure appendix below — `down -v` + rebuild +
+  admin key + version approval + compile. Steps 3–4 alone regenerate keys.
 - Rebuild app only:
   `docker compose -f docker-compose.yml -f docker-compose.bird.yml up --build -d aegis`
 - Benchmark:
@@ -381,3 +381,152 @@ weaken a security control.
     --db-url "postgresql+asyncpg://user_aegis_runtime:runtime_pass@127.0.0.1:5433/aegis_data_warehouse" \
     --provider-id replay --limit 500 --concurrency 10
   ```
+
+---
+
+## Appendix — reset procedure
+
+Any time metadata must be wiped and re-discovered. **Always do a full volume
+wipe.** Partial resets (truncate + re-grant + restart) cause a second discovery
+run to find 0 tables, because grants get revoked by the first successful run.
+
+```bash
+# 1. Tear down containers AND volumes
+docker compose -f docker-compose.yml -f docker-compose.bird.yml down -v
+
+# 2. Build and start the full stack
+docker compose -f docker-compose.yml -f docker-compose.bird.yml up --build -d
+
+# 3. Wait for init containers (migrate -> bird-loader -> discover) to exit,
+#    then create an admin key
+docker exec -e PYTHONPATH=/app aegis_app uv run python scripts/create_admin_key.py \
+  --tenant-id default --user-id admin --scope admin --description "admin key"
+
+# 4. Create a query key using the admin key from step 3
+curl -s -X POST -H "Authorization: Bearer <admin_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"default","user_id":"demo","scope":"query","description":"demo query key"}' \
+  http://localhost:8000/api/v1/auth/credentials | jq '{key: .raw_key, id: .credential_id}'
+
+# 5. Get the draft version id
+curl -s -H "Authorization: Bearer <admin_key>" \
+  http://localhost:8000/api/v1/metadata/versions | jq '.[0].version_id'
+
+# 6. Approve it (draft -> pending_review -> active)
+curl -s -X PATCH -H "Authorization: Bearer <admin_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"pending_review","reason":"initial load"}' \
+  http://localhost:8000/api/v1/metadata/versions/<version_id>/status
+curl -s -X PATCH -H "Authorization: Bearer <admin_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"active","reason":"initial load"}' \
+  http://localhost:8000/api/v1/metadata/versions/<version_id>/status
+
+# 7. Compile it (triggers hot-reload; no restart needed)
+curl -s -X POST -H "Authorization: Bearer <admin_key>" \
+  http://localhost:8000/api/v1/metadata/compile/<version_id>
+```
+
+Steps 3–4 alone are enough to regenerate keys in a new session when metadata
+has not changed.
+
+---
+
+## Appendix — run history
+
+Every run is in `benchmarks/results.db` (`benchmark_runs`, `benchmark_results`).
+Scores before 2026-07-29 used an evaluator with a known defect (see below), so
+they are **not** comparable to current numbers.
+
+| Run | Qs | Accuracy | Notes |
+|---|---|---|---|
+| 20260321-131714 | 10 | 0% | baseline |
+| 20260321-220235 | 50 | 40% | after BUG-1–4, INFRA-1, PROMPT-1–3 |
+| 20260408-204036 | 50 | 36% | post Phase 0–3, no RAG — variance sample A |
+| 20260408-205119 | 50 | 40% | post Phase 0–3, no RAG — variance sample B |
+| 20260409-070114 | 50 | 48% | + BUG-5 real fix + RAG auto-enabled |
+| 20260409-082218 | 500 | 20.8% | live haiku; 111 HTTP 429s motivated the offline pipeline |
+| 20260412-201335 | 500 | 22.2% | replay of haiku batch, 161 errors |
+| 20260728-110258 | 500 | 36.2% | post 2026-07-28 fixes, 69 errors |
+| 20260728-141731 | 500 | 36.8% | retry-filled responses, 52 errors |
+| 20260728-145231 | 500 | 37.4% | round-2 bug fixes, 27 errors |
+| 20260728-162211 | 500 | 39.6% | step-2 curated FKs, 11 errors |
+| **20260728-195700** | 500 | **52.2%** | **BIRD `evidence` passed in intent + rules 12/13 — the single biggest win (+12.6 pp)** |
+| 20260729-045019 | 500 | 52.2% | RAG widening complete — exactly ties baseline, i.e. net-neutral |
+| 20260729-120729 | 500 | 53.2% | RAG precision+perf branch; +1.0 pp = within noise |
+| 20260729-124128 | 500 | 60.2% | same responses, re-scored after the evaluator fix — a **measurement correction**, not a gain |
+| **20260729-154032** | 500 | **55.4%** | **current best on the aligned official evaluator** |
+
+### Two measurement lessons embedded in that table
+
+**The evaluator was wrong for months.** `_normalize_value` stringified
+`Decimal` but left `float` alone, so a float could never equal a Decimal. Gold's
+`CAST(... AS REAL)` yields float8 while the model's plain `/` yields numeric —
+same arithmetic answer, incomparable types. 34 questions agreed to ~16
+significant digits and were scored wrong. Re-scoring identical responses moved
+266 → 301.
+
+**The deeper cause was asymmetry, not precision.** Gold was fetched natively
+while predicted rows came through the API's JSON layer, where `_coerce_row`
+stringifies `Decimal`/`date` — and a stringified Decimal can never equal a
+float. Fixed by re-executing Aegis's own parameterised SQL through the same
+driver as gold, after which Python's numeric tower compares value-equal
+int/float/Decimal correctly with **no** normalisation. This is why `official`
+mode needs the explain payload, and why the harness executes each query twice
+(see D2).
+
+### Historical context on the RAG work
+
+The round-4 RAG widening measured 0.0 pp because it never reached the index:
+`discover_metadata` tagged the new band `rag_cardinality_hint="high"` while
+`builder._index_column` unconditionally skipped every "high" column. The two
+halves contradicted each other, and the index held exactly the wrong columns —
+single-letter MTG colour codes in, `player.player_name` and `users.displayname`
+out. The follow-up branch fixed targeting (index on value shape, not distinct
+count), scoped search to the resolved `source_database`, and made the store's
+hot loop fast enough to survive a 184k-value index.
+
+Measured outcomes: cross-database hint contamination 87.7% → 0.0%; 1–2-character
+injected values 91% → 2.4%; indexed values 4,483 → 184,156; 500-prompt dump
+10+ min → 48 s. Accuracy effect was within noise — the wins were structural.
+
+---
+
+## Appendix — B5: why the scope-aware column refactor was deferred
+
+Phase 4 of `docs/superpowers/plans/2026-04-07-bird-benchmark-phase-2.md`
+(scope-aware column resolution for q1526) was stopped at discovery, because
+discovery found two correctness problems with the plan as written:
+
+1. **The plan's CTE-output collection only catches `exp.Alias`.** sqlglot
+   represents `SELECT users.id, orders.total` (no `AS`) as bare `exp.Column`
+   projections, so the plan's logic would silently no-op for any CTE that
+   projects bare columns. The right primitive is `inner_select.named_selects`,
+   which captures both AS-declared aliases and bare-column names.
+
+2. **The plan's own q1526 regression test already passes on `main`.** Building
+   the plan's exact SQL against `_make_schema_with_relationship()` and running
+   it through the current `DeterministicTranslator` produces clean output with
+   no "Ambiguous naked column" error. So either q1526's real failing SQL
+   differs from the plan's test, or the plan misdiagnosed the failure. Either
+   way, implementing it as written would ship code that fixes no reproducible
+   bug.
+
+**Verified sqlglot 29.0.1 API facts — carry these into any new plan:**
+
+- `Scope.selected_sources` values are `(node, source)` **tuples**; a defensive
+  `isinstance(source, tuple)` check is correct.
+- `Scope.cte_sources` values are bare `Scope` objects, **not** tuples.
+- `Scope.columns` returns only columns belonging to that scope, not nested
+  descendants.
+- `traverse_scope()` returns **leaf-first**.
+- `inner_select.named_selects` enumerates CTE output column names, covering
+  both AS-declared aliases and bare-column projections.
+- `build_scope` and `traverse_scope` live in `sqlglot.optimizer.scope`.
+
+**A new plan must also resolve this**, which the original did not: the current
+translator resolves bare-column outer references through to physical names, and
+that works *because* the CTE body has already been rewritten to physical names.
+Code that bypasses resolution would leave an outer reference pointing at an
+abstract name against a CTE projecting physical names — broken SQL at
+execution.

@@ -85,3 +85,49 @@ The app uses four least-privilege PostgreSQL roles, each with its own connection
 ### Schema Lifecycle
 
 The `app/api/meta_models.py` SQLAlchemy ORM manages `MetadataVersion`, `MetadataTable`, `MetadataColumn`, and `MetadataRelationship`. The `MetadataCompiler` (`app/api/compiler.py`) compiles a draft version into a signed `RegistrySchema` artifact, which `RegistryLoader` (`app/steward/loader.py`) loads at startup and hot-reloads on `POST /api/v1/metadata/compile/{version_id}`.
+
+## Working agreements
+
+These are standing instructions from the repository owner. They apply to every
+session and override default behaviour.
+
+**Never relax a rule to make a problem go away.** No `# noqa`, no
+`[[tool.mypy.overrides]]`, no bumping `line-length`, and no loosening a safety
+control (the multi-statement parser rejection, JOIN-relationship validation,
+the row cap) to turn a failure into a pass. Fix the code, or accept the
+failure and say so. C901 → extract helpers; E501 → wrap; `no-untyped-def` → add
+the annotation. The only acceptable suppressions are the architectural ones
+already in the repo: `B008` for FastAPI `Depends()` defaults, `E402` on
+`app/main.py` for `load_dotenv()`, and `type: ignore` on hvac imports (no
+published stubs) and dynamic exception attributes.
+
+**"Analyse" and "propose a fix" mean stop at the proposal.** Do not edit files
+until asked with an explicit "implement", "go ahead", or "do it".
+
+**Execute plans inline in the current session.** Don't offer the
+subagent-vs-inline choice — that decision is already made. Still stop at task
+boundaries for review, and still stop when genuinely blocked.
+
+**Don't create new Alembic migrations.** Edit
+`backend_migrations/versions/0001_initial_schema.py` directly. The database is
+dropped and recreated freely, so `0001` is effectively the init script rather
+than the first of many. Table DDL belongs there, not in `docker/initdb/*.sql`
+(those handle roles, grants and schemas only).
+
+**TDD for all app code.** Write the failing test first and watch it fail.
+Commit per logical change with `pytest`, `ruff`, `mypy` and `lint-imports`
+green.
+
+### Code-level gotchas worth remembering
+
+- FastAPI exception handlers must `return JSONResponse(...)`, never `raise
+  HTTPException` — raising inside a Starlette handler can produce a raw 500
+  depending on the middleware stack.
+- Exception handlers must be registered on the `app` instance in `main.py`.
+  Handlers registered on an `APIRouter` are silently ignored by Starlette.
+
+## Where initiative context lives
+
+Per-initiative state lives in `docs/initiatives/`, one file per initiative —
+not in this file and not in memory. See `docs/initiatives/README.md` for the
+index and the convention. Load only the initiative you are working on.
